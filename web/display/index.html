@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fallout.nav — display</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    body.preview { background: transparent; }
+    /* устройство: окно Chromium 720×576, холст 768×576 сжат по горизонтали */
+    body.pal { width: 720px; height: 576px; cursor: none; }
+    #root {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 768px;
+      height: 576px;
+      overflow: hidden;
+      background: #000;
+      transform-origin: 0 0;
+      contain: strict;
+      user-select: none;
+    }
+    #root > canvas, #camera-layer {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 768px;
+      height: 576px;
+    }
+    #camera-layer {
+      background: #000;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 300ms ease, visibility 0s linear 300ms;
+      pointer-events: none;
+    }
+    #camera-layer.on {
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 300ms ease, visibility 0s;
+    }
+    #camera {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    #camera-msg {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      padding: 10px 24px;
+      font: bold 36px "DejaVu Sans Mono", Consolas, monospace;
+      letter-spacing: 2px;
+      color: #e8f0e0;
+      background: rgba(0, 0, 0, 0.8);
+      border: 3px solid #e8f0e0;
+      white-space: nowrap;
+    }
+    #camera-msg[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <canvas id="map" width="768" height="576"></canvas>
+    <div id="camera-layer">
+      <img id="camera" alt="">
+      <div id="camera-msg" hidden>NO CAMERA</div>
+    </div>
+    <canvas id="hud" width="768" height="576"></canvas>
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
