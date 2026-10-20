@@ -14,6 +14,9 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPYCACHEPREFIX=/var/cache/fnav/pycache
 Environment=FNAV_DATA_DIR=/var/lib/fnav
 Environment=FNAV_SECRETS=/etc/fnav/secrets.env
+# lgpio (gpiozero) creates its notification FIFOs in LG_WD; the app dir is read-only for fnav
+RuntimeDirectory=fnav-core
+Environment=LG_WD=/run/fnav-core
 # Password hash and session secret (0600, owned by fnav). "-" = do not fail if the file is missing yet.
 EnvironmentFile=-/etc/fnav/secrets.env
 ExecStart=/opt/fnav/venv/bin/python -m fnav.core
