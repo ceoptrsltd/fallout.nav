@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { norm360, wrap180, angleDiff, lerpAngle, approachAngle, springStep } from "../../web/display/map/angles.js";
-import { MotionModel, ZoomAnimator, OrientationBlend, orientationPose } from "../../web/display/map/motion.js";
+import { MotionModel, ZoomAnimator, OrientationBlend, RotationRig, vehicleAnchor } from "../../web/display/map/motion.js";
 import { lonLatToMerc, mercDistanceM, moveMerc, mercToLonLat } from "../../web/display/map/mercator.js";
 
 const close = (a, b, eps, msg) => assert.ok(Math.abs(a - b) <= eps, `${msg ?? ""} ${a} != ${b} (±${eps})`);
@@ -53,35 +53,150 @@ test("ZoomAnimator: первая цель — сразу, затем плавн�
   assert.ok(z.settled);
 });
 
-test("OrientationBlend: плавное переключение за 0.8 с", () => {
+test("OrientationBlend + vehicleAnchor: машина плавно переезжает в нижнюю треть", () => {
   const o = new OrientationBlend(0.8);
   o.set("heading_up");
   assert.equal(o.update(0), 1);
   o.set("north_up");
-  const mid = (() => {
-    let f;
-    for (let i = 0; i < 24; i++) f = o.update(1 / 60);
-    return f;
-  })();
-  assert.ok(mid > 0.2 && mid < 0.8, `середина ${mid}`);
+  let f;
+  for (let i = 0; i < 24; i++) f = o.update(1 / 60);
+  assert.ok(f > 0.2 && f < 0.8, `середина ${f}`);
   for (let i = 0; i < 30; i++) o.update(1 / 60);
   assert.equal(o.update(1 / 60), 0);
+  close(vehicleAnchor(1, 768, 576, 0.67).ay, 576 * 0.67, 1e-9);
+  close(vehicleAnchor(0, 768, 576, 0.67).ay, 288, 1e-9);
+  assert.equal(vehicleAnchor(0.3, 768, 576, 0.67).ax, 384);
 });
 
-test("orientationPose: heading_up / north_up по контракту", () => {
-  const hu = orientationPose(1, 247.3, 768, 576, 0.67);
-  close(hu.bearing, 247.3, 1e-9);
-  close(hu.vehicleRot, 0, 1e-9);
-  close(hu.ax, 384, 1e-9);
-  close(hu.ay, 576 * 0.67, 1e-9);
-  const nu = orientationPose(0, 247.3, 768, 576, 0.67);
-  assert.equal(nu.bearing, 0);
-  close(nu.vehicleRot, 247.3, 1e-9);
-  close(nu.ay, 288, 1e-9);
-  // на полпути карта поворачивается по кратчайшей дуге (247 → 0 через 303.6, а не через 123)
-  const half = orientationPose(0.5, 247.3, 768, 576, 0.67);
-  close(half.bearing, 303.65, 1e-9);
-  close(norm360(half.bearing + half.vehicleRot), 247.3, 1e-9);
+// ── эффект поворота ──
+const FPS = 60;
+function run(rig, seconds, heading, speed = 12, cb = null) {
+  const out = [];
+  const n = Math.round(seconds * FPS);
+  for (let i = 0; i < n; i++) {
+    const h = typeof heading === "function" ? heading(i / FPS) : heading;
+    const r = rig.update(1 / FPS, h, speed);
+    out.push({ t: (i + 1) / FPS, ...r });
+    if (cb) cb(r);
+  }
+  return out;
+}
+const unwrapFrom = (ref, a) => ref + angleDiff(ref, a);
+
+test("RotationRig: иконка поворачивается первой, карта догоняет без перелёта", () => {
+  const rig = new RotationRig({ vehicleLagS: 0.25, mapLagS: 1.5, deadbandDeg: 2 });
+  run(rig, 2, 0);
+  const tr = run(rig, 6, 90);
+  const at = (t) => tr[Math.round(t * FPS) - 1];
+  // 0.3 с: иконка уже повернулась сильно, карта едва тронулась (мягкий старт)
+  assert.ok(at(0.3).vehicle > 55, `иконка ${at(0.3).vehicle}`);
+  assert.ok(at(0.3).bearing < 10, `карта ${at(0.3).bearing}`);
+  assert.ok(at(0.3).vehicleRot > 45, "иконка отклонена от вертикали");
+  // за mapLagS ≈ 80 %, к 3 с почти совпали
+  assert.ok(at(1.5).bearing > 55 && at(1.5).bearing < 85, `1.5 с: ${at(1.5).bearing}`);
+  assert.ok(Math.abs(angleDiff(at(4).bearing, 90)) < 1.5, `4 с: ${at(4).bearing}`);
+  // монотонно и без перелёта
+  let prev = -1;
+  for (const r of tr) {
+    assert.ok(r.bearing >= prev - 1e-9, "карта пошла назад");
+    assert.ok(r.bearing <= 90 + 1e-6, `перелёт ${r.bearing}`);
+    prev = r.bearing;
+  }
+  // скорость поворота карты растёт плавно с нуля (нет рывка в начале)
+  assert.ok(tr[0].bearing < 0.05, `рывок на старте ${tr[0].bearing}`);
+  close(tr[tr.length - 1].vehicleRot > 180 ? tr[tr.length - 1].vehicleRot - 360 : tr[tr.length - 1].vehicleRot, 0, 0.3);
+});
+
+test("RotationRig: через 0/360 — кратчайшим путём", () => {
+  const rig = new RotationRig({ vehicleLagS: 0.25, mapLagS: 1.5 });
+  run(rig, 2, 350);
+  const tr = run(rig, 6, 20);
+  for (const r of tr) {
+    const b = unwrapFrom(350, r.bearing);
+    const v = unwrapFrom(350, r.vehicle);
+    assert.ok(b >= 350 - 1e-6 && b <= 380 + 1e-6, `карта ушла длинным путём: ${r.bearing}`);
+    assert.ok(v >= 350 - 1e-6 && v <= 380 + 1e-6, `иконка ушла длинным путём: ${r.vehicle}`);
+    assert.ok(r.bearing >= 0 && r.bearing < 360);
+  }
+  close(angleDiff(tr[tr.length - 1].bearing, 20), 0, 0.5);
+  // разворот на 180° (конец маршрута) — тоже без перелёта и без «рывка» через 360
+  const back = run(rig, 8, 200);
+  let prevU = 20;
+  for (const r of back) {
+    const u = unwrapFrom(prevU, r.bearing);
+    assert.ok(Math.abs(u - prevU) < 3, "скачок угла за кадр");
+    prevU = u;
+  }
+  close(angleDiff(back[back.length - 1].bearing, 200), 0, 0.5);
+});
+
+test("RotationRig: deadband — мелкие колебания курса карту не крутят", () => {
+  const rig = new RotationRig({ vehicleLagS: 0.25, mapLagS: 1.5, deadbandDeg: 2 });
+  run(rig, 3, 100);
+  const b0 = rig.update(0, 100, 12).bearing;
+  // руление ±1.2° с периодом 0.7 с
+  const tr = run(rig, 5, (t) => 100 + 1.2 * Math.sin((2 * Math.PI * t) / 0.7));
+  const maxDev = Math.max(...tr.map((r) => Math.abs(angleDiff(b0, r.bearing))));
+  assert.ok(maxDev < 0.3, `карта дрожит на ${maxDev}°`);
+  // иконка при этом следует (видно руление)
+  const vDev = Math.max(...tr.map((r) => Math.abs(angleDiff(100, r.vehicle))));
+  assert.ok(vDev > 0.5);
+});
+
+test("RotationRig: постоянный перекос внутри deadband досинхронизируется", () => {
+  const rig = new RotationRig({ vehicleLagS: 0.25, mapLagS: 1.5, deadbandDeg: 2 });
+  run(rig, 3, 100);
+  const tr = run(rig, 0.9, 101.5);
+  assert.ok(Math.abs(angleDiff(tr[tr.length - 1].bearing, 100)) < 0.2, "сразу не крутим");
+  const tr2 = run(rig, 5, 101.5);
+  close(angleDiff(tr2[tr2.length - 1].bearing, 101.5), 0, 0.3);
+  for (const r of tr2) assert.ok(r.bearing <= 101.5 + 1e-6, "перелёт при досинхронизации");
+});
+
+test("RotationRig: north_up ↔ heading_up через ту же пружину", () => {
+  const rig = new RotationRig({ mapLagS: 1.5 });
+  rig.setOrientation("heading_up");
+  run(rig, 3, 247.3);
+  close(rig.update(0, 247.3, 12).bearing, 247.3, 0.3);
+  rig.setOrientation("north_up");
+  const tr = run(rig, 6, 247.3);
+  // 247 → 0 кратчайшим путём через 300…360
+  for (const r of tr) assert.ok(r.bearing >= 247 || r.bearing < 1e-6, `не тот путь: ${r.bearing}`);
+  const last = tr[tr.length - 1];
+  assert.ok(last.bearing < 0.5 || last.bearing > 359.5);
+  close(last.vehicleRot, 247.3, 0.5); // north_up: иконка = курс
+  rig.setOrientation("heading_up");
+  const tr2 = run(rig, 6, 247.3);
+  close(angleDiff(tr2[tr2.length - 1].bearing, 247.3), 0, 0.5);
+});
+
+test("RotationRig: на стоянке шум компаса не дёргает иконку и карту", () => {
+  const rig = new RotationRig({ vehicleLagS: 0.25, mapLagS: 1.5, deadbandDeg: 2 });
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 2;
+  run(rig, 3, 100, 0);
+  // вход уже отфильтрован MotionModel; оставшийся шум ±1° с частотой пакетов 10 Гц
+  let h = 100;
+  const tr = [];
+  for (let i = 0; i < 600; i++) {
+    if (i % 6 === 0) h = 100 + rnd();
+    tr.push(rig.update(1 / 60, h, 0));
+  }
+  let maxStep = 0;
+  for (let i = 1; i < tr.length; i++) maxStep = Math.max(maxStep, Math.abs(angleDiff(tr[i - 1].vehicle, tr[i].vehicle)));
+  assert.ok(maxStep < 0.15, `иконка дёргается на ${maxStep}° за кадр`);
+  const bDev = Math.max(...tr.map((r) => Math.abs(angleDiff(100, r.bearing))));
+  assert.ok(bDev < 1.2, `карта гуляет на ${bDev}°`);
+});
+
+test("RotationRig: нулевые постоянные — мгновенно; неизвестный курс держится", () => {
+  const rig = new RotationRig({ vehicleLagS: 0, mapLagS: 0, deadbandDeg: 0 });
+  rig.update(1 / 60, 10, 12);
+  const r = rig.update(1 / 60, 80, 12);
+  close(r.vehicle, 80, 1e-9);
+  close(r.bearing, 80, 1e-9);
+  const r2 = rig.update(1 / 60, null, 12);
+  close(r2.vehicle, 80, 1e-9);
 });
 
 function tel(lat, lon, speed, course, headingDeg = course, source = "gps") {

@@ -13,6 +13,9 @@ export const DEFAULT_SETTINGS = {
     "safe_area_pct": 5.0,
     "speed_units": "kmh",
     "vehicle_anchor_y": 0.67,
+    "vehicle_rotation_lag_s": 0.25,
+    "map_rotation_lag_s": 1.5,
+    "map_rotation_deadband_deg": 2.0,
     "layers": {
       "imagery": true,
       "transport": true,

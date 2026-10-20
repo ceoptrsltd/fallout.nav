@@ -10,7 +10,7 @@ import { DEFAULT_SETTINGS, deepMerge } from "./map/defaults.js";
 import { TileStore, browserTileLoader } from "./map/tiles.js";
 import { MapRenderer, BG_COLOR } from "./map/renderer.js";
 import { activeLayers, planRequests } from "./map/layers.js";
-import { MotionModel, OrientationBlend, ZoomAnimator, orientationPose } from "./map/motion.js";
+import { MotionModel, OrientationBlend, RotationRig, ZoomAnimator, vehicleAnchor } from "./map/motion.js";
 import { Trail } from "./map/trail.js";
 import { CameraLayer } from "./map/camera.js";
 import { Link, wsUrl } from "./map/link.js";
@@ -78,7 +78,8 @@ const STUB_TELEMETRY = {
 
 const motion = new MotionModel();
 const zoomAnim = new ZoomAnimator(4.0);
-const orient = new OrientationBlend(0.8);
+const orient = new OrientationBlend(1.2); // только положение машины; поворот — RotationRig
+const rig = new RotationRig();
 const trail = new Trail();
 const store = new TileStore({
   loader: browserTileLoader,
@@ -103,7 +104,14 @@ function maxZoom() {
 function applySettings(s) {
   settings = deepMerge(DEFAULT_SETTINGS, s || {});
   layers = activeLayers(settings);
-  orient.set(settings.display.orientation);
+  const ds = settings.display;
+  orient.set(ds.orientation);
+  rig.setOrientation(ds.orientation);
+  rig.configure({
+    vehicleLagS: ds.vehicle_rotation_lag_s,
+    mapLagS: ds.map_rotation_lag_s,
+    deadbandDeg: ds.map_rotation_deadband_deg,
+  });
   if (!settings.display.show_trail) trail.clear();
   if (zoomAnim.target !== null) zoomAnim.setTarget(clamp(zoomAnim.target, 1, maxZoom()));
   mapDirty = true;
@@ -227,7 +235,8 @@ function frame(tms) {
   const f = orient.update(dt);
   const zoom = zoomAnim.update(dt) ?? clamp(tel.display.target_zoom ?? 17, 1, maxZoom());
   const ds = settings.display;
-  const pose = orientationPose(f, m.heading, W, H, ds.vehicle_anchor_y ?? 0.67);
+  const rot = rig.update(dt, m.headingTarget, m.speed ?? 0);
+  const pose = { ...vehicleAnchor(f, W, H, ds.vehicle_anchor_y ?? 0.67), bearing: rot.bearing, vehicleRot: rot.vehicleRot };
   const view = makeView({ cx: m.mx, cy: m.my, zoom, bearing: pose.bearing, ax: pose.ax, ay: pose.ay, w: W, h: H });
   const hasFix = !!(tel.gps && tel.gps.fix && tel.gps.fix !== "none" && tel.gps.lat != null);
   const connected = link.connected(3);
@@ -248,6 +257,7 @@ function frame(tms) {
       orientation: ds.orientation,
       bearingDeg: pose.bearing,
       headingDeg: m.headingKnown ? m.heading : null,
+      vehicleHeadingDeg: m.headingKnown ? rot.vehicle : null,
       headingSource: tel.heading?.source || "none",
       speedMps: m.speed,
       zoom,
@@ -321,7 +331,7 @@ function frame(tms) {
     const s = store.stats;
     debugHud.drawStats(hudCtx, [
       `fps ${fpsEma.toFixed(0)}  map ${mapMsEma.toFixed(1)}ms  hud ${hudMsEma.toFixed(1)}ms  draws ${drawnFrames}  ui ${uiName}`,
-      `zoom ${zoom.toFixed(2)} → ${zoomAnim.target ?? "-"}  lvl ${tileLevelFor(zoom, maxZoom())}  brg ${pose.bearing.toFixed(1)}`,
+      `zoom ${zoom.toFixed(2)} → ${zoomAnim.target ?? "-"}  lvl ${tileLevelFor(zoom, maxZoom())}  brg ${pose.bearing.toFixed(1)}  veh ${rot.vehicle.toFixed(1)}  ${rig.tracking ? "trk" : "hold"}`,
       `tiles cache ${store.cache.size}  load ${store.inflight.size}  q ${store.queue.length}  fail ${store.failures.size}`,
       `drawn ${renderer.lastDrawn.tiles}/${renderer.lastDrawn.fallbacks}/${renderer.lastDrawn.missing}  ok ${s.loaded} err ${s.failed} abort ${s.aborted} evict ${s.evicted}`,
       `pos ${m.lat?.toFixed(5) ?? "-"}, ${m.lon?.toFixed(5) ?? "-"}  v ${(m.speed ?? 0).toFixed(1)}  trail ${trail.pts.length}`,
@@ -335,4 +345,4 @@ await Promise.race([loadExternalUi(), new Promise((r) => setTimeout(r, 3000))]);
 requestAnimationFrame(frame);
 
 // для отладки из консоли
-window.fnav = { store, motion, trail, link, camera, get state() { return lastState; }, get settings() { return settings; }, get telemetry() { return telemetry; } };
+window.fnav = { store, motion, trail, link, camera, rig, get state() { return lastState; }, get settings() { return settings; }, get telemetry() { return telemetry; } };

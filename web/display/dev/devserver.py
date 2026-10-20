@@ -36,7 +36,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import RedirectResponse, Response, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-from fnav.mock.sensors import MockSensorHub  # noqa: E402
+from fnav.mock.sensors import SPEED_PROFILE, MockSensorHub  # noqa: E402
 from fnav.models import CameraStatus, DisplayState, Settings, SystemStatus, Telemetry  # noqa: E402
 
 LAYERS = {"imagery", "transport", "places", "street"}
@@ -240,6 +240,38 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         except Exception as e:  # noqa: BLE001
             raise HTTPException(422, f"Invalid settings: {e}") from e
         return {"ok": True, "frozen": dev.frozen, "display": s.display.model_dump(mode="json")}
+
+    @app.get("/dev/jump")
+    async def _dev_jump(before_turn_m: float = 60.0, speed: float = 12.0) -> dict:
+        """Переставить мок-машину за before_turn_m до разворота в конце маршрута (для проверки
+        эффекта поворота). Трогает внутренности MockSensorHub — только для dev."""
+        hub = dev.hub
+        half = sum(hub._route.seg_len[: len(hub._route.seg_len) // 2])
+        hub._dist = max(0.0, half - before_turn_m)
+        # фаза профиля скорости с постоянной скоростью ≈ speed
+        t = 0.0
+        for dur, v in SPEED_PROFILE:
+            if v >= speed:
+                break
+            t += dur
+        hub._sim_t = t + 1.0
+        hub._speed = speed
+        return {"ok": True, "dist": hub._dist, "half": half}
+
+    @app.post("/dev/shot")
+    async def _dev_shot(request: Request, name: str) -> dict:
+        """Сохранить PNG (data URL в теле) в .devdata/display-shots/{name}.png."""
+        import base64
+        import re
+
+        if not re.fullmatch(r"[\w.-]{1,80}", name):
+            raise HTTPException(422, "Bad name")
+        body = (await request.body()).decode()
+        data = base64.b64decode(body.split(",", 1)[1])
+        out = REPO / ".devdata" / "display-shots"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"{name}.png").write_bytes(data)
+        return {"ok": True, "path": str(out / f"{name}.png")}
 
     @app.post("/api/display/force")
     async def _force(request: Request) -> dict:
