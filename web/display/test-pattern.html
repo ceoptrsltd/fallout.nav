@@ -1,6 +1,7 @@
 <!doctype html>
 <!-- Service test patterns for the composite / PAL output.
      ?mode=bw    full white / full black alternating every 5 s (DC level check with a multimeter)
+     ?mode=seq   15 s white -> 15 s black -> 15 s bars, repeating
      ?mode=white | black   static full-screen level
      ?mode=bars  grey bars + geometry grid + circles (picture check on the RV-50)
      Shown by fnav-display when FNAV_DISPLAY_URL in /etc/fnav/display.env points here. -->
@@ -21,16 +22,17 @@
 <script>
 const mode = new URLSearchParams(location.search).get("mode") || "bw";
 const lvl = document.getElementById("lvl");
+const c = document.getElementById("c"), g = c.getContext("2d");
 
 function level(white, label) {
+  c.hidden = true; lvl.hidden = false;
   document.body.style.background = white ? "#fff" : "#000";
   lvl.style.color = white ? "#ddd" : "#222";   // label barely visible: keeps the average level ~pure
   lvl.textContent = label;
 }
 
-if (mode === "bars") {
-  const c = document.getElementById("c"), g = c.getContext("2d");
-  c.hidden = false;
+function bars() {
+  lvl.hidden = true; c.hidden = false; document.body.style.background = "#000";
   const W = 720, H = 576;
   const greys = [255, 223, 191, 159, 127, 95, 63, 0];
   greys.forEach((v, i) => { g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(i * W / 8, 0, W / 8 + 1, H * 0.6); });
@@ -43,10 +45,21 @@ if (mode === "bars") {
   g.beginPath(); g.ellipse(W / 2, H * 0.8, 100 * 0.9375, 100, 0, 0, 2 * Math.PI); g.stroke();
   g.strokeStyle = "#888"; g.strokeRect(36, 29, W - 72, H - 58);   // 5% safe area
   g.fillStyle = "#fff"; g.font = "bold 28px sans-serif"; g.fillText("fallout.nav PAL 720x576", 40, H * 0.6 + 40);
-} else if (mode === "white" || mode === "black") {
-  lvl.hidden = false; level(mode === "white", mode.toUpperCase());
+}
+
+if (mode === "bars") bars();
+else if (mode === "white" || mode === "black") level(mode === "white", mode.toUpperCase());
+else if (mode === "seq") {
+  // 15 s white -> 15 s black -> 15 s bars, forever (tells our signal apart from the monitor's own behaviour)
+  let step = 0, left = 15;
+  const show = () => {
+    if (step === 0) level(true, "WHITE " + left);
+    else if (step === 1) level(false, "BLACK " + left);
+    else if (left === 15) bars();
+    if (--left <= 0) { step = (step + 1) % 3; left = 15; }
+  };
+  show(); setInterval(show, 1000);
 } else {
-  lvl.hidden = false;
   let white = true, n = 5;
   const tick = () => {
     level(white, (white ? "WHITE " : "BLACK ") + n);
