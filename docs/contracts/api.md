@@ -68,7 +68,7 @@
 - `GET /api/camera/snapshot.jpg`.
 - `POST /api/camera/whep` — прокси WebRTC WHEP к MediaMTX `http://127.0.0.1:8889/cam/whep` (тело SDP и заголовки `Content-Type`/`Location` проброшены; `PATCH`/`DELETE` по `Location` — тоже через `/api/camera/whep/...`).
 - Кнопка на GPS-модуле (`press`) → `POST 127.0.0.1:8081/protect-current` + событие WS + короткий сигнал. `long_press` — зарезервировано.
-- LED на модуле: `recording` → `on`, `error` → `blink_fast`, нет записи → `off`.
+- LED на модуле: `recording` → `blink_slow` (мигает), `error` → `blink_fast`, нет записи → `off`; после нажатия кнопки 3 с подтверждение: `on` (защищено) или `blink_fast` (ошибка).
 
 ## Датчики
 

@@ -165,8 +165,11 @@ async def test_protect_current_unavailable_non_mock(data_dir):
 async def test_button_press_mock(data_dir):
     async with running_app() as c:
         core = c.app.state.core
-        assert core.hub.led == "on"  # mock-камера «пишет»
+        assert core.hub.led == "blink_slow"  # mock-камера «пишет» → LED мигает
         await login(c)
         r = await c.post("/api/mock/button", json={"event": "press"})
         seg = r.json()["result"]["segment"]
         assert seg and (paths.recordings_dir() / (seg + ".lock")).exists()
+        assert core.hub.led == "on"  # подтверждение нажатия — горит ровно
+        core._led_timer._run()  # время подтверждения истекло
+        assert core.hub.led == "blink_slow"

@@ -113,6 +113,8 @@ class Core:
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
         self._tasks: list[asyncio.Task] = []
         self._led: LedMode | None = None
+        self._led_override: LedMode | None = None
+        self._led_timer: asyncio.TimerHandle | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._secrets_mtime: float | None = None
         self.started = False
@@ -285,14 +287,40 @@ class Core:
         st = self.camera.status
         return st.current_segment if st.recording or st.state == "recording" else None
 
-    def _on_camera_status(self, st: CameraStatus) -> None:
-        mode: LedMode = "on" if st.state == "recording" else ("blink_fast" if st.state == "error" else "off")
+    # LED на кнопке GPS-модуля: запись идёт — мигает, ошибка — часто мигает, нет записи — погашен.
+    # После нажатия кнопки — короткое подтверждение (горит ровно / часто мигает при ошибке).
+    def _status_led_mode(self) -> LedMode:
+        st = self.camera.status
+        return "blink_slow" if st.state == "recording" else ("blink_fast" if st.state == "error" else "off")
+
+    def _apply_led(self) -> None:
+        mode = self._led_override or self._status_led_mode()
         if mode != self._led:
             self._led = mode
             try:
                 self.hub.set_led(mode)
             except Exception:
                 log.exception("hub.set_led()")
+
+    def _on_camera_status(self, st: CameraStatus) -> None:
+        self._apply_led()
+
+    def _flash_led(self, mode: LedMode, seconds: float = 3.0) -> None:
+        """Временно показать подтверждение на LED, затем вернуть индикацию записи."""
+        self._led_override = mode
+        self._apply_led()
+        if self._led_timer is not None:
+            self._led_timer.cancel()
+        loop = self._loop
+        if loop is None:
+            return
+
+        def restore() -> None:
+            self._led_override = None
+            self._led_timer = None
+            self._apply_led()
+
+        self._led_timer = loop.call_later(seconds, restore)
 
     def _on_calibration_update(self, cal: CompassCalibration) -> None:
         """Автокалибровка компаса улучшилась — сохранить в settings.compass.calibration."""
@@ -334,9 +362,11 @@ class Core:
         try:
             res = await self.protect_current()
             self._beep("short")
+            self._flash_led("on" if res.get("segment") else "blink_fast")
             return res
         except CameraUnavailable as e:
             self._beep("long")
+            self._flash_led("blink_fast")
             self.ws.toast(f"Failed to protect recording: {e}", "error")
             return None
 
