@@ -308,3 +308,66 @@ export class RotationRig {
     return { vehicle: veh, bearing: norm360(this.bearing), vehicleRot: norm360(veh - this.bearing) };
   }
 }
+
+/**
+ * Курс для компаса (view.compassHeadingDeg): минимальная задержка.
+ *   * между пакетами 10 Гц — продолжение по устойчивой скорости поворота (два последних шага
+ *     в одну сторону; скачок курса не экстраполируется), не дальше одного интервала пакетов;
+ *   * экспоненциальное сглаживание с постоянной smoothingS (0 = без сглаживания);
+ *   * только защита от дрожания ±jitterDeg, когда поворота нет. Без пружин и deadband.
+ */
+export class CompassFilter {
+  constructor({ smoothingS = 0.1, jitterDeg = 0.3, maxRateDps = 180, minRateDps = 5 } = {}) {
+    this.smoothingS = smoothingS;
+    this.jitterDeg = jitterDeg;
+    this.maxRate = maxRateDps;
+    this.minRate = minRateDps;
+    this.pk = []; // последние пакеты [{deg, t}] (до 3)
+    this.rate = 0; // °/с
+    this.value = null; // сглаженный курс
+    this.out = null; // выдаваемый курс (с защитой от дрожания)
+    this.known = false;
+    this.lastUpdate = null;
+  }
+
+  configure(smoothingS) {
+    if (Number.isFinite(smoothingS) && smoothingS >= 0) this.smoothingS = smoothingS;
+  }
+
+  ingest(deg, now) {
+    if (!Number.isFinite(deg)) {
+      this.known = false;
+      this.rate = 0;
+      return;
+    }
+    this.known = true;
+    this.pk.push({ deg: norm360(deg), t: now });
+    if (this.pk.length > 3) this.pk.shift();
+    this.rate = 0;
+    if (this.pk.length === 3) {
+      const [a, b, c] = this.pk;
+      const dt1 = b.t - a.t, dt2 = c.t - b.t;
+      if (dt1 > 0.02 && dt1 < 0.5 && dt2 > 0.02 && dt2 < 0.5) {
+        const r1 = angleDiff(a.deg, b.deg) / dt1;
+        const r2 = angleDiff(b.deg, c.deg) / dt2;
+        if (Math.sign(r1) === Math.sign(r2) && Math.abs(r1) > this.minRate && Math.abs(r2) > this.minRate) {
+          this.rate = Math.sign(r2) * Math.min(Math.abs(r1), Math.abs(r2), this.maxRate);
+        }
+      }
+    }
+    if (this.value === null) this.value = this.out = norm360(deg);
+  }
+
+  update(now) {
+    const dt = this.lastUpdate === null ? 0 : clamp(now - this.lastUpdate, 0, 0.25);
+    this.lastUpdate = now;
+    if (!this.pk.length) return null;
+    const last = this.pk[this.pk.length - 1];
+    const prev = this.pk.length > 1 ? this.pk[this.pk.length - 2] : null;
+    const period = prev ? clamp(last.t - prev.t, 0.02, 0.2) : 0.1;
+    const target = norm360(last.deg + this.rate * clamp(now - last.t, 0, period));
+    this.value = this.smoothingS > 0 ? approachAngle(this.value, target, dt, this.smoothingS) : target;
+    if (this.rate !== 0 || Math.abs(angleDiff(this.out, this.value)) >= this.jitterDeg) this.out = this.value;
+    return this.out;
+  }
+}

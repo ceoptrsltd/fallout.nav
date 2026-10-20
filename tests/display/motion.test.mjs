@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { norm360, wrap180, angleDiff, lerpAngle, approachAngle, springStep } from "../../web/display/map/angles.js";
-import { MotionModel, ZoomAnimator, OrientationBlend, RotationRig, vehicleAnchor } from "../../web/display/map/motion.js";
+import { CompassFilter, MotionModel, ZoomAnimator, OrientationBlend, RotationRig, vehicleAnchor } from "../../web/display/map/motion.js";
 import { lonLatToMerc, mercDistanceM, moveMerc, mercToLonLat } from "../../web/display/map/mercator.js";
 
 const close = (a, b, eps, msg) => assert.ok(Math.abs(a - b) <= eps, `${msg ?? ""} ${a} != ${b} (±${eps})`);
@@ -292,4 +292,63 @@ test("MotionModel: без пакетов дольше 1 с не уезжает",
   const start = lonLatToMerc(37.5, 55.7);
   const d = mercDistanceM(start.x, start.y, s.mx, s.my);
   assert.ok(d < 25, `уехали на ${d} м`); // ≤ 20 м/с × 1 с + коррекция
+});
+
+// ── компас: минимальная задержка ──
+function feedCompass(f, from, to, headingAt) {
+  // пакеты 10 Гц, кадры 60 Гц; возвращает [{t, v}]
+  const out = [];
+  for (let i = Math.round(from * 60); i < Math.round(to * 60); i++) {
+    const t = i / 60;
+    if (i % 6 === 0) f.ingest(headingAt(t), t);
+    out.push({ t, v: f.update(t) });
+  }
+  return out;
+}
+
+test("CompassFilter: скачок курса на 90° — ≥ 90 % за 0.25 с (smoothing 0.1 с), без перелёта", () => {
+  const f = new CompassFilter({ smoothingS: 0.1 });
+  feedCompass(f, 0, 1, () => 10);
+  const tr = feedCompass(f, 1, 2, () => 100);
+  const at = (t) => tr.find((r) => r.t >= t - 1e-9).v;
+  assert.ok(angleDiff(10, at(1.25)) >= 81, `за 0.25 с: ${at(1.25)}`);
+  for (const r of tr) assert.ok(angleDiff(10, r.v) <= 90 + 1e-6, `перелёт ${r.v}`);
+  close(tr[tr.length - 1].v, 100, 0.31);
+});
+
+test("CompassFilter: через 0/360 — кратчайшим путём", () => {
+  const f = new CompassFilter({ smoothingS: 0.1 });
+  feedCompass(f, 0, 1, () => 350);
+  const tr = feedCompass(f, 1, 2, () => 20);
+  for (const r of tr) {
+    const u = 350 + angleDiff(350, r.v);
+    assert.ok(u >= 350 - 1e-6 && u <= 380 + 1e-6, `длинный путь: ${r.v}`);
+  }
+  close(angleDiff(tr[tr.length - 1].v, 20), 0, 0.31);
+});
+
+test("CompassFilter: плавный поворот — почти без отставания, плавно между пакетами", () => {
+  const f = new CompassFilter({ smoothingS: 0.1 });
+  const h = (t) => 30 * t; // 30 °/с
+  const tr = feedCompass(f, 0, 3, h);
+  const late = tr.filter((r) => r.t > 1);
+  const maxLag = Math.max(...late.map((r) => Math.abs(angleDiff(r.v, h(r.t)))));
+  assert.ok(maxLag < 4, `отставание ${maxLag}°`);
+  let maxStep = 0;
+  for (let i = 1; i < late.length; i++) maxStep = Math.max(maxStep, Math.abs(angleDiff(late[i - 1].v, late[i].v)));
+  assert.ok(maxStep < 1.5, `рывок ${maxStep}° за кадр`); // 30°/с ÷ 60 = 0.5°
+});
+
+test("CompassFilter: smoothing 0 — сразу; дрожание < 0.3° гасится; неизвестный курс", () => {
+  const f = new CompassFilter({ smoothingS: 0 });
+  f.ingest(10, 0);
+  f.update(0);
+  f.ingest(200, 0.1);
+  assert.equal(f.update(0.1), 200);
+  const g = new CompassFilter({ smoothingS: 0.1 });
+  const tr = feedCompass(g, 0, 3, (t) => 50 + 0.2 * Math.sin(t * 40));
+  const vals = new Set(tr.filter((r) => r.t > 0.5).map((r) => r.v));
+  assert.ok(vals.size <= 3, `дрожит: ${vals.size} разных значений`);
+  g.ingest(null, 3.1);
+  assert.equal(g.known, false);
 });

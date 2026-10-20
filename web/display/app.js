@@ -10,7 +10,7 @@ import { DEFAULT_SETTINGS, deepMerge } from "./map/defaults.js";
 import { TileStore, browserTileLoader } from "./map/tiles.js";
 import { MapRenderer, BG_COLOR } from "./map/renderer.js";
 import { activeLayers, planRequests } from "./map/layers.js";
-import { MotionModel, OrientationBlend, RotationRig, ZoomAnimator, vehicleAnchor } from "./map/motion.js";
+import { CompassFilter, MotionModel, OrientationBlend, RotationRig, ZoomAnimator, vehicleAnchor } from "./map/motion.js";
 import { Trail } from "./map/trail.js";
 import { CameraLayer } from "./map/camera.js";
 import { Link, wsUrl } from "./map/link.js";
@@ -80,6 +80,7 @@ const motion = new MotionModel();
 const zoomAnim = new ZoomAnimator(4.0);
 const orient = new OrientationBlend(1.2); // только положение машины; поворот — RotationRig
 const rig = new RotationRig();
+const compass = new CompassFilter(); // курс для компаса — без задержек
 const trail = new Trail();
 const store = new TileStore({
   loader: browserTileLoader,
@@ -107,6 +108,7 @@ function applySettings(s) {
   const ds = settings.display;
   orient.set(ds.orientation);
   rig.setOrientation(ds.orientation);
+  compass.configure(ds.compass_smoothing_s);
   rig.configure({
     vehicleLagS: ds.vehicle_rotation_lag_s,
     mapLagS: ds.map_rotation_lag_s,
@@ -123,6 +125,7 @@ function onMessage(msg) {
     const t = nowS();
     telemetry = msg;
     motion.ingest(msg, t);
+    compass.ingest(msg.heading ? msg.heading.deg : null, t);
     const d = msg.display || {};
     if (Number.isFinite(d.target_zoom)) zoomAnim.setTarget(clamp(d.target_zoom, 1, maxZoom()));
     camera.setVisible(d.mode === "camera", t);
@@ -236,6 +239,7 @@ function frame(tms) {
   const zoom = zoomAnim.update(dt) ?? clamp(tel.display.target_zoom ?? 17, 1, maxZoom());
   const ds = settings.display;
   const rot = rig.update(dt, m.headingTarget, m.speed ?? 0);
+  const compassDeg = compass.update(t);
   const pose = { ...vehicleAnchor(f, W, H, ds.vehicle_anchor_y ?? 0.67), bearing: rot.bearing, vehicleRot: rot.vehicleRot };
   const view = makeView({ cx: m.mx, cy: m.my, zoom, bearing: pose.bearing, ax: pose.ax, ay: pose.ay, w: W, h: H });
   const hasFix = !!(tel.gps && tel.gps.fix && tel.gps.fix !== "none" && tel.gps.lat != null);
@@ -258,6 +262,7 @@ function frame(tms) {
       bearingDeg: pose.bearing,
       headingDeg: m.headingKnown ? m.heading : null,
       vehicleHeadingDeg: m.headingKnown ? rot.vehicle : null,
+      compassHeadingDeg: compass.known ? compassDeg : null,
       headingSource: tel.heading?.source || "none",
       speedMps: m.speed,
       zoom,

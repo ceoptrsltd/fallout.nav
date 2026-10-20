@@ -16,6 +16,7 @@ export const DEFAULT_SETTINGS = {
     "vehicle_rotation_lag_s": 0.25,
     "map_rotation_lag_s": 1.5,
     "map_rotation_deadband_deg": 2.0,
+    "compass_smoothing_s": 0.1,
     "layers": {
       "imagery": true,
       "transport": true,
@@ -58,7 +59,7 @@ export const DEFAULT_SETTINGS = {
   "heading": {
     "gps_above_mps": 3.0,
     "blend_band_mps": 1.0,
-    "smoothing_s": 0.5
+    "smoothing_s": 0.15
   },
   "camera": {
     "sensor_w": 2592,
@@ -136,8 +137,20 @@ export const DEFAULT_SETTINGS = {
         ]
       ],
       "fitted_at": null,
-      "quality": null
-    }
+      "quality": null,
+      "deviation": [],
+      "source": null,
+      "samples": 0,
+      "coverage_pct": 0.0,
+      "rms_deg": null
+    },
+    "axes": "",
+    "auto_calibrate": true,
+    "auto_min_speed_mps": 5.0,
+    "auto_max_turn_rate_dps": 3.0,
+    "auto_max_hdop": 2.0,
+    "auto_min_coverage_pct": 60.0,
+    "auto_save_interval_s": 300.0
   },
   "gpio": {
     "button_gpio": 23,
