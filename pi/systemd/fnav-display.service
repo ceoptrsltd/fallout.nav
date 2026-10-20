@@ -1,5 +1,5 @@
 [Unit]
-Description=fallout.nav display (cage + Chromium kiosk on HDMI 720x576)
+Description=fallout.nav display (cage + Chromium kiosk on composite PAL 720x576)
 Documentation=file:///opt/fnav/app/pi/README.md
 After=systemd-user-sessions.service systemd-udevd.service seatd.service fnav-core.service plymouth-quit-wait.service
 Wants=fnav-core.service

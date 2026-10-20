@@ -23,27 +23,29 @@ camera_auto_detect=0
 # try cam1 instead of cam0 (the CM4-NANO-B has two connectors).
 dtoverlay=ov5647,cam0
 
-# --- Video: KMS, HDMI 720x576 @ 50 Hz for the HDMI->AV (PAL) converter -----------------
+# --- Video: KMS, composite PAL 720x576i straight into the WAECO RV-50 (channel 2) ---------
+# The composite DAC of the CM4 (module pin 111, VDAC_COMP) is wired by hand on the CM4-NANO-B:
+# signal -> video pin of the RV-50 DIN plug, GND -> its ground. No HDMI->AV converter needed.
 # Display auto-detect is not needed: there is one output and we set the mode ourselves.
 display_auto_detect=0
-# Full KMS driver (required by cage/Chromium/Wayland and the hardware codec).
+# Full KMS driver (required by cage/Chromium/Wayland and the hardware codec) with the composite encoder.
 # cma-256: 256 MB of contiguous memory for libcamera buffers (2592x1944 RAW + 1440x1080 YUV) and V3D.
-dtoverlay=vc4-kms-v3d,cma-256
-# The firmware does not pick a mode from EDID and does not add its own video= to cmdline:
-# the only source of the mode is our cmdline.txt (video=HDMI-A-1:720x576@50D + drm.edid_firmware).
-# The HDMI->AV converter may give no EDID or advertise 1080p - it does not matter to us.
+dtoverlay=vc4-kms-v3d,cma-256,composite
+# The mode comes only from cmdline.txt (video=Composite-1:720x576@50ie vc4.tv_norm=PAL).
 disable_fw_kms_setup=1
 # GPU/VideoCore memory for the hardware H.264 encoder (1440x1080). With KMS on CM4 this is codec memory.
 gpu_mem=128
-# Legacy (firmware/fkms) settings: KMS ignores them, but they select the same mode for the early
-# boot stage and act as a fallback. 720x576p50 = CEA mode 17.
-hdmi_force_hotplug=1
-hdmi_group=1
-hdmi_mode=17
-# Composite output (TV-out) is not used - the picture comes from the HDMI->AV converter.
-enable_tvout=0
+# Compute Modules need TV-out enabled explicitly; on CM4 this also switches HDMI off (one or the other).
+enable_tvout=1
+# Firmware/early-boot fallback: PAL (sdtv_mode=2), 4:3 (sdtv_aspect=1).
+sdtv_mode=2
+sdtv_aspect=1
 # Analog audio is not needed (saves resources, no stray ALSA devices).
 dtparam=audio=off
+#
+# Alternative - HDMI -> AV (PAL) converter on the mini-HDMI port: replace "composite" overlay option,
+# set enable_tvout=0, add hdmi_force_hotplug=1 / hdmi_group=1 / hdmi_mode=17 and use the HDMI tokens
+# from cmdline.txt.fnav.
 
 # --- USB ---------------------------------------------------------------------------------
 # On CM4 the USB host is already enabled by "[cm4] otg_mode=1" from the stock Raspberry Pi OS

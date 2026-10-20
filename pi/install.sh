@@ -362,6 +362,8 @@ for t in "${TOKENS[@]}"; do
     skip=0
     case "$t" in
         console=serial0,*|console=ttyAMA0,*|console=ttyS0,*|splash) skip=1 ;;
+        # video output is fully ours (cmdline.txt.fnav): drop stale tokens of the other output type
+        video=*|drm.edid_firmware=*|vc4.tv_norm=*) skip=1 ;;
     esac
     for a in "${ADD[@]}"; do
         case "$a" in video=*) key="${a%%:*}:" ;; *) key="${a%%=*}=" ;; esac

@@ -1,12 +1,14 @@
 # Tokens that install.sh adds to /boot/firmware/cmdline.txt (a single line there, one per line here).
 # Lines starting with # and empty lines are ignored. Re-running does not duplicate tokens.
 #
-# HDMI-A-1 (mini-HDMI on the CM4-NANO-B): 720x576 at 50 Hz; D = output forced on and digital,
-# even if the monitor/converter is absent or gives no hot-plug/EDID.
-video=HDMI-A-1:720x576@50D
-# Use our EDID (pi/tools/gen-edid.py -> /lib/firmware/edid/fnav-576p50.bin) instead of the real one:
-# the mode is then the standard CEA one (27 MHz) and not a CVT-computed one the converter may reject.
-drm.edid_firmware=HDMI-A-1:edid/fnav-576p50.bin
+# Video goes out of the CM4 composite DAC (module pin 111 VDAC_COMP, wired by hand on the CM4-NANO-B)
+# straight into channel 2 of the WAECO RV-50: PAL, 720x576 interlaced, 50 fields/s.
+video=Composite-1:720x576@50ie
+vc4.tv_norm=PAL
+# Alternative (HDMI -> AV converter on the mini-HDMI port): replace the two lines above with
+#   video=HDMI-A-1:720x576@50D
+#   drm.edid_firmware=HDMI-A-1:edid/fnav-576p50.bin
+# and switch the video section of config.txt.fnav back to HDMI.
 # Do not blank the console on a timer and hide the blinking cursor on tty1 before cage starts.
 consoleblank=0
 vt.global_cursor_default=0
