@@ -3,9 +3,51 @@ import { h, clear, isNum, compassWord, clone } from "../dom.js";
 import { api, errText } from "../api.js";
 import { SettingsForm, section } from "../form.js";
 import { store, on, applySettings } from "../store.js";
-import { toast, confirmDialog, poll, banner, segmented } from "../ui.js";
+import { toast, confirmDialog, poll, banner, segmented, switchEl } from "../ui.js";
 
 const IDENTITY = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+
+/** Per-sector point counts (36 x 10 deg, index 0 = north). Falls back to an even spread by coverage %. */
+function sectorCounts(cal) {
+  if (cal && Array.isArray(cal.sectors) && cal.sectors.length === 36) return cal.sectors;
+  const n = Math.round(((cal && cal.coverage_pct) || 0) * 36 / 100);
+  return Array.from({ length: 36 }, (_, i) => (Math.floor(((i + 1) * n) / 36) > Math.floor((i * n) / 36) ? 1 : 0));
+}
+
+function sectorDiagram() {
+  const C = 100, R1 = 94, R0 = 56;
+  const pt = (r, deg) => [C + r * Math.sin((deg * Math.PI) / 180), C - r * Math.cos((deg * Math.PI) / 180)];
+  const paths = [];
+  const svg = h("svg", { viewBox: "0 0 200 200", style: { width: "200px", height: "200px", flex: "none" } });
+  for (let i = 0; i < 36; i++) {
+    const a0 = i * 10 + 0.8, a1 = (i + 1) * 10 - 0.8;
+    const [x0, y0] = pt(R1, a0), [x1, y1] = pt(R1, a1), [x2, y2] = pt(R0, a1), [x3, y3] = pt(R0, a0);
+    const p = h("path", { d: `M${x0},${y0} A${R1},${R1} 0 0 1 ${x1},${y1} L${x2},${y2} A${R0},${R0} 0 0 0 ${x3},${y3} Z`, fill: "#5dff8a", "fill-opacity": 0.06, stroke: "#2b3427", "stroke-width": 0.8 });
+    p.append(h("title", null, ""));
+    paths.push(p);
+    svg.append(p);
+  }
+  const centerPct = h("text", { x: C, y: C + 2, "text-anchor": "middle", fill: "#dbe4d3", "font-size": 22, "font-family": "monospace", "font-weight": "bold" }, "0%");
+  svg.append(
+    centerPct,
+    h("text", { x: C, y: C + 17, "text-anchor": "middle", fill: "#8d9987", "font-size": 8.5, "font-family": "monospace" }, "coverage"),
+    h("text", { x: C, y: 9, "text-anchor": "middle", fill: "#ffb62e", "font-size": 9, "font-family": "monospace" }, "N"),
+    h("text", { x: 195, y: C + 3, "text-anchor": "end", fill: "#5d6858", "font-size": 8, "font-family": "monospace" }, "E"),
+    h("text", { x: C, y: 198, "text-anchor": "middle", fill: "#5d6858", "font-size": 8, "font-family": "monospace" }, "S"),
+    h("text", { x: 5, y: C + 3, fill: "#5d6858", "font-size": 8, "font-family": "monospace" }, "W"),
+  );
+  svg.update = (cal) => {
+    const counts = sectorCounts(cal);
+    const scale = Math.max(8, ...counts);
+    counts.forEach((c, i) => {
+      paths[i].setAttribute("fill-opacity", c > 0 ? (0.3 + 0.7 * Math.min(1, c / scale)).toFixed(2) : "0.06");
+      paths[i].firstChild.textContent = `${i * 10}-${(i + 1) * 10} deg: ${c} point${c === 1 ? "" : "s"}`;
+    });
+    centerPct.textContent = cal ? Math.round(cal.coverage_pct || 0) + "%" : "-";
+  };
+  return svg;
+}
+
 const SRC = { gps: "GPS", mag: "compass", blend: "compass + GPS", none: "none" };
 
 function declinationWidget(f) {
@@ -131,7 +173,7 @@ export async function mount(root) {
     clear(wiz);
     const order = ["idle", "running", "done"];
     const steps = h(".steps", null, ["1. Prepare", "2. Rotate", "3. Result"].map((t, i) => h("div" + (order.indexOf(wstate) === i ? ".cur" : order.indexOf(wstate) > i ? ".done" : ""), null, t)));
-    wiz.append(h("h2", { style: { marginBottom: "10px" } }, "Compass calibration"), steps);
+    wiz.append(h("h2", { style: { marginBottom: "10px" } }, "Manual calibration"), steps);
     if (wstate === "idle") {
       wiz.append(
         h("ol", { style: { margin: "0 0 12px", paddingLeft: "20px", lineHeight: "1.7" } },
@@ -218,6 +260,72 @@ export async function mount(root) {
     } catch (e) { toast("error", errText(e)); }
   }
 
+  // ── auto-calibration (while driving) ──
+  const autoSw = switchEl({ checked: !!store.settings?.compass?.auto_calibrate, label: "Enabled", onchange: async (v) => {
+    try {
+      const res = await api.patch("/api/settings", { compass: { auto_calibrate: v } });
+      if (res && res.compass) applySettings(res);
+      toast("ok", v ? "Auto-calibration enabled" : "Auto-calibration disabled");
+    } catch (e) { toast("error", errText(e)); autoSw.input.checked = !v; }
+  } });
+  const diagram = sectorDiagram();
+  const av = {};
+  const akv = (k, label) => { const v = h("span.v", null, "—"); av[k] = v; return [h("span.k", null, label), v]; };
+  const stateBadge = h("span.badge", null, "—");
+  const autoMsg = h(".hint", { style: { marginTop: "8px" } });
+  const AUTO_STATE = { disabled: ["disabled", ""], collecting: ["collecting", "warn"], fitted: ["fitted", "ok"], error: ["error", "bad"] };
+  const when = (t) => (t ? t.replace("T", " ").replace(/[+]\d\d:\d\d$|Z$/, "") : "never");
+  function renderAuto() {
+    const c = store.telemetry?.compass_cal;
+    const en = store.settings?.compass?.auto_calibrate;
+    if (en !== undefined) autoSw.input.checked = !!en;
+    diagram.update(c);
+    if (!c) { stateBadge.textContent = "no data"; stateBadge.className = "badge"; autoMsg.textContent = ""; return; }
+    const [txt, kind] = AUTO_STATE[c.state] || [c.state, ""];
+    stateBadge.textContent = txt;
+    stateBadge.className = "badge" + (kind ? " " + kind : "");
+    av.samples.textContent = String(c.samples ?? 0);
+    av.cov.textContent = isNum(c.coverage_pct) ? c.coverage_pct.toFixed(0) + " %" : "—";
+    av.rms.textContent = isNum(c.rms_deg) ? c.rms_deg.toFixed(1) + "°" : "—";
+    av.applied.textContent = c.applied ? "yes" : "no";
+    av.applied.className = "v " + (c.applied ? "green" : "");
+    av.saved.textContent = when(c.last_saved);
+    autoMsg.textContent = c.message || "";
+  }
+  async function resetAuto() {
+    if (!(await confirmDialog({ title: "Reset auto-calibration?", text: "The samples collected so far are discarded and collection starts over. The currently saved calibration is not changed.", okText: "Reset", danger: true }))) return;
+    try { await api.post("/api/compass/calibration/reset-auto"); toast("ok", "Auto-calibration samples cleared"); } catch (e) { toast("error", errText(e)); }
+  }
+  const autoCard = h(".card", null,
+    h(".card-head", null, h("h2", null, "Auto-calibration (while driving)"), stateBadge, autoSw),
+    h(".hint", { style: { margin: "0 0 12px" } }, "Collects samples while driving straight above 5 m/s and fits the compass to the GPS course. Drive in different directions to fill the circle."),
+    h("div", { style: { display: "flex", gap: "24px", flexWrap: "wrap", alignItems: "center" } },
+      diagram,
+      h("div", { style: { flex: "1 1 280px" } },
+        h(".kv", null, akv("samples", "Samples"), akv("cov", "Direction coverage"), akv("rms", "RMS error"), akv("applied", "Applied now"), akv("saved", "Last saved")),
+        autoMsg,
+        h("div.btnrow", { style: { marginTop: "12px" } }, h("button.btn.danger", { type: "button", onclick: resetAuto }, "Reset auto-calibration")),
+      ),
+    ),
+  );
+
+  // ── saved calibration ──
+  const sv = {};
+  const skv = (k, label) => { const v = h("span.v", null, "—"); sv[k] = v; return [h("span.k", null, label), v]; };
+  const savedCard = h(".card", null, h("h2", null, "Saved calibration"),
+    h(".kv", null, skv("source", "Source"), skv("when", "Calibrated"), skv("quality", "Quality"), skv("rms", "RMS error"), skv("cov", "Coverage"), skv("samples", "Samples"), skv("offset", "Offset (hard iron), µT"), skv("dev", "Deviation A, B, C, D, E (°)")));
+  function renderSaved() {
+    const c = store.settings?.compass?.calibration || {};
+    sv.source.textContent = c.source === "auto" ? "auto (GPS course)" : c.source === "manual" ? "manual" : "none";
+    sv.when.textContent = when(c.fitted_at);
+    sv.quality.textContent = isNum(c.quality) ? (c.quality * 100).toFixed(0) + " %" : "—";
+    sv.rms.textContent = isNum(c.rms_deg) ? c.rms_deg.toFixed(1) + "°" : "—";
+    sv.cov.textContent = c.coverage_pct ? c.coverage_pct.toFixed(0) + " %" : "—";
+    sv.samples.textContent = c.samples ? String(c.samples) : "—";
+    sv.offset.textContent = (c.offset || []).map((x) => x.toFixed(1)).join(" ; ") || "—";
+    sv.dev.textContent = c.deviation && c.deviation.length ? c.deviation.map((x) => x.toFixed(2)).join(" ; ") : "not applied";
+  }
+
   // ── settings ──
   const form = new SettingsForm();
   const f = (s) => form.add(s);
@@ -231,10 +339,20 @@ export async function mount(root) {
     f({ path: "compass.rate_hz", label: "Polling rate", type: "number", min: 1, max: 100, step: 1, unit: "Hz" }),
     f({ path: "compass.i2c_bus", label: "I²C bus", type: "number", min: 0, step: 1 }),
     f({ path: "compass.address", label: "I²C address", hint: "Empty = chip default (IST8310 = 14 = 0x0E)", type: "number", nullable: true, min: 0, max: 127, step: 1 }),
+    h("details", { style: { marginTop: "12px" } },
+      h("summary", { style: { cursor: "pointer", color: "var(--amber)", padding: "6px 0" } }, "Advanced settings"),
+      f({ path: "compass.axes", label: "Axis override", hint: "Format \"-x,-y,-z\"; empty = chip default", type: "text", placeholder: "-x,-y,-z",
+        validate: (v) => { const t = String(v || "").trim().toLowerCase(); if (!t) return null; const p = t.split(",").map((x) => x.trim()); return p.length === 3 && p.every((x) => /^[-+]?[xyz]$/.test(x)) && new Set(p.map((x) => x.replace(/^[-+]/, ""))).size === 3 ? null : "Use three distinct axes, e.g. -x,-y,-z"; } }),
+      f({ path: "compass.auto_min_speed_mps", label: "Auto: minimum speed", hint: "Samples are taken only above this speed", type: "number", min: 1, step: 0.5, unit: "m/s" }),
+      f({ path: "compass.auto_max_turn_rate_dps", label: "Auto: max turn rate", hint: "Only near-straight driving counts", type: "number", min: 0.1, step: 0.1, unit: "°/s" }),
+      f({ path: "compass.auto_max_hdop", label: "Auto: max HDOP", hint: "Only with a good GPS fix", type: "number", min: 0.1, step: 0.1 }),
+      f({ path: "compass.auto_min_coverage_pct", label: "Auto: apply at coverage", hint: "Fit is applied once this much of the circle is covered", type: "number", min: 10, max: 100, step: 1, unit: "%" }),
+      f({ path: "compass.auto_save_interval_s", label: "Auto: save interval", hint: "How often an improved calibration is saved", type: "number", min: 10, step: 10, unit: "s" }),
+    ),
     form.bar,
   );
 
-  root.append(h(".page-head", null, h("h1", null, "Compass")), h(".grid.g2", null, headCard, magCard), wiz, setCard);
+  root.append(h(".page-head", null, h("h1", null, "Compass")), autoCard, savedCard, h(".grid.g2", null, headCard, magCard), setCard, wiz);
 
   try {
     const s = await api.get("/api/compass/calibration");
@@ -243,7 +361,9 @@ export async function mount(root) {
   } catch { /* */ }
   renderWiz();
   live();
-  const offT = on("telemetry", live);
-  const offS = on("settings", () => { if (wstate === "idle") renderWiz(); });
+  renderAuto();
+  renderSaved();
+  const offT = on("telemetry", () => { live(); renderAuto(); });
+  const offS = on("settings", () => { renderSaved(); renderAuto(); if (wstate === "idle") renderWiz(); });
   return () => { offT(); offS(); stopPoll(); form.destroy(); };
 }

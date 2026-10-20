@@ -177,6 +177,16 @@ def zoom_for(speed: float) -> float:
     return z
 
 
+def fake_sectors(cov: float, samples: int) -> list[int]:
+    """Plausible per-sector counts: driving along a few road directions fills those sectors first."""
+    n = round(cov * 36 / 100)
+    order = [3, 21, 12, 30, 4, 22, 13, 31, 2, 20, 11, 29, 5, 23, 14, 32, 1, 19, 10, 28, 6, 24, 15, 33, 0, 18, 9, 27, 7, 25, 16, 34, 8, 26, 17, 35]
+    out = [0] * 36
+    for rank, sec in enumerate(order[:n]):
+        out[sec] = max(1, int(samples / max(n, 1) * (1.6 - rank / max(n, 1))))
+    return out
+
+
 def build_telemetry() -> dict:
     snap = hub.snapshot()
     g = snap.gps
@@ -205,11 +215,15 @@ def build_telemetry() -> dict:
         free_gb=18.4,
         time_synced=True,
     )
+    cal = snap.compass_cal
+    if cal is not None and not cal.sectors:
+        cal = cal.model_copy(update={"sectors": fake_sectors(cal.coverage_pct, cal.samples)})
     tel = Telemetry(
         t=t,
         gps=g,
         heading=snap.heading,
         compass=snap.compass,
+        compass_cal=cal,
         display=DisplayState(mode=mode, reason=reason, target_zoom=zoom_for(spd), orientation=settings.display.orientation),
         camera=cam,
         disk=DiskStatus(total_gb=28.9, free_gb=18.4, recordings_gb=cam.recordings_gb, tiles_mb=tiles_state["size_mb"]),
@@ -573,6 +587,12 @@ async def calib_start():
 @app.post("/api/compass/calibration/cancel")
 async def calib_cancel():
     hub.calibration_cancel()
+    return {"ok": True}
+
+
+@app.post("/api/compass/calibration/reset-auto")
+async def calib_reset_auto():
+    hub.auto_calibration_reset()
     return {"ok": True}
 
 
