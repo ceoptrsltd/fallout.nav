@@ -2,7 +2,7 @@
 Description=fallout.nav camera (Picamera2: recorder + MediaMTX publisher + MJPEG)
 Documentation=file:///opt/fnav/app/pi/README.md
 # Ordering only, NOT a dependency: recording must not depend on MediaMTX, the network or fnav-core.
-After=local-fs.target mediamtx.service chrony.service
+After=local-fs.target
 RequiresMountsFor=/var/lib/fnav
 StartLimitIntervalSec=0
 

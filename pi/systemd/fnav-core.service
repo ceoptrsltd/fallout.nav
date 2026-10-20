@@ -1,8 +1,8 @@
 [Unit]
 Description=fallout.nav core (web, API, WebSocket, tiles, sensors)
 Documentation=file:///opt/fnav/app/pi/README.md
-After=network-online.target gpsd.service chrony.service
-Wants=network-online.target gpsd.service
+After=gpsd.service
+Wants=gpsd.service
 StartLimitIntervalSec=0
 
 [Service]
