@@ -230,11 +230,12 @@ function drawCamera(g, dist) {
 
 // ── симуляция поездки ────────────────────────────────────────────────────
 
-const sim = { t: 0, x: 300, y: 300, course: 30, veh: 30, bear: 30, bearV: 0, bearTarget: 30, speed: 12, dist: 0, hist: [] };
+const sim = { t: 0, x: 300, y: 300, course: 30, veh: 30, comp: 30, bear: 30, bearV: 0, bearTarget: 30, speed: 12, dist: 0, hist: [] };
 
-// Эффект поворота как у B (docs/contracts/display.md): иконка догоняет курс быстро,
+// Эффект поворота как у B (docs/contracts/display.md): компас — почти без сглаживания (~0.1 с),
+// иконка догоняет курс быстро,
 // карта — критически демпфированной пружиной, мелкие изменения (deadband) карту не крутят.
-const RIG = { vehicleLag: 0.25, mapLag: 1.5, deadband: 4 };
+const RIG = { compassLag: 0.1, vehicleLag: 0.25, mapLag: 1.5, deadband: 4 };
 const TURN = { every: 7, dur: 1.6, pattern: [90, 90, -90, 90, -90, -90, 90, 90] };
 const smooth = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
 
@@ -255,6 +256,7 @@ function stepSim(dt) {
   // развёртка, чтобы фильтры не крутили «длинной дорогой»
   sim.course = sim.veh + ((((target - sim.veh) % 360) + 540) % 360) - 180;
   if (dt > 0) {
+    sim.comp += (sim.course - sim.comp) * (1 - Math.exp(-dt / RIG.compassLag));
     sim.veh += (sim.course - sim.veh) * (1 - Math.exp(-dt / RIG.vehicleLag));
     if (Math.abs(sim.course - sim.bearTarget) > RIG.deadband) sim.bearTarget = sim.course;
     else if (Math.abs(sim.course - sim.bearTarget) > 0.5) sim.bearTarget += (sim.course - sim.bearTarget) * dt * 0.3;
@@ -297,6 +299,7 @@ function makeState(cfg, now) {
   const norm = (a) => ((a % 360) + 360) % 360;
   const headingDeg = "headingDeg" in o ? o.headingDeg : norm(sim.course);
   const vehicleHeadingDeg = headingDeg == null ? null : norm(sim.veh);
+  const compassHeadingDeg = headingDeg == null ? null : norm(sim.comp);
   const headingSource = o.headingSource ?? src;
   const bearingDeg = orientation === "north_up" ? 0 : norm(sim.bear);
   const sats = o.sats ?? 9 + Math.round(3 * Math.sin(sim.t / 7));
@@ -330,6 +333,7 @@ function makeState(cfg, now) {
       bearingDeg,
       headingDeg,
       vehicleHeadingDeg,
+      compassHeadingDeg,
       headingSource,
       speedMps: "speedMps" in o ? o.speedMps : sim.speed,
       zoom: 18,

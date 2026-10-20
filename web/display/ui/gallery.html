@@ -76,10 +76,9 @@
   <p class="muted note">Heading up: map and scale rotate, the car sits in the lower third, current heading is at the top.
     North up: the scale is fixed (N at the top), the heading needle/pointer moves, the car is centred.
     The chosen style is the <code>display.compass_style</code> setting. Dashed frame = 5% safe area.<br>
-    Turn effect (heading up): on a 90° turn the car icon rotates first (fast), the map follows on a damped spring.
-    The compass scale always follows the map (N on the scale = north on the map); the white heading bug / needle /
-    tape marker shows the car's own heading, swings aside during the turn and returns under the top mark
-    as the map catches up. Digits show the course.</p>
+    Turn effect (heading up): on a 90° turn the compass turns immediately (minimal smoothing, ~0.1 s),
+    the car icon rotates fast, and the map follows on a damped spring. The compass does not wait for the map:
+    the current heading is always under the fixed top mark.</p>
   <div class="grid" id="compasses"></div>
 
   <h2>Vehicle icon</h2>
