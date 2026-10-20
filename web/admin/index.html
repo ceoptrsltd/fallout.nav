@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fallout.nav</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%235dff8a' d='M12 2 4.5 20.3 12 17l7.5 3.3z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/admin/css/app.css">
+</head>
+<body>
+  <div id="app">
+    <aside class="side">
+      <div class="brand">FALLOUT.NAV<small>dashcam &amp; navigation</small></div>
+      <nav class="nav" id="nav"></nav>
+      <div class="side-foot">
+        <button class="btn sm" id="logout" type="button">Log out</button>
+      </div>
+    </aside>
+    <div class="main">
+      <header class="statusbar" id="statusbar"></header>
+      <main id="view"></main>
+    </div>
+  </div>
+  <div id="toasts" aria-live="polite"></div>
+  <noscript>JavaScript is required.</noscript>
+  <script type="module" src="/admin/js/shell.js"></script>
+</body>
+</html>

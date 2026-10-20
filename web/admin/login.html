@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — fallout.nav</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%235dff8a' d='M12 2 4.5 20.3 12 17l7.5 3.3z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/admin/css/app.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="brand">FALLOUT.NAV<small>control panel sign-in</small></div>
+      <form id="form" autocomplete="on">
+        <label for="pw" class="dim">Device password</label>
+        <input id="pw" name="password" type="password" autocomplete="current-password" autofocus required>
+        <div class="err" id="err" role="alert"></div>
+        <button class="btn primary" id="go" type="submit">Sign in</button>
+      </form>
+    </div>
+  </div>
+  <script type="module" src="/admin/js/login.js"></script>
+</body>
+</html>
