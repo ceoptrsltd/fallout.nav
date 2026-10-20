@@ -1,0 +1,54 @@
+# >>> fnav
+# Managed by pi/install.sh: every run replaces everything between the markers.
+# Do not edit this block on the device - edit pi/boot/config.txt.fnav in the repository.
+# Same-named settings outside the block are commented out by install.sh ("# fnav-disabled: " prefix).
+# The original file is kept as /boot/firmware/config.txt.fnav-orig.
+[all]
+
+# --- UART for the GPS (Holybro M8N on GPIO14/15, pins 8/10) ----------------------------
+# Enable the UART on GPIO14/15.
+enable_uart=1
+# Give the full PL011 UART (/dev/ttyAMA0) to GPIO14/15 and disable Bluetooth.
+# Without it GPIO14/15 get the mini-UART whose baud rate depends on the core clock.
+dtoverlay=disable-bt
+
+# --- I2C for the IST8310 compass (address 0x0E, GPIO2/3) -------------------------------
+# Enable I2C-1 (/dev/i2c-1). The i2c-dev module is loaded via /etc/modules-load.d/fnav.conf.
+dtparam=i2c_arm=on
+
+# --- OV5647 camera on CSI0 -------------------------------------------------------------
+# Camera auto-detect is off: OV5647 on a plain ribbon has no ID EEPROM, so declare it explicitly.
+camera_auto_detect=0
+# OV5647 driver on port CAM0. If the camera is not seen (rpicam-hello --list-cameras is empty),
+# try cam1 instead of cam0 (the CM4-NANO-B has two connectors).
+dtoverlay=ov5647,cam0
+
+# --- Video: KMS, HDMI 720x576 @ 50 Hz for the HDMI->AV (PAL) converter -----------------
+# Display auto-detect is not needed: there is one output and we set the mode ourselves.
+display_auto_detect=0
+# Full KMS driver (required by cage/Chromium/Wayland and the hardware codec).
+# cma-256: 256 MB of contiguous memory for libcamera buffers (2592x1944 RAW + 1440x1080 YUV) and V3D.
+dtoverlay=vc4-kms-v3d,cma-256
+# The firmware does not pick a mode from EDID and does not add its own video= to cmdline:
+# the only source of the mode is our cmdline.txt (video=HDMI-A-1:720x576@50D + drm.edid_firmware).
+# The HDMI->AV converter may give no EDID or advertise 1080p - it does not matter to us.
+disable_fw_kms_setup=1
+# GPU/VideoCore memory for the hardware H.264 encoder (1440x1080). With KMS on CM4 this is codec memory.
+gpu_mem=128
+# Legacy (firmware/fkms) settings: KMS ignores them, but they select the same mode for the early
+# boot stage and act as a fallback. 720x576p50 = CEA mode 17.
+hdmi_force_hotplug=1
+hdmi_group=1
+hdmi_mode=17
+# Composite output (TV-out) is not used - the picture comes from the HDMI->AV converter.
+enable_tvout=0
+# Analog audio is not needed (saves resources, no stray ALSA devices).
+dtparam=audio=off
+
+# --- USB ---------------------------------------------------------------------------------
+# On CM4 the USB host is already enabled by "[cm4] otg_mode=1" from the stock Raspberry Pi OS
+# config.txt (xHCI controller), so the USB-A ports of the CM4-NANO-B work without extra lines.
+# The Waveshare wiki suggests dwc2 in host mode instead. It is MUTUALLY EXCLUSIVE with otg_mode=1:
+# enable it only if USB-A does not work, and comment out "otg_mode=1" in the [cm4] section at the same time.
+#dtoverlay=dwc2,dr_mode=host
+# <<< fnav

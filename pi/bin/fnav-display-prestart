@@ -1,0 +1,35 @@
+#!/bin/bash
+# Preparation for fnav-display (runs as user fnav, from ExecStartPre).
+# 1) wait until fnav-core serves /display/ (otherwise Chromium would sit on an error page);
+# 2) remove traces of an unclean shutdown from the Chromium profile (stale lock files, "Crashed").
+set -u
+
+URL="${FNAV_DISPLAY_READY_URL:-http://127.0.0.1/display/}"
+WAIT_S="${FNAV_DISPLAY_WAIT_S:-120}"
+PROFILE="${FNAV_CHROMIUM_PROFILE:-/var/lib/fnav/chromium}"
+
+mkdir -p "$PROFILE" "${XDG_CACHE_HOME:-/run/fnav-display/cache}/chromium" "${XDG_CONFIG_HOME:-/var/lib/fnav/config}"
+
+# SingletonLock/Socket/Cookie are left behind after a power cut.
+rm -f "$PROFILE"/SingletonLock "$PROFILE"/SingletonSocket "$PROFILE"/SingletonCookie
+
+# exited_cleanly=false / exit_type=Crashed trigger the "Restore pages?" bubble.
+for f in "$PROFILE/Default/Preferences" "$PROFILE/Local State"; do
+    [ -f "$f" ] || continue
+    sed -i \
+        -e 's/"exited_cleanly":false/"exited_cleanly":true/' \
+        -e 's/"exit_type":"Crashed"/"exit_type":"Normal"/' \
+        "$f" || true
+done
+
+# Wait for core.
+deadline=$((SECONDS + WAIT_S))
+while [ "$SECONDS" -lt "$deadline" ]; do
+    if curl -fsS -o /dev/null --max-time 2 "$URL"; then
+        echo "fnav-core is up: $URL"
+        exit 0
+    fi
+    sleep 1
+done
+echo "fnav-core did not answer within ${WAIT_S}s: $URL" >&2
+exit 1

@@ -1,0 +1,9 @@
+// fallout.nav: the fnav user (group netdev) may manage NetworkManager without a password:
+// nmcli connection add/modify/delete, device wifi list/rescan/connect (web UI: System -> Wi-Fi).
+// Installed as /etc/polkit-1/rules.d/50-fnav-networkmanager.rules.
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0 &&
+        subject.user === "fnav" && subject.isInGroup("netdev")) {
+        return polkit.Result.YES;
+    }
+});

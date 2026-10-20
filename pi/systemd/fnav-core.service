@@ -1,0 +1,43 @@
+[Unit]
+Description=fallout.nav core (web, API, WebSocket, tiles, sensors)
+Documentation=file:///opt/fnav/app/pi/README.md
+After=network-online.target gpsd.service chrony.service
+Wants=network-online.target gpsd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fnav
+Group=fnav
+WorkingDirectory=/opt/fnav/app
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPYCACHEPREFIX=/var/cache/fnav/pycache
+Environment=FNAV_DATA_DIR=/var/lib/fnav
+Environment=FNAV_SECRETS=/etc/fnav/secrets.env
+# Password hash and session secret (0600, owned by fnav). "-" = do not fail if the file is missing yet.
+EnvironmentFile=-/etc/fnav/secrets.env
+ExecStart=/opt/fnav/venv/bin/python -m fnav.core
+
+# Port 80 without root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+# NoNewPrivileges and CapabilityBoundingSet are deliberately NOT set: core runs "sudo systemctl reboot" and nmcli.
+
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+
+# Resources: the web part is light, and recording matters more than it does.
+MemoryHigh=384M
+MemoryMax=512M
+TasksMax=256
+LimitNOFILE=4096
+OOMScoreAdjust=-100
+
+# Moderate sandboxing (sudo/nmcli/journalctl keep working).
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/fnav /var/cache/fnav /etc/fnav
+
+[Install]
+WantedBy=multi-user.target

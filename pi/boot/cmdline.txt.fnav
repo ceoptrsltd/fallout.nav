@@ -1,0 +1,12 @@
+# Tokens that install.sh adds to /boot/firmware/cmdline.txt (a single line there, one per line here).
+# Lines starting with # and empty lines are ignored. Re-running does not duplicate tokens.
+#
+# HDMI-A-1 (mini-HDMI on the CM4-NANO-B): 720x576 at 50 Hz; D = output forced on and digital,
+# even if the monitor/converter is absent or gives no hot-plug/EDID.
+video=HDMI-A-1:720x576@50D
+# Use our EDID (pi/tools/gen-edid.py -> /lib/firmware/edid/fnav-576p50.bin) instead of the real one:
+# the mode is then the standard CEA one (27 MHz) and not a CVT-computed one the converter may reject.
+drm.edid_firmware=HDMI-A-1:edid/fnav-576p50.bin
+# Do not blank the console on a timer and hide the blinking cursor on tty1 before cage starts.
+consoleblank=0
+vt.global_cursor_default=0

@@ -1,0 +1,53 @@
+#!/bin/bash
+# Install the Python dependencies of fnav into /opt/fnav/venv (idempotent).
+# Reads pyproject.toml of the deployed app: [project].dependencies plus the "pi" extra
+# (minus the packages that come from apt: gps, lgpio, gpiozero).
+# A hash of pyproject.toml is stored in the venv; if it did not change, pip is not run.
+#
+# Usage: fnav-pip-sync [--force]
+set -euo pipefail
+
+APP="${FNAV_APP_DIR:-/opt/fnav/app}"
+VENV="${FNAV_VENV:-/opt/fnav/venv}"
+PYPROJECT="$APP/pyproject.toml"
+STAMP="$VENV/.fnav-deps.sha256"
+
+[ -x "$VENV/bin/python" ] || { echo "fnav-pip-sync: no venv at $VENV" >&2; exit 1; }
+[ -f "$PYPROJECT" ] || { echo "fnav-pip-sync: no $PYPROJECT" >&2; exit 1; }
+
+force=0
+[ "${1:-}" = "--force" ] && force=1
+
+want="$(sha256sum "$PYPROJECT" | cut -d' ' -f1)"
+if [ "$force" -eq 0 ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$want" ]; then
+    echo "Python dependencies unchanged (pyproject.toml hash matches), skipping pip."
+    exit 0
+fi
+
+reqs="$(mktemp)"
+trap 'rm -f "$reqs"' EXIT
+
+"$VENV/bin/python" -I - "$PYPROJECT" > "$reqs" <<'PY'
+import re
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as f:
+    project = tomllib.load(f)["project"]
+
+# Provided by apt (python3-gps, python3-lgpio, python3-gpiozero); the PyPI "gps" is a different project.
+APT_PROVIDED = {"gps", "lgpio", "gpiozero"}
+
+reqs = list(project.get("dependencies", []))
+reqs += project.get("optional-dependencies", {}).get("pi", [])
+for r in reqs:
+    name = re.match(r"[A-Za-z0-9_.\-]+", r).group(0).lower().replace("_", "-")
+    if name not in APT_PROVIDED:
+        print(r)
+PY
+
+echo "Installing Python dependencies into $VENV:"
+sed 's/^/  /' "$reqs"
+"$VENV/bin/python" -m pip install --disable-pip-version-check --no-input --prefer-binary -r "$reqs"
+echo "$want" > "$STAMP"
+echo "Python dependencies are in place."

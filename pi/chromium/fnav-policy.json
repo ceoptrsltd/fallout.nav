@@ -1,0 +1,18 @@
+{
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "PasswordManagerEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "TranslateEnabled": false,
+  "MetricsReportingEnabled": false,
+  "SafeBrowsingProtectionLevel": 0,
+  "DefaultBrowserSettingEnabled": false,
+  "BackgroundModeEnabled": false,
+  "ComponentUpdatesEnabled": false,
+  "DeveloperToolsAvailability": 2,
+  "AutoplayAllowed": true,
+  "PromotionalTabsEnabled": false,
+  "ShowHomeButton": false,
+  "HardwareAccelerationModeEnabled": true
+}

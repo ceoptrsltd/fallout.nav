@@ -1,0 +1,54 @@
+# MediaMTX for fallout.nav (installed as /etc/fnav/mediamtx.yml).
+# Role: WebRTC streaming to the laptop only. Recording is done by fnav-camera (MPEG-TS + fsync);
+# recording is OFF here.
+# Written for MediaMTX v1.12.x. An unknown key makes MediaMTX refuse to start (see journalctl -u mediamtx).
+
+# Moderate logging: warnings and errors only, to stdout -> journald.
+logLevel: warn
+logDestinations: [stdout]
+
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 512
+
+# Access: the stream can be published and read only from this very device
+# (fnav-camera publishes over RTSP, fnav-core proxies WHEP from 127.0.0.1).
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: ['127.0.0.1', '::1']
+    permissions:
+      - action: publish
+      - action: read
+
+# Everything else is off.
+api: no
+metrics: no
+pprof: no
+playback: no
+rtmp: no
+hls: no
+srt: no
+
+# RTSP - localhost only (fnav-camera pushes here).
+rtsp: yes
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+rtspEncryption: "no"
+
+# WebRTC: HTTP (WHEP) on localhost only - fnav-core exposes it (/api/camera/whep) after authentication.
+# Media goes straight to the laptop over ICE UDP :8189 on all interfaces.
+webrtc: yes
+webrtcAddress: 127.0.0.1:8889
+webrtcEncryption: no
+webrtcLocalUDPAddress: :8189
+# No ICE over TCP (latency); no STUN needed - laptop and Pi share the hotspot network.
+webrtcLocalTCPAddress: ''
+webrtcIPsFromInterfaces: yes
+
+paths:
+  cam:
+    source: publisher
+    # Recording is off: the fnav-camera recorder owns it.
+    record: no

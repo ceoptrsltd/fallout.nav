@@ -1,0 +1,90 @@
+[Unit]
+Description=fallout.nav display (cage + Chromium kiosk on HDMI 720x576)
+Documentation=file:///opt/fnav/app/pi/README.md
+After=systemd-user-sessions.service systemd-udevd.service seatd.service fnav-core.service plymouth-quit-wait.service
+Wants=fnav-core.service
+# seatd gives cage access to DRM and input without a logind session (fnav is a system user).
+Requires=seatd.service
+# tty1 belongs to us, not to getty/lightdm.
+Conflicts=getty@tty1.service lightdm.service
+After=getty@tty1.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fnav
+Group=fnav
+SupplementaryGroups=video render input tty
+
+# /run/fnav-display (0700, owned by fnav): XDG_RUNTIME_DIR for the Wayland socket and the Chromium
+# disk cache in tmpfs.
+RuntimeDirectory=fnav-display
+RuntimeDirectoryMode=0700
+
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
+
+Environment=HOME=/var/lib/fnav
+Environment=XDG_RUNTIME_DIR=/run/fnav-display
+Environment=XDG_CONFIG_HOME=/var/lib/fnav/config
+Environment=XDG_CACHE_HOME=/run/fnav-display/cache
+Environment=LIBSEAT_BACKEND=seatd
+# cage starts without a keyboard/mouse (otherwise wlroots/libinput refuses to start).
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+# Optional extra Chromium flags and overrides: /etc/fnav/display.env (FNAV_CHROMIUM_EXTRA=...)
+EnvironmentFile=-/etc/fnav/display.env
+
+# Wait for core (up to 120 s); clean up traces of an unclean shutdown in the Chromium profile.
+ExecStartPre=/bin/bash /opt/fnav/app/pi/bin/fnav-display-prestart
+# No mouse cursor: cage draws none without a pointer device, and the page also sets cursor:none.
+# Chromium: profile on eMMC (/var/lib/fnav/chromium), 100 MB disk cache in tmpfs to spare the eMMC.
+# --ozone-platform=wayland: we run under cage. The GPU flags are for 2D canvas / rasterization on V3D.
+ExecStart=/usr/bin/cage -d -- chromium \
+    --kiosk \
+    --noerrdialogs \
+    --disable-infobars \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-translate \
+    --disable-session-crashed-bubble \
+    --hide-crash-restore-bubble \
+    --disable-sync \
+    --disable-background-networking \
+    --disable-component-update \
+    --password-store=basic \
+    --autoplay-policy=no-user-gesture-required \
+    --overscroll-history-navigation=0 \
+    --force-device-scale-factor=1 \
+    --window-size=720,576 \
+    --window-position=0,0 \
+    --check-for-update-interval=31536000 \
+    --user-data-dir=/var/lib/fnav/chromium \
+    --disk-cache-dir=/run/fnav-display/cache/chromium \
+    --disk-cache-size=104857600 \
+    --ozone-platform=wayland \
+    --ignore-gpu-blocklist \
+    --enable-gpu-rasterization \
+    --enable-zero-copy \
+    $FNAV_CHROMIUM_EXTRA \
+    "http://127.0.0.1/display/?pal=1"
+
+Restart=always
+RestartSec=3
+TimeoutStartSec=180
+TimeoutStopSec=10
+
+# The display is the first to go under memory pressure: recording matters more than the picture.
+Nice=5
+OOMScoreAdjust=500
+MemoryHigh=900M
+MemoryMax=1200M
+TasksMax=1024
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

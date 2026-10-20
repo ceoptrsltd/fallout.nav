@@ -1,0 +1,7 @@
+# fallout.nav: hardware access for the unprivileged service user fnav.
+# (The i2c/gpio/video/render groups are already set up on Raspberry Pi OS; the rules are repeated
+# in case they are missing, e.g. on plain Debian. Installed as /etc/udev/rules.d/90-fnav.rules.)
+KERNEL=="i2c-[0-9]*", GROUP="i2c", MODE="0660"
+SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"
+SUBSYSTEM=="dma_heap", GROUP="video", MODE="0660"
+# GPS UART: ttyAMA0 belongs to dialout (the default) and fnav is a member of dialout.

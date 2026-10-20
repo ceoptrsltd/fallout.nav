@@ -1,0 +1,67 @@
+#!/bin/bash
+# Device side of pi/deploy.sh. Runs as root from the unpacked upload directory.
+#
+# Usage: sudo bash fnav-deploy-remote <unpacked-repo-dir>
+# Environment:
+#   FNAV_RESTART   services to restart, in order (default: "fnav-core fnav-camera fnav-display";
+#                  empty string = restart nothing)
+set -euo pipefail
+
+SRC="${1:?usage: fnav-deploy-remote <unpacked-repo-dir>}"
+APP=/opt/fnav/app
+RESTART="${FNAV_RESTART-fnav-core fnav-camera fnav-display}"
+
+[ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
+[ -d "$SRC/pi" ] || { echo "no pi/ in $SRC" >&2; exit 1; }
+id fnav >/dev/null 2>&1 && [ -x /opt/fnav/venv/bin/python ] || {
+    echo "fnav is not installed on this device yet: run 'sudo ./pi/install.sh' first (see pi/README.md)" >&2
+    exit 1
+}
+
+echo "==> Syncing code to $APP"
+install -d -m 0755 "$APP"
+EXCLUDES=(/.git/ /.devdata/ /tests/ __pycache__/ '*.pyc' /.pytest_cache/ /.ruff_cache/ /.venv/ /venv/
+          /node_modules/ /.claude/ /secrets.env)
+if command -v rsync >/dev/null 2>&1; then
+    args=(-rlt --delete --chown=root:root --chmod=D755,F644)
+    for e in "${EXCLUDES[@]}"; do args+=(--exclude "$e"); done
+    rsync "${args[@]}" "$SRC"/ "$APP"/
+else
+    # rsync is installed by install.sh; this is only a fallback
+    find "$APP" -mindepth 1 -delete
+    cp -a "$SRC"/. "$APP"/
+    rm -rf "$APP/.git" "$APP/.devdata" "$APP/tests"
+    chown -R root:root "$APP"
+    chmod -R u=rwX,go=rX "$APP"
+fi
+chmod 0755 "$APP"/pi/install.sh "$APP"/pi/deploy.sh "$APP"/pi/bin/* 2>/dev/null || true
+
+changed="$(mktemp)"
+trap 'rm -f "$changed"' EXIT
+
+echo "==> System files (units, sudoers, ...)"
+bash "$APP/pi/bin/fnav-sync-system" --from "$APP" --changed-file "$changed"
+
+echo "==> Python dependencies"
+bash "$APP/pi/bin/fnav-pip-sync"
+
+echo "==> Restarting services"
+if grep -qx 'mediamtx.yml\|unit' "$changed" 2>/dev/null && systemctl is-enabled mediamtx >/dev/null 2>&1; then
+    systemctl restart mediamtx
+    echo "  mediamtx restarted"
+fi
+for s in $RESTART; do
+    if systemctl restart "$s"; then echo "  $s restarted"; else echo "  WARNING: $s failed to restart" >&2; fi
+done
+
+# Wait for core to answer (it serves /api/session without authentication).
+ok=0
+for _ in $(seq 1 30); do
+    if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1/api/session; then ok=1; break; fi
+    sleep 1
+done
+echo "==> Status"
+for s in mediamtx fnav-core fnav-camera fnav-display gpsd chrony; do
+    printf '  %-14s %s\n' "$s" "$(systemctl is-active "$s" 2>/dev/null || true)"
+done
+if [ "$ok" -eq 1 ]; then echo "  fnav-core answers on http://127.0.0.1/"; else echo "  WARNING: fnav-core did not answer within 30 s" >&2; fi

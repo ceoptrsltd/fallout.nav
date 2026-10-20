@@ -1,0 +1,36 @@
+[Unit]
+Description=fallout.nav camera (Picamera2: recorder + MediaMTX publisher + MJPEG)
+Documentation=file:///opt/fnav/app/pi/README.md
+# Ordering only, NOT a dependency: recording must not depend on MediaMTX, the network or fnav-core.
+After=local-fs.target mediamtx.service chrony.service
+RequiresMountsFor=/var/lib/fnav
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fnav
+Group=fnav
+SupplementaryGroups=video render
+WorkingDirectory=/opt/fnav/app
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPYCACHEPREFIX=/var/cache/fnav/pycache
+Environment=FNAV_DATA_DIR=/var/lib/fnav
+ExecStart=/opt/fnav/venv/bin/python -m fnav.camera
+
+Restart=always
+RestartSec=2
+# Give the recorder time to close the segment cleanly on stop/reboot.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Recording is the device's main job: higher priority, killed last.
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
+OOMScoreAdjust=-900
+LimitNOFILE=4096
+TasksMax=256
+# CMA/dma-buf memory is not accounted by cgroups, so no hard MemoryMax here.
+
+[Install]
+WantedBy=multi-user.target

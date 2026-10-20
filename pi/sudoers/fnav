@@ -1,0 +1,29 @@
+# fallout.nav: what the fnav user may run without a password. Installed as /etc/sudoers.d/fnav (0440).
+# Check with: visudo -cf pi/sudoers/fnav
+# Nothing extra: reboot/poweroff and control of the project's services.
+
+Cmnd_Alias FNAV_POWER = \
+    /usr/bin/systemctl reboot, \
+    /usr/bin/systemctl poweroff, \
+    /usr/bin/systemctl --no-block reboot, \
+    /usr/bin/systemctl --no-block poweroff
+
+Cmnd_Alias FNAV_SERVICES = \
+    /usr/bin/systemctl stop gpsd, \
+    /usr/bin/systemctl start gpsd, \
+    /usr/bin/systemctl restart gpsd, \
+    /usr/bin/systemctl stop gpsd.socket, \
+    /usr/bin/systemctl start gpsd.socket, \
+    /usr/bin/systemctl restart gpsd.socket, \
+    /usr/bin/systemctl stop fnav-camera, \
+    /usr/bin/systemctl start fnav-camera, \
+    /usr/bin/systemctl restart fnav-camera, \
+    /usr/bin/systemctl stop fnav-display, \
+    /usr/bin/systemctl start fnav-display, \
+    /usr/bin/systemctl restart fnav-display, \
+    /usr/bin/systemctl stop mediamtx, \
+    /usr/bin/systemctl start mediamtx, \
+    /usr/bin/systemctl restart mediamtx
+
+Defaults:fnav !requiretty
+fnav ALL=(root) NOPASSWD: FNAV_POWER, FNAV_SERVICES

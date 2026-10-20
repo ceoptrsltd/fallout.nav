@@ -1,0 +1,24 @@
+[Unit]
+Description=MediaMTX (WebRTC streaming of the camera feed; recording is done by fnav-camera)
+Documentation=https://github.com/bluenviron/mediamtx
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fnav
+Group=fnav
+ExecStart=/usr/local/bin/mediamtx /etc/fnav/mediamtx.yml
+Restart=always
+RestartSec=2
+MemoryMax=200M
+TasksMax=256
+LimitNOFILE=4096
+OOMScoreAdjust=100
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

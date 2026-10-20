@@ -1,0 +1,111 @@
+#!/bin/bash
+# Install the system-level files of fallout.nav from a repository copy (idempotent).
+# Used by pi/install.sh and by pi/bin/fnav-deploy-remote (pi/deploy.sh).
+#
+# Installs: systemd units and drop-ins, sysctl, sudoers, polkit, udev, NetworkManager config,
+# Chromium policy, /etc/fnav/mediamtx.yml, modules-load. Does NOT touch /boot, gpsd or chrony
+# (that is install.sh only).
+#
+# Usage: fnav-sync-system --from <repo-or-app-dir> [--changed-file FILE]
+#   --changed-file  write one tag per changed item (e.g. "unit", "mediamtx.yml") to FILE
+set -euo pipefail
+
+SRC=""
+CHANGED_FILE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --from) SRC="$2"; shift 2 ;;
+        --changed-file) CHANGED_FILE="$2"; shift 2 ;;
+        *) echo "fnav-sync-system: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+[ -n "$SRC" ] && [ -d "$SRC/pi" ] || { echo "fnav-sync-system: --from must point to a repo with pi/" >&2; exit 2; }
+[ "$(id -u)" -eq 0 ] || { echo "fnav-sync-system: must run as root" >&2; exit 1; }
+
+PI="$SRC/pi"
+CHANGED=()
+
+# put SRC DST [MODE] [TAG]: copy if different, remember the tag.
+put() {
+    local src="$1" dst="$2" mode="${3:-0644}" tag="${4:-other}"
+    [ -f "$src" ] || { echo "fnav-sync-system: missing $src" >&2; exit 1; }
+    install -d -m 0755 "$(dirname "$dst")"
+    if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+        chmod "$mode" "$dst"
+    else
+        install -m "$mode" -o root -g root "$src" "$dst"
+        CHANGED+=("$tag")
+        echo "  updated $dst"
+    fi
+}
+
+echo "Installing system files from $PI"
+
+# systemd
+for u in fnav-core fnav-camera fnav-display mediamtx; do
+    put "$PI/systemd/$u.service" "/etc/systemd/system/$u.service" 0644 unit
+done
+put "$PI/systemd/seatd.service.d/fnav.conf" /etc/systemd/system/seatd.service.d/fnav.conf 0644 unit
+put "$PI/systemd/NetworkManager-wait-online.service.d/fnav.conf" \
+    /etc/systemd/system/NetworkManager-wait-online.service.d/fnav.conf 0644 unit
+put "$PI/systemd/system.conf.d/90-fnav-watchdog.conf" /etc/systemd/system.conf.d/90-fnav-watchdog.conf 0644 reexec
+put "$PI/systemd/journald.conf.d/90-fnav.conf" /etc/systemd/journald.conf.d/90-fnav.conf 0644 journald
+
+# kernel / hardware
+put "$PI/sysctl/90-fnav.conf" /etc/sysctl.d/90-fnav.conf 0644 sysctl
+put "$PI/udev/90-fnav.rules" /etc/udev/rules.d/90-fnav.rules 0644 udev
+modules_tmp="$(mktemp)"
+printf '%s\n' '# fallout.nav: I2C character devices for the IST8310 compass' 'i2c-dev' > "$modules_tmp"
+put "$modules_tmp" /etc/modules-load.d/fnav.conf 0644 none
+rm -f "$modules_tmp"
+
+# sudoers: validate BEFORE installing; a broken file must never reach /etc/sudoers.d
+if command -v visudo >/dev/null 2>&1; then
+    visudo -cf "$PI/sudoers/fnav" >/dev/null || { echo "fnav-sync-system: pi/sudoers/fnav failed visudo -c" >&2; exit 1; }
+fi
+put "$PI/sudoers/fnav" /etc/sudoers.d/fnav 0440 sudoers
+
+# polkit, NetworkManager, Chromium policy
+put "$PI/polkit/50-fnav-networkmanager.rules" /etc/polkit-1/rules.d/50-fnav-networkmanager.rules 0644 polkit
+put "$PI/networkmanager/90-fnav-wifi.conf" /etc/NetworkManager/conf.d/90-fnav-wifi.conf 0644 nm
+put "$PI/chromium/fnav-policy.json" /etc/chromium/policies/managed/fnav.json 0644 none
+
+# /etc/fnav: owned by fnav so that core can rewrite secrets.env atomically; mediamtx.yml stays root-owned
+if id fnav >/dev/null 2>&1; then
+    install -d -m 0750 -o fnav -g fnav /etc/fnav
+else
+    install -d -m 0755 /etc/fnav
+fi
+put "$PI/mediamtx.yml" /etc/fnav/mediamtx.yml 0644 mediamtx.yml
+if [ ! -f /etc/fnav/display.env ]; then
+    cat > /etc/fnav/display.env <<'EOF'
+# fallout.nav: tunables for fnav-display (EnvironmentFile; restart: sudo systemctl restart fnav-display).
+# Extra Chromium flags, space separated, e.g. to try the ANGLE GLES backend:
+#   FNAV_CHROMIUM_EXTRA=--use-gl=angle --use-angle=gles
+FNAV_CHROMIUM_EXTRA=
+EOF
+    chmod 0644 /etc/fnav/display.env
+    echo "  created /etc/fnav/display.env"
+fi
+
+# Apply
+if [ "${#CHANGED[@]}" -gt 0 ]; then
+    systemctl daemon-reload
+    printf '%s\n' "${CHANGED[@]}" | sort -u | while read -r tag; do
+        case "$tag" in
+            sysctl) sysctl -q -p /etc/sysctl.d/90-fnav.conf || true ;;
+            udev) udevadm control --reload-rules || true
+                  udevadm trigger --subsystem-match=i2c-dev --subsystem-match=gpio --subsystem-match=dma_heap || true ;;
+            nm) systemctl reload NetworkManager 2>/dev/null || true ;;
+            reexec) systemctl daemon-reexec || true ;;
+            journald) systemctl restart systemd-journald 2>/dev/null || true ;;
+        esac
+    done
+fi
+modprobe i2c-dev 2>/dev/null || true
+
+if [ -n "$CHANGED_FILE" ]; then
+    : > "$CHANGED_FILE"
+    [ "${#CHANGED[@]}" -gt 0 ] && printf '%s\n' "${CHANGED[@]}" | sort -u > "$CHANGED_FILE"
+fi
+echo "System files: ${#CHANGED[@]} updated."
