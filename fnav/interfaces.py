@@ -51,6 +51,14 @@ class SensorHub(Protocol):
 
     def calibration_cancel(self) -> None: ...
 
+    # ── Автокалибровка по GPS-курсу во время езды ──
+    def on_calibration_update(self, callback: Callable[[CompassCalibration], None]) -> None:
+        """Хаб вызывает callback (в event loop), когда автокалибровка улучшилась и её пора сохранить
+        (не чаще settings.compass.auto_save_interval_s). fnav-core сохраняет её в settings.compass.calibration."""
+
+    def auto_calibration_reset(self) -> None:
+        """Сбросить накопленные точки автокалибровки и начать сбор заново (сохранённая калибровка не трогается)."""
+
     # ── Кнопка / LED / пищалка на GPS-модуле ──
     def on_button(self, callback: Callable[[ButtonEvent], None]) -> None:
         """Зарегистрировать обработчик нажатия (вызывается из event loop)."""

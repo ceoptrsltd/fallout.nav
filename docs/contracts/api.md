@@ -75,6 +75,8 @@
 - `GET /api/gps/satellites` → `[Satellite]`. `POST /api/gps/configure` → результат `hub.gps_configure()`.
 - `POST /api/compass/calibration/start|finish|cancel`, `GET /api/compass/calibration` → `CalibrationStatus`.
   `finish` сохраняет результат в `settings.compass.calibration` и возвращает его.
+- **Автокалибровка по GPS-курсу** (на ходу, `settings.compass.auto_calibrate`): хаб сам собирает точки и вызывает `on_calibration_update(cal)`; fnav-core сохраняет `cal` в `settings.compass.calibration`. Состояние — `Telemetry.compass_cal` (`AutoCalStatus`).
+  `POST /api/compass/calibration/reset-auto` — сбросить накопленные точки (сохранённую калибровку не трогает).
 
 ## Система
 

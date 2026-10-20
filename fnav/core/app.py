@@ -390,6 +390,11 @@ def _register_sensors(app: FastAPI, core: Core) -> None:
         core.hub.calibration_cancel()
         return core.hub.calibration_status().model_dump(mode="json")
 
+    @app.post("/api/compass/calibration/reset-auto")
+    async def calib_reset_auto():
+        core.hub.auto_calibration_reset()
+        return {"ok": True}
+
     @app.post("/api/compass/calibration/finish")
     async def calib_finish():
         try:

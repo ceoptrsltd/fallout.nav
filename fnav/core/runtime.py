@@ -82,6 +82,10 @@ class NullSensorHub:
 
     def calibration_cancel(self) -> None: ...
 
+    def on_calibration_update(self, callback) -> None: ...
+
+    def auto_calibration_reset(self) -> None: ...
+
     def on_button(self, callback) -> None: ...
 
     def set_led(self, mode: LedMode) -> None: ...
@@ -141,6 +145,10 @@ class Core:
             self.hub.on_button(self._on_button)
         except Exception:
             log.exception("hub.on_button()")
+        try:
+            self.hub.on_calibration_update(self._on_calibration_update)
+        except Exception:
+            log.exception("hub.on_calibration_update()")
         bg = self.opts.background
         await self.tiles.start(background=bg)
         await self.camera.start(background=bg)
@@ -192,6 +200,7 @@ class Core:
             gps=snap.gps,
             heading=snap.heading,
             compass=snap.compass,
+            compass_cal=snap.compass_cal,
             display=self.display_state,
             camera=cam,
             disk=self.system.disk,
@@ -284,6 +293,26 @@ class Core:
                 self.hub.set_led(mode)
             except Exception:
                 log.exception("hub.set_led()")
+
+    def _on_calibration_update(self, cal: CompassCalibration) -> None:
+        """Автокалибровка компаса улучшилась — сохранить в settings.compass.calibration."""
+        loop = self._loop
+        if loop is None:
+            return
+
+        async def save() -> None:
+            await self.store.patch({"compass": {"calibration": cal.model_dump(mode="json")}})
+            log.info("compass auto-calibration saved (samples=%s, coverage=%.0f%%, rms=%s)",
+                     cal.samples, cal.coverage_pct, cal.rms_deg)
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            spawn(save(), name="calib-save")
+        else:
+            loop.call_soon_threadsafe(lambda: spawn(save(), name="calib-save"))
 
     def _on_button(self, event: ButtonEvent) -> None:
         loop = self._loop

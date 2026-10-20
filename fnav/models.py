@@ -144,6 +144,27 @@ class CompassCalibration(_Model):
     matrix: list[list[float]] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]  # soft iron
     fitted_at: str | None = None  # ISO-время калибровки
     quality: float | None = None  # 0..1, оценка качества подгонки
+    # Остаточная девиация относительно GPS-курса (как у судовых компасов), градусы:
+    # δ(θ) = A + B·sinθ + C·cosθ + D·sin2θ + E·cos2θ, где θ — магнитный курс после offset/matrix.
+    # Истинный курс = θ + склонение + δ(θ) + mount_offset_deg. Пусто = не применять.
+    deviation: list[float] = []  # [A, B, C, D, E]
+    source: Literal["manual", "auto"] | None = None
+    samples: int = 0
+    coverage_pct: float = 0.0  # покрытие направлений (по GPS-курсу), %
+    rms_deg: float | None = None  # СКО курса относительно GPS после калибровки
+
+
+class AutoCalStatus(_Model):
+    """Состояние автокалибровки компаса по GPS-курсу (в Telemetry.compass_cal)."""
+
+    enabled: bool = True
+    state: Literal["disabled", "collecting", "fitted", "error"] = "collecting"
+    samples: int = 0  # принятых точек в текущем наборе
+    coverage_pct: float = 0.0  # покрытие 36 секторов курса, %
+    rms_deg: float | None = None  # СКО текущей подгонки
+    applied: bool = False  # используется ли автокалибровка сейчас
+    last_saved: str | None = None  # ISO-время последнего сохранения в настройки
+    message: str = ""  # человекочитаемо, по-английски
 
 
 class CompassSettings(_Model):
@@ -154,6 +175,14 @@ class CompassSettings(_Model):
     mount_offset_deg: float = Field(0.0, ge=-180, le=180)
     declination: Literal["auto"] | float = "auto"
     calibration: CompassCalibration = CompassCalibration()
+    axes: str = ""  # переопределение осей, например "-x,-y,-z"; пусто = по умолчанию для чипа
+    # Автокалибровка по GPS-курсу во время езды
+    auto_calibrate: bool = True
+    auto_min_speed_mps: float = Field(5.0, ge=1)  # точки собираются только быстрее этого
+    auto_max_turn_rate_dps: float = Field(3.0, gt=0)  # и только почти по прямой
+    auto_max_hdop: float = Field(2.0, gt=0)  # и только при хорошем фиксе
+    auto_min_coverage_pct: float = Field(60.0, ge=10, le=100)  # применять, когда покрыто столько направлений
+    auto_save_interval_s: float = Field(300.0, ge=10)  # как часто сохранять улучшенную калибровку
 
 
 class GpioSettings(_Model):
@@ -234,6 +263,7 @@ class SensorSnapshot(_Model):
     gps: GpsFix = GpsFix()
     heading: Heading = Heading()
     compass: CompassRaw | None = None
+    compass_cal: AutoCalStatus | None = None
     satellites: list[Satellite] = []
     errors: list[str] = []  # человекочитаемые проблемы ("компас не отвечает" и т.п.)
 
@@ -294,6 +324,7 @@ class Telemetry(_Model):
     gps: GpsFix
     heading: Heading
     compass: CompassRaw | None = None
+    compass_cal: AutoCalStatus | None = None
     display: DisplayState
     camera: CameraStatus
     disk: DiskStatus = DiskStatus()

@@ -28,6 +28,7 @@ from fnav.models import (
     CompassRaw,
     GpsFix,
     Heading,
+    AutoCalStatus,
     Satellite,
     SensorSnapshot,
     Settings,
@@ -124,6 +125,7 @@ class MockSensorHub:
         self._led: LedMode = "off"
         self._calib_active = False
         self._calib_samples = 0
+        self._auto_samples = 0
         self._rng = random.Random(42)
         self._sats = [
             Satellite(gnss=g, prn=p, el=self._rng.uniform(10, 85), az=self._rng.uniform(0, 360))
@@ -189,8 +191,20 @@ class MockSensorHub:
             s.used = s.snr > 28
         used = sum(1 for s in self._sats if s.used)
 
+        if speed_meas > self.settings.compass.auto_min_speed_mps:
+            self._auto_samples += 1
+        cov = min(100.0, self._auto_samples / 20)
+        auto = AutoCalStatus(
+            enabled=self.settings.compass.auto_calibrate,
+            state="fitted" if cov >= self.settings.compass.auto_min_coverage_pct else "collecting",
+            samples=self._auto_samples, coverage_pct=round(cov, 1),
+            rms_deg=2.1 if cov >= self.settings.compass.auto_min_coverage_pct else None,
+            applied=cov >= self.settings.compass.auto_min_coverage_pct,
+            message="mock auto-calibration",
+        )
         now = datetime.now(timezone.utc)
         self._snap = SensorSnapshot(
+            compass_cal=auto,
             gps=GpsFix(
                 fix="3d",
                 lat=lat + r.gauss(0, 2e-6),
@@ -265,6 +279,12 @@ class MockSensorHub:
 
     def calibration_cancel(self) -> None:
         self._calib_active = False
+
+    def on_calibration_update(self, callback: Callable[[CompassCalibration], None]) -> None:
+        self._cal_cbs = getattr(self, "_cal_cbs", []) + [callback]
+
+    def auto_calibration_reset(self) -> None:
+        self._auto_samples = 0
 
     def on_button(self, callback: Callable[[ButtonEvent], None]) -> None:
         self._button_cbs.append(callback)
