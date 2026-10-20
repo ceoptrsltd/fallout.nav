@@ -132,6 +132,25 @@ if [ "$(systemctl get-default)" != "multi-user.target" ]; then
     systemctl set-default multi-user.target
     log "default target: multi-user.target"
 fi
+# Desktop leftovers of the full Raspberry Pi OS image: printing, desktop automount/accounts/power,
+# VNC, GPU test, colour management, PackageKit. Masked so D-Bus activation cannot start them either.
+DESKTOP_SYSTEM_UNITS=(cups.service cups.socket cups-browsed.service accounts-daemon.service udisks2.service
+    upower.service colord.service packagekit.service wayvnc-control.service wayvnc.service glamor-test.service)
+for u in "${DESKTOP_SYSTEM_UNITS[@]}"; do
+    if unit_exists "$u" && [ "$(systemctl is-enabled "$u" 2>/dev/null)" != "masked" ]; then
+        systemctl disable --now "$u" >/dev/null 2>&1 || true
+        systemctl mask "$u" >/dev/null 2>&1 && log "masked $u"
+    fi
+done
+# Per-user desktop session services (audio server, keyring, portals) that start for every login (also ssh).
+DESKTOP_USER_UNITS=(pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+    filter-chain.service mpris-proxy.service gnome-keyring-daemon.service gnome-keyring-daemon.socket
+    gcr-ssh-agent.service gcr-ssh-agent.socket xdg-desktop-portal-rewrite-launchers.service fbd-alert-slider.service)
+for u in "${DESKTOP_USER_UNITS[@]}"; do
+    if [ -e "/usr/lib/systemd/user/$u" ] && [ "$(systemctl --global is-enabled "$u" 2>/dev/null)" != "masked" ]; then
+        systemctl --global mask "$u" >/dev/null 2>&1 && log "masked user unit $u"
+    fi
+done
 
 # ------------------------------------------------------------------------------------------
 step "Packages (apt)"
