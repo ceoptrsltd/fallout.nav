@@ -1,0 +1,25 @@
+[project]
+name = "fnav"
+version = "0.1.0"
+description = "fallout.nav: dashcam + navigation display for Raspberry Pi CM4"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.109",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.5",
+    "httpx>=0.26",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# Only on the device (installed from apt / pip there):
+pi = ["smbus2>=0.4", "gpiozero>=2.0", "lgpio>=0.2", "pygeomag>=1.1", "gps>=3.19", "pyubx2>=1.2"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.3", "Pillow>=10"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
