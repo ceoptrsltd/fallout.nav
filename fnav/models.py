@@ -161,6 +161,7 @@ class AutoCalStatus(_Model):
     state: Literal["disabled", "collecting", "fitted", "error"] = "collecting"
     samples: int = 0  # принятых точек в текущем наборе
     coverage_pct: float = 0.0  # покрытие 36 секторов курса, %
+    sectors: list[int] = []  # 36 значений: число точек в каждом 10°-секторе GPS-курса (0° = север)
     rms_deg: float | None = None  # СКО текущей подгонки
     applied: bool = False  # используется ли автокалибровка сейчас
     last_saved: str | None = None  # ISO-время последнего сохранения в настройки
