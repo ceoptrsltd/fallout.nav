@@ -61,6 +61,7 @@ export function drawTrail(ctx, points, state);         // след: points = [{x
 export const compassStyles = [{ id: "v1", name: "…" }, …];  // варианты дизайна; выбранный — settings.display.compass_style
 ```
 
+- Ориентация берётся из `settings.display.orientation` (fallback — `telemetry.display.orientation`).
 - B вычисляет экранную позицию и поворот машины: `heading_up` → машина в `(w/2, h*vehicle_anchor_y)`, `rotationDeg = 0`; `north_up` → центр, `rotationDeg = headingDeg`.
 - Компас сам учитывает ориентацию: `heading_up` — вращается шкала (вверху — курс), `north_up` — шкала неподвижна (N вверху), вращается стрелка.
 - C делает страницу-галерею `web/display/ui/gallery.html`: все варианты компаса, иконка машины, спидометр, на холстах 768×576 с mock-состоянием, в **физическом размере** (калибровка — см. ниже), с анимацией курса и скорости.
