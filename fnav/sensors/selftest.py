@@ -146,7 +146,7 @@ def check_compass(rep: Report, s: Settings, n: int = 50) -> None:
     from fnav.sensors import compass as cm
     from fnav.sensors.calibration import apply_calibration
     from fnav.sensors.declination import declination_deg
-    from fnav.sensors.heading import mag_heading_deg, norm360
+    from fnav.sensors.heading import deviation_deg, mag_heading_deg, norm360
 
     c = s.compass
     try:
@@ -170,8 +170,8 @@ def check_compass(rep: Report, s: Settings, n: int = 50) -> None:
                            "(check SDA/SCL wiring, 'python tools/i2c_scan.py')")
             return
         drv.init()
-        axes = cm.axes_for(drv.name)
-        rep.line(OK, f"{drv.name} at 0x{drv.address:02X}, axes chip->FRD: {cm.AXES.get(drv.name)}")
+        axes = cm.axes_for(drv.name, c.axes)
+        rep.line(OK, f"{drv.name} at 0x{drv.address:02X}, axes chip->FRD: {cm.axes_spec_for(drv.name, c.axes)}")
         vals = []
         errors = 0
         period = 1.0 / max(1, c.rate_hz)
@@ -195,20 +195,24 @@ def check_compass(rep: Report, s: Settings, n: int = 50) -> None:
         rep.info("mean  x={:+7.2f} y={:+7.2f} z={:+7.2f} uT (FRD, uncalibrated)".format(*mean))
         rep.info("noise x={:6.2f}  y={:6.2f}  z={:6.2f} uT".format(*sd))
         st = OK if 20 <= mag <= 100 else WARN
-        rep.line(st, f"|B| = {mag:.1f} uT (Earth field 25-65 uT; far off = magnetic interference or bad axes)")
+        rep.line(st, f"|B| = {mag:.1f} uT raw (Earth field 25-65 uT; much more = hard iron near the module, "
+                     "fixed by calibration)")
         if mean[2] < 0 and abs(mean[2]) > 0.5 * mag:
             rep.line(WARN, "z points up (negative) - in the northern hemisphere it should be positive (down): "
                            "module upside down or axis table wrong")
         raw_h = mag_heading_deg(mean[0], mean[1])
         cx, cy, _ = apply_calibration(mean, c.calibration)
         cal_h = mag_heading_deg(cx, cy)
+        dev = deviation_deg(cal_h, c.calibration.deviation) if cal_h is not None else 0.0
         decl = c.declination if not isinstance(c.declination, str) else declination_deg(55.75, 37.62)
         if cal_h is not None and raw_h is not None:
-            true_h = norm360(cal_h + decl + c.mount_offset_deg)
-            rep.info(f"heading: raw magnetic {raw_h:.1f} deg, calibrated {cal_h:.1f}, "
-                     f"true ~{true_h:.1f} (decl {decl:.1f}, mount offset {c.mount_offset_deg})")
+            true_h = norm360(cal_h + decl + dev + c.mount_offset_deg)
+            cal_src = c.calibration.source or ("none" if c.calibration.fitted_at is None else "manual")
+            rep.info(f"heading: raw magnetic {raw_h:.1f} deg, calibrated {cal_h:.1f}, deviation {dev:+.1f}, "
+                     f"true ~{true_h:.1f} (decl {decl:.1f}, mount offset {c.mount_offset_deg}, "
+                     f"calibration: {cal_src}, rms {c.calibration.rms_deg})")
         rep.info("check: turn the module clockwise (seen from above) -> heading must INCREASE; "
-                 "if it decreases set FNAV_COMPASS_AXES (mirror)")
+                 "if it decreases set compass.axes (mirror)")
     finally:
         with contextlib.suppress(Exception):
             bus.close()

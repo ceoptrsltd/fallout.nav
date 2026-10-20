@@ -12,7 +12,8 @@ fnav-core (агент A) работает только через этот ин�
 
 from __future__ import annotations
 
-from typing import Callable, Literal, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import Literal, Protocol, runtime_checkable
 
 from fnav.models import CalibrationStatus, CompassCalibration, SensorSnapshot, Settings
 

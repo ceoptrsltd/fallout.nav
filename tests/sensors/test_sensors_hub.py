@@ -124,27 +124,77 @@ async def test_calibration_through_hub() -> None:
     assert not hub.calibration_status().active
 
 
+class FakeClock:
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def press(g, clk: FakeClock, duration: float, *, hold: bool = False, bounce: int = 0) -> None:
+    """Нажатие длительностью duration с дребезгом: bounce коротких импульсов в начале и в конце."""
+    for _ in range(bounce):
+        g._pressed()
+        clk.t += 0.004
+        g._released()
+        clk.t += 0.004
+    g._pressed()
+    if hold:
+        clk.t += duration
+        g._held_cb()
+    else:
+        clk.t += duration
+    g._released()
+    for _ in range(bounce):
+        clk.t += 0.005
+        g._pressed()
+        clk.t += 0.005
+        g._released()
+
+
+def test_button_debounce() -> None:
+    from fnav.sensors.gpio import GpioController
+
+    got: list = []
+    g = GpioController(None, got.append)
+    clk = FakeClock()
+    g.clock = clk
+    press(g, clk, 0.15, bounce=4)  # одно нажатие с дребезгом → одно событие
+    assert got == ["press"]
+    clk.t += 0.3
+    press(g, clk, 0.15)  # повтор раньше 1 с — игнор
+    assert got == ["press"]
+    clk.t += 1.5
+    press(g, clk, 0.01)  # помеха 10 мс
+    assert got == ["press"]
+    clk.t += 1.0
+    press(g, clk, 2.0, hold=True, bounce=3)  # долгое нажатие: только long_press, без press
+    assert got == ["press", "long_press"]
+    clk.t += 1.5
+    press(g, clk, 0.2)
+    assert got == ["press", "long_press", "press"]
+
+
 async def test_button_callbacks_in_loop() -> None:
+    import threading
+
     hub = RealSensorHub(Settings(), gpsd_port=1, enable_compass=False, enable_gpio=False)
     await hub.start()
     got: list = []
     loop_thread: list = []
-    import threading
 
     def cb(ev):
         got.append(ev)
         loop_thread.append(threading.current_thread())
 
     hub.on_button(cb)
-    t = threading.Thread(target=lambda: (hub.gpio._pressed(), hub.gpio._released()))
+    clk = FakeClock()
+    hub.gpio.clock = clk
+    t = threading.Thread(target=lambda: press(hub.gpio, clk, 0.2))
     t.start()
     t.join()
-    await wait_until(lambda: got == ["press"])
-    hub.gpio._pressed()
-    hub.gpio._held_cb()
-    hub.gpio._released()
-    await wait_until(lambda: got == ["press", "long_press"])
-    assert got == ["press", "long_press"]
+    assert await wait_until(lambda: got == ["press"])
     assert loop_thread[0] is threading.current_thread()  # вызвано в потоке event loop
     hub.set_led("blink_fast")  # без железа — молча
     hub.beep("double")
@@ -160,3 +210,33 @@ async def test_apply_settings_and_configure_guard() -> None:
     hub._configuring = True
     r = await hub.gps_configure()
     assert r["ok"] is False and "already" in r["details"]
+
+
+async def test_autoconfigure_only_when_receiving() -> None:
+    hub = RealSensorHub(Settings(), gpsd_port=1, enable_compass=False, enable_gpio=False)
+    hub._autoconf_done = False
+    hub._loop = asyncio.get_running_loop()
+    calls: list = []
+
+    async def fake_configure() -> dict:
+        calls.append(1)
+        return {"ok": False, "details": {"error": "GPS receiver not connected"}}
+
+    hub.gps_configure = fake_configure  # type: ignore[method-assign]
+    hub.gps.on_connect()
+    hub.gps.handle({"class": "DEVICE", "path": "/dev/ttyAMA0", "bps": 19200})  # gpsd «ищет» скорость
+    hub._maybe_autoconfigure()
+    await asyncio.sleep(0.05)
+    assert calls == []  # данных нет — не трогаем
+    hub.gps.handle(json.loads(tpv(0.0, 0.0)))
+    hub._maybe_autoconfigure()
+    await asyncio.sleep(0.05)
+    assert calls == [1]
+    hub._maybe_autoconfigure()  # повтор — не раньше AUTOCONF_RETRY_S
+    await asyncio.sleep(0.05)
+    assert calls == [1]
+    hub.gps.handle({"class": "DEVICE", "path": "/dev/ttyAMA0", "bps": 115200})
+    hub._autoconf_next = 0
+    hub._maybe_autoconfigure()
+    await asyncio.sleep(0.05)
+    assert calls == [1]  # уже на нужной скорости

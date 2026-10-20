@@ -1,7 +1,7 @@
 """RealSensorHub — настоящие датчики: gpsd (NEO-M8N), магнитометр IST8310 по I2C, кнопка/LED/пищалка.
 
-Задачи asyncio: два клиента gpsd (JSON и NMEA), цикл слияния курса 20 Гц.
-Поток: опрос компаса. Блокирующие операции GPIO и настройка M8N — в asyncio.to_thread.
+Задачи asyncio: два клиента gpsd (JSON и NMEA), цикл слияния курса 20 Гц, автокалибровка компаса по GPS.
+Поток: опрос компаса. Блокирующие операции GPIO, подгонка и настройка M8N — в asyncio.to_thread.
 Отсутствие любого устройства — не падение: текст в SensorSnapshot.errors и повторные попытки.
 """
 
@@ -19,6 +19,7 @@ from typing import Any
 
 from fnav.interfaces import ButtonEvent, LedMode
 from fnav.models import (
+    AutoCalStatus,
     CalibrationStatus,
     CompassCalibration,
     CompassRaw,
@@ -28,6 +29,7 @@ from fnav.models import (
     Settings,
 )
 from fnav.sensors import heading as hd
+from fnav.sensors.autocal import AutoCalibrator
 from fnav.sensors.calibration import CalibrationCollector, apply_calibration
 from fnav.sensors.compass import CompassReader
 from fnav.sensors.declination import declination_deg
@@ -38,6 +40,10 @@ log = logging.getLogger("fnav.sensors")
 
 FUSION_HZ = 20.0
 MAG_STALE_S = 1.0
+AUTOCAL_TICK_S = 5.0  # как часто проверять, не пора ли переподогнать автокалибровку
+AUTOCAL_MIN_NEW = 5  # столько новых точек — повод для переподгонки
+STATE_SAVE_S = 180.0  # как часто сохранять накопленные точки в sensors_state.json
+AUTOCONF_RETRY_S = 600.0
 GPSD_HOST = os.environ.get("FNAV_GPSD_HOST", "127.0.0.1")
 GPSD_PORT = int(os.environ.get("FNAV_GPSD_PORT", "2947"))
 
@@ -61,12 +67,14 @@ class RealSensorHub:
         # GPS
         self.gps = GpsState()
         self.nmea = NmeaRing(500)
-        self.gpsd = GpsdClient(gpsd_host, gpsd_port, on_message=self.gps.handle, on_connect=self.gps.on_connect)
+        self.gpsd = GpsdClient(gpsd_host, gpsd_port, on_message=self._on_gps_msg, on_connect=self.gps.on_connect)
         self.gpsd_nmea = GpsdClient(gpsd_host, gpsd_port, nmea=True, on_line=self.nmea.append)
         self._configuring = False
         self._autoconf_done = os.environ.get("FNAV_GPS_AUTOCONFIG", "1") == "0" or not sys.platform.startswith(
             "linux"
         )
+        self._autoconf_next = 0.0
+        self._autoconf_attempts = 0
         self.last_configure: dict | None = None
 
         # компас
@@ -75,7 +83,16 @@ class RealSensorHub:
         self._mag: tuple[float, tuple[float, float, float], str] | None = None  # (monotonic, FRD мкТл, чип)
         self.calib = CalibrationCollector()
         self._smoother = hd.HeadingSmoother(settings.heading.smoothing_s)
-        self._last_pos: tuple[float, float] | None = self._load_last_pos()
+
+        # автокалибровка по GPS-курсу
+        self.autocal = AutoCalibrator(settings.compass)
+        self._cal_auto: CompassCalibration | None = None  # применённая автокалибровка (может быть не сохранена)
+        self._cal_cbs: list[Callable[[CompassCalibration], None]] = []
+        self._autocal_axes: str | None = None  # оси, в которых накоплены точки
+        self._last_fit = 0.0
+        self._state_saved_at = time.monotonic()
+        self._last_pos: tuple[float, float] | None = None
+        self._load_state()
 
         # GPIO
         self._enable_gpio = enable_gpio
@@ -96,6 +113,7 @@ class RealSensorHub:
             asyncio.create_task(self.gpsd.run(), name="fnav-gpsd-json"),
             asyncio.create_task(self.gpsd_nmea.run(), name="fnav-gpsd-nmea"),
             asyncio.create_task(self._fusion_loop(), name="fnav-heading"),
+            asyncio.create_task(self._autocal_loop(), name="fnav-autocal"),
         ]
         if self._enable_compass:
             self._start_compass()
@@ -114,19 +132,23 @@ class RealSensorHub:
             await asyncio.to_thread(self.compass_reader.join, 2.0)
             self.compass_reader = None
         await asyncio.to_thread(self.gpio.close)
+        if self.autocal.dirty:
+            await asyncio.to_thread(self._save_state)
 
     # ───────────── компас ─────────────
-    def _compass_cfg(self) -> tuple[str, int, int | None, int]:
+    def _compass_cfg(self) -> tuple[str, int, int | None, int, str]:
         c = self.settings.compass
-        return c.chip, c.i2c_bus, c.address, c.rate_hz
+        return c.chip, c.i2c_bus, c.address, c.rate_hz, c.axes
 
     def _start_compass(self) -> None:
         self.compass_reader = CompassReader(self._compass_cfg, self._on_mag, self._on_compass_error)
         self.compass_reader.start()
 
     def _on_mag(self, v: tuple[float, float, float], chip: str) -> None:  # поток компаса
-        self._mag = (time.monotonic(), v, chip)
+        t = time.monotonic()
+        self._mag = (t, v, chip)
         self.calib.add(v)
+        self.autocal.add_mag(t, v)
 
     def _on_compass_error(self, msg: str | None) -> None:  # поток компаса
         if msg:
@@ -162,22 +184,44 @@ class RealSensorHub:
             except Exception:
                 log.exception("button callback failed")
 
-    # ───────────── склонение ─────────────
-    def _load_last_pos(self) -> tuple[float, float] | None:
+    # ───────────── состояние на диске (позиция + точки автокалибровки) ─────────────
+    def _load_state(self) -> None:
         try:
             d = json.loads(_state_file().read_text(encoding="utf-8"))
-            return float(d["lat"]), float(d["lon"])
-        except Exception:  # noqa: BLE001
-            return None
+        except Exception:  # noqa: BLE001 — нет файла / битый файл
+            return
+        if not isinstance(d, dict):
+            return
+        with contextlib.suppress(Exception):
+            self._last_pos = (float(d["lat"]), float(d["lon"]))
+        ac = d.get("autocal")
+        if isinstance(ac, dict):
+            n = self.autocal.load_state(ac)
+            axes = ac.get("axes")
+            self._autocal_axes = axes if (n and isinstance(axes, str)) else None
+            if n:
+                log.info("compass auto-calibration: %d stored points loaded", n)
 
-    def _save_last_pos(self, pos: tuple[float, float]) -> None:
+    def _state_dict(self) -> dict:
+        d: dict[str, Any] = {}
+        if self._last_pos is not None:
+            d["lat"], d["lon"] = self._last_pos
+        ac = self.autocal.to_state()
+        ac["axes"] = self._autocal_axes
+        d["autocal"] = ac
+        return d
+
+    def _save_state(self) -> None:  # блокирующее — вызывать из потока
         with contextlib.suppress(OSError):
+            data = json.dumps(self._state_dict(), separators=(",", ":"))
             p = _state_file()
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"lat": pos[0], "lon": pos[1]}), encoding="utf-8")
+            tmp.write_text(data, encoding="utf-8")
             os.replace(tmp, p)
+        self._state_saved_at = time.monotonic()
 
+    # ───────────── склонение ─────────────
     def _declination(self, fix: GpsFix) -> float | None:
         d = self.settings.compass.declination
         if not isinstance(d, str):
@@ -187,7 +231,7 @@ class RealSensorHub:
             if pos != self._last_pos:
                 self._last_pos = pos
                 if self._loop is not None:
-                    self._loop.run_in_executor(None, self._save_last_pos, pos)
+                    self._loop.run_in_executor(None, self._save_state)
         if self._last_pos is None:
             return None
         return declination_deg(*self._last_pos)
@@ -217,12 +261,14 @@ class RealSensorHub:
         if mag is not None:
             t, raw, chip = mag
             fresh = now - t <= MAG_STALE_S
-            cx, cy, cz = apply_calibration(raw, s.compass.calibration)
+            cal = self.effective_calibration()
+            cx, cy, cz = apply_calibration(raw, cal)
             compass = CompassRaw(x=round(cx, 2), y=round(cy, 2), z=round(cz, 2),
                                  raw_x=round(raw[0], 2), raw_y=round(raw[1], 2), raw_z=round(raw[2], 2),
                                  chip=chip, ok=fresh)
             if fresh:
-                mag_deg = hd.true_mag_heading(hd.mag_heading_deg(cx, cy), decl or 0.0, s.compass.mount_offset_deg)
+                mag_deg = hd.true_mag_heading(hd.mag_heading_deg(cx, cy), decl or 0.0, s.compass.mount_offset_deg,
+                                              cal.deviation)
 
         gps_course = fix.course_deg if fix.fix != "none" else None
         speed = fix.speed_mps if fix.fix != "none" else None
@@ -252,19 +298,109 @@ class RealSensorHub:
                 declination_deg=None if decl is None else round(decl, 2),
             ),
             compass=compass,
+            compass_cal=self._autocal_status(),
             satellites=list(self.gps.satellites),
             errors=errors,
         )
 
+    # ───────────── автонастройка M8N ─────────────
     def _maybe_autoconfigure(self) -> None:
-        """Однократно: если gpsd видит модуль на «чужой» скорости (заводские 38400) — перенастроить."""
+        """Если gpsd РЕАЛЬНО получает данные от модуля (TPV после подключения), но на «чужой» скорости
+        (заводские 38400) — перенастроить. Без данных не трогаем: при поиске скорости gpsd показывает
+        случайные bps. Неудача → повтор через AUTOCONF_RETRY_S, не больше 3 попыток за запуск."""
         if self._autoconf_done or self._configuring or self._loop is None:
             return
-        bps = self.gps.device_bps
-        if bps and bps != self.settings.gps.baud:
+        g = self.gps
+        now = time.monotonic()
+        receiving = g.last_tpv is not None and g.last_tpv >= g.since and now - g.last_tpv < 2.0
+        bps = g.device_bps
+        if not receiving or not bps or bps == self.settings.gps.baud or now < self._autoconf_next:
+            return
+        self._autoconf_attempts += 1
+        self._autoconf_next = now + AUTOCONF_RETRY_S
+        if self._autoconf_attempts >= 3:
             self._autoconf_done = True
-            log.info("GPS at %s bps, expected %s: running UBX configuration", bps, self.settings.gps.baud)
-            self._loop.create_task(self.gps_configure())
+        log.info("GPS at %s bps, expected %s: running UBX configuration", bps, self.settings.gps.baud)
+        self._loop.create_task(self._autoconfigure())
+
+    async def _autoconfigure(self) -> None:
+        r = await self.gps_configure()
+        if r.get("ok"):
+            self._autoconf_done = True
+        else:
+            log.warning("GPS auto-configuration failed: %s", r.get("details", {}).get("error"))
+
+    # ───────────── автокалибровка по GPS-курсу ─────────────
+    def effective_calibration(self) -> CompassCalibration:
+        if self._cal_auto is not None and self.settings.compass.auto_calibrate:
+            return self._cal_auto
+        return self.settings.compass.calibration
+
+    def _on_gps_msg(self, msg: dict) -> None:  # event loop (клиент gpsd)
+        self.gps.handle(msg)
+        if msg.get("class") != "TPV" or not self.settings.compass.auto_calibrate:
+            return
+        mag = self._mag
+        if mag is None or time.monotonic() - mag[0] > MAG_STALE_S:
+            return
+        fix = self.gps.current()
+        self.autocal.on_gps(time.monotonic(), fix, self._declination(fix))
+
+    def _check_axes(self) -> None:
+        """Точки копятся в осях корпуса — при смене осей они непригодны."""
+        r = self.compass_reader
+        spec = r.axes_spec if r is not None else ""
+        if not spec:
+            return
+        if self._autocal_axes is None:
+            self._autocal_axes = spec
+        elif spec != self._autocal_axes:
+            log.info("compass axes changed %s -> %s: auto-calibration points reset", self._autocal_axes, spec)
+            self.autocal.reset()
+            self._cal_auto = None
+            self._autocal_axes = spec
+
+    async def _autocal_loop(self) -> None:
+        while True:
+            await asyncio.sleep(AUTOCAL_TICK_S)
+            try:
+                await self.autocal_tick()
+            except Exception as e:
+                log.exception("compass auto-calibration failed")
+                self.autocal.message = f"Auto-calibration error: {e}"
+
+    async def autocal_tick(self, force: bool = False) -> None:
+        """Переподогнать (если накопились новые точки), применить/сохранить, периодически записать состояние."""
+        self._check_axes()
+        c = self.settings.compass
+        self.autocal.cfg = c
+        now = time.monotonic()
+        new = self.autocal.new_points
+        if c.auto_calibrate and (force or new >= AUTOCAL_MIN_NEW or (new > 0 and now - self._last_fit > 60)):
+            self._last_fit = now
+            await asyncio.to_thread(self.autocal.fit, c.mount_offset_deg)
+            apply, save = await asyncio.to_thread(
+                self.autocal.decide, c.calibration, self.effective_calibration(), c.mount_offset_deg
+            )
+            if apply is not None:
+                self._cal_auto = apply
+                log.info("compass auto-calibration applied: rms %.2f deg, coverage %.0f%%, %d points",
+                         apply.rms_deg or 0.0, apply.coverage_pct, apply.samples)
+            if save is not None:
+                for cb in list(self._cal_cbs):
+                    try:
+                        cb(save)
+                    except Exception:
+                        log.exception("calibration update callback failed")
+        if self.autocal.dirty and (force or time.monotonic() - self._state_saved_at >= STATE_SAVE_S):
+            await asyncio.to_thread(self._save_state)
+
+    def _autocal_status(self) -> AutoCalStatus:
+        c = self.settings.compass
+        compass_ok = self._mag is not None and "compass" not in self._errors
+        eff = self.effective_calibration()
+        applied = c.auto_calibrate and eff.source == "auto"
+        return self.autocal.status(c.auto_calibrate, applied, compass_ok, eff)
 
     # ───────────── интерфейс SensorHub ─────────────
     def snapshot(self) -> SensorSnapshot:
@@ -273,10 +409,16 @@ class RealSensorHub:
     def apply_settings(self, settings: Settings) -> None:
         old = self.settings
         self.settings = settings
-        if (old.compass.chip, old.compass.i2c_bus, old.compass.address) != (
-            settings.compass.chip, settings.compass.i2c_bus, settings.compass.address
-        ) and self.compass_reader is not None:
-            self.compass_reader.request_reinit()
+        oc, nc = old.compass, settings.compass
+        self.autocal.cfg = nc
+        if (oc.chip, oc.i2c_bus, oc.address, oc.axes) != (nc.chip, nc.i2c_bus, nc.address, nc.axes) \
+                and self.compass_reader is not None:
+            self.compass_reader.request_reinit()  # новые оси → _check_axes сбросит точки
+        if nc.calibration != oc.calibration:
+            if nc.calibration != self._cal_auto:
+                self._cal_auto = None  # задана другая калибровка — она главная до следующей подгонки
+            if nc.calibration.source == "manual" and nc.calibration.fitted_at != oc.calibration.fitted_at:
+                self.autocal.reset()  # новая ручная калибровка (модуль могли переставить) — набираем заново
         if old.gpio != settings.gpio and self._enable_gpio and self._loop is not None:
             self._loop.call_soon_threadsafe(self._schedule_gpio_setup)
 
@@ -304,7 +446,7 @@ class RealSensorHub:
         self.last_configure = res
         return {"ok": bool(res.get("ok")), "details": res}
 
-    # калибровка
+    # ручная калибровка
     def calibration_start(self) -> None:
         self.calib.start()
 
@@ -317,13 +459,24 @@ class RealSensorHub:
     def calibration_finish(self) -> CompassCalibration:
         """CalibrationError (подкласс ValueError) с текстом, если данных мало — сбор продолжается."""
         cal = self.calib.finish()
+        info = self.calib.last_info
+        cal = cal.model_copy(update={"source": "manual", "samples": int(info.get("samples", 0)),
+                                     "coverage_pct": float(info.get("coverage_pct", 0.0))})
         new = self.settings.model_copy(deep=True)
         new.compass.calibration = cal
-        self.settings = new
+        self.apply_settings(new)
         return cal
 
     def calibration_cancel(self) -> None:
         self.calib.cancel()
+
+    # автокалибровка
+    def on_calibration_update(self, callback: Callable[[CompassCalibration], None]) -> None:
+        self._cal_cbs.append(callback)
+
+    def auto_calibration_reset(self) -> None:
+        self.autocal.reset()
+        self._cal_auto = None
 
     # кнопка / LED / пищалка
     def on_button(self, callback: Callable[[ButtonEvent], None]) -> None:
@@ -334,4 +487,3 @@ class RealSensorHub:
 
     def beep(self, pattern: str = "short") -> None:
         self.gpio.beep(pattern)
-

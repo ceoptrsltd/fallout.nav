@@ -23,6 +23,7 @@ from fnav.sensors import ubx
 MAJOR_GNSS = ("gps", "glonass", "galileo", "beidou")
 BAUD_CANDIDATES = (38400, 9600, 115200, 57600, 230400, 19200, 4800)
 RATE_STEPS = (18, 15, 10, 8, 5, 4, 2, 1)
+DETECT_BUDGET_S = 15.0  # не держать gpsd остановленным дольше, если модуль не отвечает
 
 
 class SerialLike(Protocol):
@@ -92,12 +93,14 @@ class M8NConfigurator:
         self.sleep = sleep
         self.parser = ubx.StreamParser()
         self.nmea_seen: list[str] = []
+        self.bytes_in = 0  # всего принято байт (любых): тишина на линии = модуль не подключён
 
     # ── ввод/вывод ──
     def _read_items(self) -> list[ubx.UbxMessage | str]:
         data = self.port.read(512)
         if not data:
             return []
+        self.bytes_in += len(data)
         items = self.parser.feed(data)
         for it in items:
             if isinstance(it, str):
@@ -172,15 +175,25 @@ class M8NConfigurator:
         r = self.wait_for(pred, timeout)
         return r or ("nmea" if found_nmea else None)
 
-    def detect_baud(self, first: int | None = None) -> int | None:
+    def detect_baud(self, first: int | None = None, budget_s: float = DETECT_BUDGET_S) -> int | None:
+        """Перебор скоростей. Быстрый выход: если за первые две попытки на RX не пришло ни одного байта —
+        модуль не подключён (подключённый M8N шлёт NMEA постоянно, на чужой скорости — хотя бы «мусор»).
+        Общий лимит времени — budget_s."""
         cands = ([first] if first else []) + [b for b in BAUD_CANDIDATES if b != first]
-        for baud in cands:
+        start = self.clock()
+        for i, baud in enumerate(cands):
+            if self.clock() - start > budget_s:
+                self.log(f"baud detection: time budget {budget_s:.0f} s exceeded")
+                return None
             self.port.baudrate = baud
             self.sleep(0.05)
             kind = self.probe()
             self.log(f"baud {baud}: {kind or 'no data'}")
             if kind:
                 return baud
+            if i == 1 and self.bytes_in == 0:
+                self.log("RX line silent - receiver not connected")
+                return None
         return None
 
     def set_baud(self, current: int, target: int) -> bool:

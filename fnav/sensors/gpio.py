@@ -68,7 +68,12 @@ class GpioController:
         self.button_active_low: bool | None = None
         self.button_probe: IdleProbe | None = None
         self.led_mode = "off"
+        self.clock = time.monotonic
         self._held = False
+        self._down = False
+        self._press_t = 0.0
+        self._last_release = -1e9
+        self._last_emit = -1e9
         self._lock = threading.Lock()
 
     # ── настройка (блокирующая, вызывать из потока) ──
@@ -93,9 +98,9 @@ class GpioController:
                     self.button_active_low = active_low
                     if pull is None:
                         btn = Button(cfg.button_gpio, pull_up=None, active_state=not active_low,
-                                     bounce_time=0.05, hold_time=cfg.long_press_s)
+                                     bounce_time=0.08, hold_time=cfg.long_press_s)
                     else:
-                        btn = Button(cfg.button_gpio, pull_up=pull, bounce_time=0.05, hold_time=cfg.long_press_s)
+                        btn = Button(cfg.button_gpio, pull_up=pull, bounce_time=0.08, hold_time=cfg.long_press_s)
                     btn.when_pressed = self._pressed
                     btn.when_held = self._held_cb
                     btn.when_released = self._released
@@ -131,17 +136,43 @@ class GpioController:
         else:
             self.on_button(ev)
 
+    # Антидребезг поверх bounce_time gpiozero (на lgpio одно нажатие давало несколько событий):
+    #  * фронты, пришедшие раньше RELEASE_SETTLE_S после отпускания, — продолжение того же нажатия;
+    #  * нажатие короче MIN_PRESS_S (от первого фронта) — помеха;
+    #  * события чаще REPEAT_GUARD_S — повтор;
+    #  * после long_press отпускание не даёт press.
+    MIN_PRESS_S = 0.03
+    RELEASE_SETTLE_S = 0.25
+    REPEAT_GUARD_S = 1.0
+
     def _pressed(self) -> None:
-        self._held = False
+        now = self.clock()
+        if self._down:
+            return
+        self._down = True
+        if now - self._last_release >= self.RELEASE_SETTLE_S:  # новое нажатие, а не дребезг
+            self._press_t = now
+            self._held = False
 
     def _held_cb(self) -> None:
+        if self._held:
+            return
         self._held = True
-        self._emit("long_press")
+        now = self.clock()
+        if now - self._last_emit >= self.REPEAT_GUARD_S:
+            self._last_emit = now
+            self._emit("long_press")
 
     def _released(self) -> None:
-        if not self._held:
-            self._emit("press")
-        self._held = False
+        now = self.clock()
+        was_down, self._down = self._down, False
+        self._last_release = now
+        if not was_down or self._held:
+            return
+        if now - self._press_t < self.MIN_PRESS_S or now - self._last_emit < self.REPEAT_GUARD_S:
+            return
+        self._last_emit = now
+        self._emit("press")
 
     # ── LED / пищалка ──
     def set_led(self, mode: str) -> None:

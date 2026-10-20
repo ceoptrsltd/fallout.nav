@@ -8,7 +8,7 @@ smbus2 импортируется лениво (на Windows его нет). З�
 чип стоит развёрнутым: ArduPilot по умолчанию применяет к внешнему IST8310 поворот PITCH_180 поверх своей
 перестановки осей, что в итоге = развороту на 180° по курсу → по умолчанию "-x,-y,-z".
 Остаточный поворот (90°/180°) закрывает `compass.mount_offset_deg`. Если курс «крутится не в ту сторону»
-(зеркально) — переопределить оси: FNAV_COMPASS_AXES="x,-y,-z" (TODO(contract): поле compass.axes).
+(зеркально) — переопределить оси: settings.compass.axes="x,-y,-z" (или env FNAV_COMPASS_AXES).
 Проверка на устройстве: python -m fnav.sensors.selftest (знак z и направление вращения).
 """
 
@@ -187,12 +187,21 @@ def parse_axes(spec: str) -> list[tuple[int, float]]:
     return out
 
 
-def axes_for(chip: str) -> list[tuple[int, float]]:
-    env = os.environ.get("FNAV_COMPASS_AXES")
-    if env:
-        with contextlib.suppress(ValueError):
-            return parse_axes(env)
-    return parse_axes(AXES.get(chip, "x,y,z"))
+def axes_spec_for(chip: str, override: str = "") -> str:
+    """Действующая строка осей: settings.compass.axes > env FNAV_COMPASS_AXES > таблица AXES.
+    Неверная строка пропускается (берётся следующий источник)."""
+    for spec in (override, os.environ.get("FNAV_COMPASS_AXES", "")):
+        if spec and spec.strip():
+            try:
+                parse_axes(spec)
+            except ValueError:
+                continue
+            return ",".join(p.strip().lower() for p in spec.split(","))
+    return AXES.get(chip, "x,y,z")
+
+
+def axes_for(chip: str, override: str = "") -> list[tuple[int, float]]:
+    return parse_axes(axes_spec_for(chip, override))
 
 
 def map_axes(v: tuple[float, float, float], axes: list[tuple[int, float]]) -> tuple[float, float, float]:
@@ -221,7 +230,7 @@ class CompassReader(threading.Thread):
 
     def __init__(
         self,
-        get_cfg: Callable[[], tuple[str, int, int | None, int]],  # (chip, bus, address, rate_hz)
+        get_cfg: Callable[[], tuple],  # (chip, bus, address, rate_hz[, axes_override])
         on_sample: Callable[[tuple[float, float, float], str], None],
         on_error: Callable[[str | None], None],
         bus_opener: Callable[[int], I2CBus] = open_bus,
@@ -234,6 +243,7 @@ class CompassReader(threading.Thread):
         self._stop_ev = threading.Event()
         self._reinit = threading.Event()
         self.driver: MagDriver | None = None
+        self.axes_spec = ""
         self.samples = 0
 
     def stop(self) -> None:
@@ -253,7 +263,9 @@ class CompassReader(threading.Thread):
         backoff = 1.0
         fails = 0
         while not self._stop_ev.is_set():
-            chip, bus_no, addr, rate = self.get_cfg()
+            cfg = self.get_cfg()
+            chip, bus_no, addr, rate = cfg[:4]
+            axes_override = cfg[4] if len(cfg) > 4 else ""
             if self._reinit.is_set():
                 self._reinit.clear()
                 self._close(bus)
@@ -268,7 +280,8 @@ class CompassReader(threading.Thread):
                         raise OSError(f"Compass: {want} not connected (nothing found on I2C-{bus_no})")
                     drv.init()
                     self.driver = drv
-                    axes = axes_for(drv.name)
+                    axes = axes_for(drv.name, axes_override)
+                    self.axes_spec = axes_spec_for(drv.name, axes_override)
                     backoff, fails = 1.0, 0
                     self.on_error(None)
                 except ImportError:

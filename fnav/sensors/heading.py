@@ -30,11 +30,21 @@ def mag_heading_deg(x: float, y: float) -> float | None:
     return norm360(math.degrees(math.atan2(-y, x)))
 
 
-def true_mag_heading(magnetic_deg: float | None, declination_deg: float, mount_offset_deg: float) -> float | None:
-    """Магнитный курс → от истинного севера: + склонение (восточное +) + поправка установки."""
+def deviation_deg(theta_deg: float, coeffs: list[float] | None) -> float:
+    """Остаточная девиация δ(θ) = A + B·sinθ + C·cosθ + D·sin2θ + E·cos2θ (пусто = 0)."""
+    if not coeffs:
+        return 0.0
+    k = list(coeffs) + [0.0] * (5 - len(coeffs))
+    t = math.radians(theta_deg)
+    return k[0] + k[1] * math.sin(t) + k[2] * math.cos(t) + k[3] * math.sin(2 * t) + k[4] * math.cos(2 * t)
+
+
+def true_mag_heading(magnetic_deg: float | None, declination_deg: float, mount_offset_deg: float,
+                     deviation: list[float] | None = None) -> float | None:
+    """Магнитный курс θ → от истинного севера: θ + склонение (восточное +) + δ(θ) + поправка установки."""
     if magnetic_deg is None:
         return None
-    return norm360(magnetic_deg + declination_deg + mount_offset_deg)
+    return norm360(magnetic_deg + declination_deg + deviation_deg(magnetic_deg, deviation) + mount_offset_deg)
 
 
 def gps_weight(speed_mps: float | None, gps_above_mps: float, blend_band_mps: float) -> float:

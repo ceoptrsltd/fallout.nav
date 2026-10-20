@@ -88,3 +88,19 @@ def test_configure_receiver_port_error_without_gpsd() -> None:
 
     res = m8n.configure_receiver("/dev/nope", manage_gpsd=False, open_port=bad_open)
     assert not res["ok"] and "cannot open" in res["error"]
+
+
+def test_not_connected_exits_fast() -> None:
+    dev = FakeM8N(alive=False)
+    c = make(dev)
+    t0 = dev.clock()
+    assert c.detect_baud(first=115200) is None
+    assert dev.clock() - t0 < 5.0  # тишина на RX — выходим после 2 попыток, gpsd не держим остановленным
+
+
+def test_detect_time_budget() -> None:
+    dev = FakeM8N(baud=4800)  # «мусор» на чужих скоростях есть, но ни одна не подходит в пределах бюджета
+    c = make(dev)
+    t0 = dev.clock()
+    c.detect_baud(first=115200, budget_s=3.0)
+    assert dev.clock() - t0 < 6.0

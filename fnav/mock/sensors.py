@@ -18,17 +18,17 @@ import math
 import os
 import random
 import time
-from datetime import datetime, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from fnav.interfaces import ButtonEvent, LedMode
 from fnav.models import (
+    AutoCalStatus,
     CalibrationStatus,
     CompassCalibration,
     CompassRaw,
     GpsFix,
     Heading,
-    AutoCalStatus,
     Satellite,
     SensorSnapshot,
     Settings,
@@ -202,7 +202,7 @@ class MockSensorHub:
             applied=cov >= self.settings.compass.auto_min_coverage_pct,
             message="mock auto-calibration",
         )
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self._snap = SensorSnapshot(
             compass_cal=auto,
             gps=GpsFix(
@@ -273,7 +273,7 @@ class MockSensorHub:
         self._calib_active = False
         return CompassCalibration(
             offset=[1.2, -3.4, 0.5],
-            fitted_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            fitted_at=datetime.now(UTC).isoformat(timespec="seconds"),
             quality=0.93,
         )
 
