@@ -5,7 +5,7 @@ START_DAEMON="true"
 DEVICES="/dev/ttyAMA0"
 # -n: read the GPS right away without waiting for a client - otherwise chrony gets no time
 # (SHM) until the first client connects.
-GPSD_OPTIONS="-n"
+GPSD_OPTIONS="-n -b"
 # Do not pick up USB GPS receivers and do not reconfigure devices on hotplug.
 USBAUTO="false"
 GPSD_SOCKET="/var/run/gpsd.sock"

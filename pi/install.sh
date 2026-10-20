@@ -154,6 +154,7 @@ else
         || install_any chromium chromium-browser || die "cannot install Chromium (tried: chromium, chromium-browser)"
     command -v rpicam-hello >/dev/null || install_any rpicam-apps-lite rpicam-apps libcamera-apps-lite \
         || warn "rpicam-apps not installed (only needed for diagnostics: rpicam-hello --list-cameras)"
+    dpkg -s python3-av >/dev/null 2>&1 || install_any python3-av || warn "python3-av not installed - RTSP relay will use ffmpeg only"
     dpkg -s python3-simplejpeg >/dev/null 2>&1 || install_any python3-simplejpeg         || warn "python3-simplejpeg not installed - MJPEG encoding will fall back to Pillow"
     dpkg -s polkitd >/dev/null 2>&1 || install_any polkitd policykit-1 || warn "polkit not installed - nmcli from fnav may be denied"
 fi

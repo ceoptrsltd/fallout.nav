@@ -36,7 +36,7 @@ with open(sys.argv[1], "rb") as f:
     project = tomllib.load(f)["project"]
 
 # Provided by apt (python3-gps, python3-lgpio, python3-gpiozero); the PyPI "gps" is a different project.
-APT_PROVIDED = {"gps", "lgpio", "gpiozero"}
+APT_PROVIDED = {"gps", "lgpio", "gpiozero", "numpy"}  # numpy: same build as picamera2/simplejpeg
 
 reqs = list(project.get("dependencies", []))
 reqs += project.get("optional-dependencies", {}).get("pi", [])

@@ -15,6 +15,8 @@ Cmnd_Alias FNAV_SERVICES = \
     /usr/bin/systemctl stop gpsd.socket, \
     /usr/bin/systemctl start gpsd.socket, \
     /usr/bin/systemctl restart gpsd.socket, \
+    /usr/bin/systemctl stop gpsd.socket gpsd.service, \
+    /usr/bin/systemctl start gpsd.socket gpsd.service, \
     /usr/bin/systemctl stop fnav-camera, \
     /usr/bin/systemctl start fnav-camera, \
     /usr/bin/systemctl restart fnav-camera, \
