@@ -35,7 +35,8 @@ state = {
     mode: "map" | "camera",
     orientation: "heading_up" | "north_up",
     bearingDeg: 247.3,           // текущий (анимированный) поворот карты: на сколько градусов карта повёрнута; 0 в north_up
-    headingDeg: 247.3 | null,     // анимированный курс машины (истинный), null если неизвестен
+    headingDeg: 247.3 | null,     // анимированный курс (истинный) для цифр компаса, null если неизвестен
+    vehicleHeadingDeg: 247.3 | null, // курс иконки машины (быстрое сглаживание)
     headingSource: "gps"|"mag"|"blend"|"none",
     speedMps: 12.3 | null,
     zoom: 17.42,                  // текущий анимированный зум
@@ -62,7 +63,8 @@ export const compassStyles = [{ id: "v1", name: "…" }, …];  // вариан�
 ```
 
 - Ориентация берётся из `settings.display.orientation` (fallback — `telemetry.display.orientation`).
-- B вычисляет экранную позицию и поворот машины: `heading_up` → машина в `(w/2, h*vehicle_anchor_y)`, `rotationDeg = 0`; `north_up` → центр, `rotationDeg = headingDeg`.
+- B вычисляет экранную позицию и поворот машины: `heading_up` → машина в `(w/2, h*vehicle_anchor_y)`, `rotationDeg = vehicleHeadingDeg − bearingDeg` (иконка сначала поворачивается сама, затем карта догоняет — см. ниже); `north_up` → центр, `rotationDeg = vehicleHeadingDeg`.
+- **Эффект поворота (heading_up):** `vehicleHeadingDeg` следует за курсом быстро (`display.vehicle_rotation_lag_s`, ~0.25 с), `bearingDeg` карты — медленно, с замедлением в конце (`display.map_rotation_lag_s`, ~1.5 с, критически демпфированная пружина без перелёта), изменения курса меньше `display.map_rotation_deadband_deg` карту не крутят. В итоге на повороте иконка отклоняется от вертикали, а затем карта плавно доворачивается и линия машины снова совпадает с осью экрана.
 - Компас сам учитывает ориентацию: `heading_up` — вращается шкала (вверху — курс), `north_up` — шкала неподвижна (N вверху), вращается стрелка.
 - C делает страницу-галерею `web/display/ui/gallery.html`: все варианты компаса, иконка машины, спидометр, на холстах 768×576 с mock-состоянием, в **физическом размере** (калибровка — см. ниже), с анимацией курса и скорости.
 

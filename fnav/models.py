@@ -46,6 +46,10 @@ class DisplaySettings(_Model):
     speed_units: Literal["kmh", "mps"] = "kmh"
     # где стоит машина в режиме heading_up: доля высоты холста сверху (0.5 = центр, 0.67 = нижняя треть)
     vehicle_anchor_y: float = Field(0.67, ge=0.3, le=0.9)
+    # heading_up: иконка машины поворачивается почти сразу, карта догоняет её с замедлением
+    vehicle_rotation_lag_s: float = Field(0.25, ge=0, le=3)  # постоянная времени поворота иконки
+    map_rotation_lag_s: float = Field(1.5, ge=0, le=10)  # постоянная времени «догоняния» карты
+    map_rotation_deadband_deg: float = Field(2.0, ge=0, le=20)  # мелкие колебания курса карту не крутят
     layers: MapLayers = MapLayers()
     show_trail: bool = True
     trail_seconds: int = Field(60, ge=0, le=600)
