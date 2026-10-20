@@ -3,8 +3,9 @@
 #
 # Video goes out of the CM4 composite DAC (module pin 111 VDAC_COMP, wired by hand on the CM4-NANO-B)
 # straight into channel 2 of the WAECO RV-50: PAL, 720x576 interlaced, 50 fields/s.
-video=Composite-1:720x576@50ie
-vc4.tv_norm=PAL
+# tv_mode=Mono: 625 lines / 50 Hz without the colour subcarrier - the cleanest signal for the
+# monochrome RV-50. (PAL with colour: tv_mode=PAL.)
+video=Composite-1:720x576@50ie,tv_mode=Mono
 # Alternative (HDMI -> AV converter on the mini-HDMI port): replace the two lines above with
 #   video=HDMI-A-1:720x576@50D
 #   drm.edid_firmware=HDMI-A-1:edid/fnav-576p50.bin
