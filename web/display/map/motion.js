@@ -146,7 +146,8 @@ export class MotionModel {
       my: this.my,
       lat: ll ? ll.lat : null,
       lon: ll ? ll.lon : null,
-      heading: this.heading, // последний известный (для поворота карты)
+      heading: this.heading, // сглаженный курс (цифры компаса); последний известный
+      headingTarget: this.headingTarget, // отфильтрованный от шума курс без задержки (вход RotationRig)
       headingKnown: this.headingKnown && this.heading !== null,
       headingSource: this.headingSource,
       speed: this.speed,
@@ -186,10 +187,11 @@ export class ZoomAnimator {
 }
 
 /**
- * Плавное переключение ориентации: f = 0 (north_up) … 1 (heading_up) за durationS со smoothstep.
+ * Положение машины на экране при переключении ориентации: f = 0 (north_up, центр) …
+ * 1 (heading_up, нижняя треть) за durationS со smoothstep.
  */
 export class OrientationBlend {
-  constructor(durationS = 0.8) {
+  constructor(durationS = 1.2) {
     this.dur = durationS;
     this.raw = null; // линейный прогресс 0..1
     this.goal = 1;
@@ -210,17 +212,99 @@ export class OrientationBlend {
   }
 }
 
+/** Точка машины на холсте для доли f (0 = north_up, 1 = heading_up). */
+export function vehicleAnchor(f, w, h, anchorY) {
+  return { ax: w / 2, ay: h * (0.5 + f * (anchorY - 0.5)) };
+}
+
 /**
- * Поворот карты и положение машины для доли f (0 = north_up, 1 = heading_up).
- * bearing — на сколько повёрнута карта; vehicleRot — поворот иконки на экране (0 = вверх).
+ * «Эффект поворота» (docs/contracts/display.md):
+ *   * vehicle — курс иконки: быстрое экспоненциальное следование (vehicleLagS);
+ *   * bearing — поворот карты: критически демпфированная пружина (без перелёта, мягкий старт
+ *     и торможение), ω = 3 / mapLagS → за mapLagS карта проходит ≈ 80 % поворота, за 1.6·mapLagS ≈ 95 %;
+ *     в heading_up цель — vehicle, в north_up — 0 (переключение ориентации через ту же пружину).
+ *   * deadband: отклонение < deadbandDeg не запускает поворот карты (шум, дрожь руля); если
+ *     отклонение держится дольше holdS — карта мягко досинхронизируется до нуля.
+ *   * на малой скорости (курс по компасу) всё мягче: иконка до 3× медленнее, карта до 1.7×,
+ *     deadband до 2× шире.
+ * Все углы — по кратчайшей дуге; bearing хранится «развёрнутым» и нормализуется на выходе.
  */
-export function orientationPose(f, headingDeg, w, h, anchorY) {
-  const hdg = headingDeg ?? 0;
-  const bearing = norm360(f * angleDiff(0, hdg));
-  return {
-    bearing,
-    vehicleRot: norm360(hdg - bearing),
-    ax: w / 2,
-    ay: h * (0.5 + f * (anchorY - 0.5)),
-  };
+export const ROTATION_DEFAULTS = {
+  vehicleLagS: 0.25,
+  mapLagS: 1.5,
+  deadbandDeg: 2.0,
+  holdS: 1.0,
+  slowMps: 3.0, // ниже — курс по компасу, сглаживаем сильнее
+  settleDeg: 0.3, // карта «догнала»: ошибка и скорость поворота меньше этого (°, °/с)
+};
+
+export class RotationRig {
+  constructor(opts = {}) {
+    this.o = { ...ROTATION_DEFAULTS };
+    this.configure(opts);
+    this.orientation = "heading_up";
+    this.vehicle = null; // курс иконки, 0..360
+    this.bearing = null; // поворот карты (развёрнутый), °
+    this.vel = 0; // скорость поворота карты, °/с
+    this.tracking = true; // карта догоняет цель (иначе — стоит в пределах deadband)
+    this.offTime = 0; // сколько держится отклонение внутри deadband
+  }
+
+  configure(opts = {}) {
+    for (const [k, v] of Object.entries(opts)) if (Number.isFinite(v)) this.o[k] = v;
+  }
+
+  setOrientation(o) {
+    const next = o === "north_up" ? "north_up" : "heading_up";
+    if (next !== this.orientation) this.tracking = true;
+    this.orientation = next;
+  }
+
+  /** dt — с; heading — входной курс (null = неизвестен, держим последний); speed — м/с. */
+  update(dt, heading, speed = 0) {
+    dt = clamp(dt, 0, 0.25);
+    const o = this.o;
+    const slow = 1 - clamp((speed ?? 0) / o.slowMps, 0, 1); // 1 на стоянке, 0 в движении
+
+    if (Number.isFinite(heading)) {
+      if (this.vehicle === null) this.vehicle = norm360(heading);
+      else this.vehicle = approachAngle(this.vehicle, heading, dt, o.vehicleLagS * (1 + 2 * slow));
+    }
+    const veh = this.vehicle ?? 0;
+    const target = this.orientation === "heading_up" ? veh : 0;
+    if (this.bearing === null) {
+      this.bearing = target;
+      this.vel = 0;
+    }
+
+    const err = angleDiff(this.bearing, target);
+    const deadband = o.deadbandDeg * (1 + slow);
+    if (this.tracking) {
+      if (Math.abs(err) < o.settleDeg && Math.abs(this.vel) < o.settleDeg) {
+        this.tracking = false;
+        this.offTime = 0;
+      }
+    } else if (Math.abs(err) >= deadband) {
+      this.tracking = true;
+    } else if (Math.abs(err) > o.settleDeg) {
+      this.offTime += dt;
+      if (this.offTime > o.holdS) this.tracking = true; // постоянный перекос — досинхронизировать
+    } else {
+      this.offTime = 0;
+    }
+
+    const lag = o.mapLagS * (1 + 0.7 * slow);
+    if (lag <= 0) {
+      this.bearing = this.bearing + err;
+      this.vel = 0;
+    } else {
+      // в покое цель = текущее положение: пружина плавно гасит остаточную скорость
+      const goal = this.tracking ? this.bearing + err : this.bearing;
+      [this.bearing, this.vel] = springStep(this.bearing, this.vel, goal, 3 / lag, dt);
+    }
+    // нормализация без разрыва: цель всегда берётся относительно текущего значения
+    if (this.bearing >= 360 || this.bearing < 0) this.bearing = norm360(this.bearing);
+
+    return { vehicle: veh, bearing: norm360(this.bearing), vehicleRot: norm360(veh - this.bearing) };
+  }
 }
