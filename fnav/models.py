@@ -50,6 +50,7 @@ class DisplaySettings(_Model):
     vehicle_rotation_lag_s: float = Field(0.25, ge=0, le=3)  # постоянная времени поворота иконки
     map_rotation_lag_s: float = Field(1.5, ge=0, le=10)  # постоянная времени «догоняния» карты
     map_rotation_deadband_deg: float = Field(2.0, ge=0, le=20)  # мелкие колебания курса карту не крутят
+    compass_smoothing_s: float = Field(0.1, ge=0, le=2)  # компас на экране — без задержек, минимальное сглаживание
     layers: MapLayers = MapLayers()
     show_trail: bool = True
     trail_seconds: int = Field(60, ge=0, le=600)
@@ -79,7 +80,7 @@ class NavSettings(_Model):
 class HeadingSettings(_Model):
     gps_above_mps: float = Field(3.0, ge=0)  # выше — курс по GPS
     blend_band_mps: float = Field(1.0, ge=0)  # ширина зоны плавного перехода компас↔GPS
-    smoothing_s: float = Field(0.5, ge=0)  # постоянная времени сглаживания курса
+    smoothing_s: float = Field(0.15, ge=0)  # постоянная времени сглаживания курса
 
 
 class LoresSettings(_Model):
