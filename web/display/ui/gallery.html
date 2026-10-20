@@ -57,6 +57,10 @@
       <option value="norec">not recording</option>
       <option value="all">everything down</option>
     </select></label>
+    <label>Motion <select id="motion">
+      <option value="turns">90° turns (turn effect)</option>
+      <option value="sweep">continuous sweep</option>
+    </select></label>
     <label>Units <select id="units"><option value="kmh">km/h</option><option value="mps">m/s</option></select></label>
     <label>Scale <select id="zoom">
       <option value="1">1:1 (physical)</option><option value="1.5">x1.5</option><option value="2">x2</option><option value="3">x3</option>
@@ -71,7 +75,11 @@
   <h2>Compass: 3 styles × 2 orientations</h2>
   <p class="muted note">Heading up: map and scale rotate, the car sits in the lower third, current heading is at the top.
     North up: the scale is fixed (N at the top), the heading needle/pointer moves, the car is centred.
-    The chosen style is the <code>display.compass_style</code> setting. Dashed frame = 5% safe area.</p>
+    The chosen style is the <code>display.compass_style</code> setting. Dashed frame = 5% safe area.<br>
+    Turn effect (heading up): on a 90° turn the car icon rotates first (fast), the map follows on a damped spring.
+    The compass scale always follows the map (N on the scale = north on the map); the white heading bug / needle /
+    tape marker shows the car's own heading, swings aside during the turn and returns under the top mark
+    as the map catches up. Digits show the course.</p>
   <div class="grid" id="compasses"></div>
 
   <h2>Vehicle icon</h2>

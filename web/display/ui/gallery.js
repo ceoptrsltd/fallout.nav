@@ -230,25 +230,50 @@ function drawCamera(g, dist) {
 
 // ── симуляция поездки ────────────────────────────────────────────────────
 
-const sim = { t: 0, x: 300, y: 300, heading: 30, speed: 12, dist: 0, hist: [] };
+const sim = { t: 0, x: 300, y: 300, course: 30, veh: 30, bear: 30, bearV: 0, bearTarget: 30, speed: 12, dist: 0, hist: [] };
+
+// Эффект поворота как у B (docs/contracts/display.md): иконка догоняет курс быстро,
+// карта — критически демпфированной пружиной, мелкие изменения (deadband) карту не крутят.
+const RIG = { vehicleLag: 0.25, mapLag: 1.5, deadband: 4 };
+const TURN = { every: 7, dur: 1.6, pattern: [90, 90, -90, 90, -90, -90, 90, 90] };
+const smooth = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
+
+/** Курс (развёрнутый, без скачка 360→0) в момент t. */
+function courseAt(t) {
+  if (ui.motion === "sweep") return 30 + t * 10 + 22 * Math.sin(t * 0.55);
+  let c = 30;
+  const n = Math.floor(t / TURN.every);
+  for (let k = 0; k < n; k++) c += TURN.pattern[k % TURN.pattern.length];
+  c += TURN.pattern[n % TURN.pattern.length] * smooth((t - n * TURN.every - (TURN.every - TURN.dur)) / TURN.dur);
+  return c + 1.5 * Math.sin(t * 1.3); // лёгкое «рыскание» — его гасит deadband карты
+}
 
 function stepSim(dt) {
   sim.t += dt;
   const t = sim.t;
-  // курс: полный оборот за ~36 с + покачивание
-  sim.heading = (((t * 10 + 22 * Math.sin(t * 0.55)) % 360) + 360) % 360;
+  const target = courseAt(t);
+  // развёртка, чтобы фильтры не крутили «длинной дорогой»
+  sim.course = sim.veh + ((((target - sim.veh) % 360) + 540) % 360) - 180;
+  if (dt > 0) {
+    sim.veh += (sim.course - sim.veh) * (1 - Math.exp(-dt / RIG.vehicleLag));
+    if (Math.abs(sim.course - sim.bearTarget) > RIG.deadband) sim.bearTarget = sim.course;
+    else if (Math.abs(sim.course - sim.bearTarget) > 0.5) sim.bearTarget += (sim.course - sim.bearTarget) * dt * 0.3;
+    const w = 4 / RIG.mapLag;
+    const err = sim.bear - sim.bearTarget;
+    const acc = -w * w * err - 2 * w * sim.bearV;
+    sim.bearV += acc * dt;
+    sim.bear += sim.bearV * dt;
+  }
   sim.speed = Math.max(0, 14 + 13 * Math.sin(t * 0.23) + 4 * Math.sin(t * 0.9));
   const d = sim.speed * dt * PX_PER_M;
   sim.dist += sim.speed * dt;
-  sim.x += Math.sin(sim.heading * DEG) * d;
-  sim.y -= Math.cos(sim.heading * DEG) * d;
+  sim.x += Math.sin(sim.course * DEG) * d;
+  sim.y -= Math.cos(sim.course * DEG) * d;
   const last = sim.hist[sim.hist.length - 1];
   if (!last || t - last.t > 0.2) sim.hist.push({ x: sim.x, y: sim.y, t });
   while (sim.hist.length && t - sim.hist[0].t > 60) sim.hist.shift();
 }
 
-// предварительный «прогон», чтобы сразу был след
-for (let i = 0; i < 600; i++) stepSim(1 / 20);
 
 const COND = {
   ok: {},
@@ -260,22 +285,27 @@ const COND = {
   all: { hasFix: false, fix: "none", sats: 0, connected: false, internet: false, recording: false, headingDeg: null, headingSource: "none", speedMps: null },
 };
 
-const ui = { units: "kmh", cond: "ok", bg: "sat", paused: false };
+const ui = { units: "kmh", cond: "ok", bg: "sat", paused: false, motion: "turns" };
+
+// предварительный «прогон», чтобы сразу был след
+for (let i = 0; i < 600; i++) stepSim(1 / 20);
 
 function makeState(cfg, now) {
   const o = { ...COND[cfg.cond ?? ui.cond], ...(cfg.override ?? {}) };
   const orientation = cfg.orient;
   const src = sim.speed > 3.5 ? "gps" : sim.speed > 2.5 ? "blend" : "mag";
-  const headingDeg = "headingDeg" in o ? o.headingDeg : sim.heading;
+  const norm = (a) => ((a % 360) + 360) % 360;
+  const headingDeg = "headingDeg" in o ? o.headingDeg : norm(sim.course);
+  const vehicleHeadingDeg = headingDeg == null ? null : norm(sim.veh);
   const headingSource = o.headingSource ?? src;
-  const bearingDeg = orientation === "north_up" ? 0 : headingDeg ?? sim.heading;
+  const bearingDeg = orientation === "north_up" ? 0 : norm(sim.bear);
   const sats = o.sats ?? 9 + Math.round(3 * Math.sin(sim.t / 7));
   return {
     now,
     telemetry: {
       type: "telemetry",
       t: Date.now() / 1000,
-      gps: { fix: o.fix ?? "3d", sats_used: sats, sats_visible: sats + 4, speed_mps: sim.speed, course_deg: sim.heading },
+      gps: { fix: o.fix ?? "3d", sats_used: sats, sats_visible: sats + 4, speed_mps: sim.speed, course_deg: norm(sim.course) },
       heading: { deg: headingDeg, source: headingSource },
       display: { mode: cfg.mode ?? "map", reason: "speed", target_zoom: 18, orientation },
       camera: { state: "recording", recording: o.recording ?? true },
@@ -299,6 +329,7 @@ function makeState(cfg, now) {
       orientation,
       bearingDeg,
       headingDeg,
+      vehicleHeadingDeg,
       headingSource,
       speedMps: "speedMps" in o ? o.speedMps : sim.speed,
       zoom: 18,
@@ -377,7 +408,9 @@ function renderMain(v, now) {
   drawWorld(g, cfg, state, anchor);
   if (state.view.mode !== "camera" && (cfg.bg ?? ui.bg) !== "cam") {
     drawTrail(g, trailPoints(state, anchor), state);
-    drawVehicle(g, anchor.x, anchor.y, nu ? state.view.headingDeg ?? sim.heading : 0, state);
+    // как у B: heading_up → vehicleHeadingDeg − bearingDeg, north_up → vehicleHeadingDeg
+    const vh = sim.veh;
+    drawVehicle(g, anchor.x, anchor.y, nu ? vh : vh - state.view.bearingDeg, state);
   }
   const t0 = performance.now();
   drawHud(g, state);
@@ -484,7 +517,7 @@ async function main() {
   renderCalibrator(document.getElementById("calibrator"), { onChange: sizeViews });
   onPxPerMmChange(sizeViews);
   document.getElementById("zoom").addEventListener("change", sizeViews);
-  for (const id of ["bg", "cond", "units"]) {
+  for (const id of ["bg", "cond", "units", "motion"]) {
     document.getElementById(id).addEventListener("change", (e) => (ui[id] = e.target.value));
   }
   const tog = (id, cls) => {
@@ -510,6 +543,13 @@ async function main() {
     sizeViews();
   }
   if (q.get("bg")) ui.bg = document.getElementById("bg").value = q.get("bg");
+  if (q.get("motion")) ui.motion = document.getElementById("motion").value = q.get("motion");
+  // ?t=34.6 — промотать симуляцию до момента t и поставить на паузу (стоп-кадр поворота)
+  if (q.get("t")) {
+    const tEnd = parseFloat(q.get("t"));
+    while (sim.t < tEnd) stepSim(1 / 60);
+    document.getElementById("pause").click();
+  }
   if (q.get("cond")) ui.cond = document.getElementById("cond").value = q.get("cond");
   requestAnimationFrame(frame);
 }

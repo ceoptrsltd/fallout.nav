@@ -22,12 +22,18 @@ function readHeading(state) {
   const h = v.headingDeg;
   const known = typeof h === "number" && Number.isFinite(h) && v.headingSource !== "none";
   const bearing = Number.isFinite(v.bearingDeg) ? v.bearingDeg : 0;
+  const orientation =
+    v.orientation ?? state?.settings?.display?.orientation ?? state?.telemetry?.display?.orientation ?? "heading_up";
+  // курс иконки машины (быстрый); если B его не передал — цифровой курс
+  const vehicle = known && Number.isFinite(v.vehicleHeadingDeg) ? v.vehicleHeadingDeg : known ? h : null;
   return {
     known,
     heading: known ? norm360(h) : null,
     bearing,
-    northUp: v.orientation === "north_up",
+    northUp: orientation === "north_up",
     source: known ? v.headingSource ?? "gps" : "none",
+    // угол указателя машины относительно верхней метки шкалы, −180…+180
+    rel: vehicle == null ? null : norm360(vehicle - bearing + 180) - 180,
   };
 }
 
@@ -100,6 +106,33 @@ function pointerTri(ctx, cx, cy, angRad, rTip, rBase, halfW, fill, outline = C.d
   ctx.strokeStyle = outline;
   ctx.stroke();
   ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * «Бегунок» курса машины на круговой шкале: сплошной пятиугольник остриём к центру.
+ * angRad — от верха по часовой; rOut — внешний край (у делений).
+ */
+function headingBug(ctx, cx, cy, angRad, rOut, depth = 21, halfW = 10) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angRad);
+  const y0 = -rOut;
+  const y1 = -rOut + depth - 7;
+  const y2 = -rOut + depth;
+  ctx.beginPath();
+  ctx.moveTo(-halfW, y0);
+  ctx.lineTo(halfW, y0);
+  ctx.lineTo(halfW, y1);
+  ctx.lineTo(0, y2);
+  ctx.lineTo(-halfW, y1);
+  ctx.closePath();
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 4.5;
+  ctx.strokeStyle = C.dark;
+  ctx.stroke();
+  ctx.fillStyle = C.ink;
   ctx.fill();
   ctx.restore();
 }
@@ -231,9 +264,11 @@ function drawV1(ctx, state, safe) {
 
   // курсовая черта (heading_up) или стрелка курса (north_up)
   if (!hd.northUp) {
-    pointerTri(ctx, cx, cy, 0, face - 14, R + 5, 11, C.ink);
-  } else if (hd.known) {
-    pointerTri(ctx, cx, cy, (hd.heading - hd.bearing) * DEG, face - 16, R + 6, 12, C.ink);
+    // неподвижная верхняя метка на ободе + бегунок машины на шкале (на повороте уходит вбок)
+    pointerTri(ctx, cx, cy, 0, face - 1, R + 5, 9, C.ink);
+    if (hd.rel != null) headingBug(ctx, cx, cy, hd.rel * DEG, face - 1);
+  } else if (hd.rel != null) {
+    pointerTri(ctx, cx, cy, hd.rel * DEG, face - 16, R + 6, 12, C.ink);
   }
 
   // центральное табло: курс + румб
@@ -376,22 +411,21 @@ function drawV2(ctx, state, safe) {
   ctx.rect(ix, y0, iw, H + 2);
   ctx.clip();
   ctx.globalAlpha = dim;
-  let px = cx; // x указателя курса
+  let px = null; // x указателя курса машины
+  const lim = iw / 2 - 6;
   if (!hd.northUp) {
     const strip = v2Strip();
     const center = norm360(hd.bearing);
     if (strip) ctx.drawImage(strip.canvas, cx - (center - from) * ppd, y0, strip.w, strip.h);
+    if (hd.rel != null) px = cx + Math.max(-lim, Math.min(lim, hd.rel * ppd));
   } else {
     const { s, ppd: p2 } = v2Fixed();
     blit(ctx, s, ix, y0);
-    if (hd.known) {
-      const rel = norm360(hd.heading - hd.bearing + 180) - 180;
-      px = ix + iw / 2 + rel * p2;
-    }
+    if (hd.rel != null) px = ix + iw / 2 + Math.max(-lim, Math.min(lim, hd.rel * p2));
   }
   ctx.globalAlpha = 1;
   // указатель: вертикальная черта через ленту
-  if (!hd.northUp || hd.known) {
+  if (px != null) {
     ctx.fillStyle = C.dark;
     ctx.fillRect(px - 3.5, y0, 7, H + 2);
     ctx.fillStyle = C.ink;
@@ -399,8 +433,22 @@ function drawV2(ctx, state, safe) {
   }
   ctx.restore();
 
-  // треугольник под лентой
-  if (!hd.northUp || hd.known) {
+  // heading_up: неподвижная центральная метка (зубец сверху ленты)
+  if (!hd.northUp) {
+    ctx.beginPath();
+    ctx.moveTo(cx - 9, y0 + 1);
+    ctx.lineTo(cx + 9, y0 + 1);
+    ctx.lineTo(cx, y0 + 12);
+    ctx.closePath();
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = C.dark;
+    ctx.stroke();
+    ctx.fillStyle = C.ink;
+    ctx.fill();
+  }
+  // треугольник под лентой — у указателя машины
+  if (px != null) {
     ctx.beginPath();
     ctx.moveTo(px, y0 + H - 9);
     ctx.lineTo(px + 11, y0 + H + 8);
@@ -630,12 +678,12 @@ function drawV3(ctx, state, safe) {
 
   blitCentered(ctx, v3Bezel(), cx, cy);
   blitCentered(ctx, v3Card(), cx, cy, rot, hd.known ? 1 : 0.55);
-  if (hd.northUp) {
-    if (hd.known) blitCentered(ctx, v3Needle(), cx, cy, (hd.heading - hd.bearing) * DEG);
-  } else {
-    // неподвижная латунная курсовая метка
-    pointerTri(ctx, cx, cy, 0, face - 12, R + 4, 11, C.brassHi);
+  if (!hd.northUp) {
+    // неподвижная латунная верхняя метка на ободе
+    pointerTri(ctx, cx, cy, 0, face - 1, R + 4, 10, C.brassHi);
   }
+  // стрелка — курс машины относительно экрана (heading_up: на повороте уходит вбок, потом к метке)
+  if (hd.rel != null) blitCentered(ctx, v3Needle(), cx, cy, hd.rel * DEG);
 
   // табличка с курсом
   const pw = 200;

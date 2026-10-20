@@ -18,7 +18,7 @@
 #   -h, --help
 set -Eeuo pipefail
 
-MEDIAMTX_VERSION="${MEDIAMTX_VERSION:-1.12.3}"
+MEDIAMTX_VERSION="${MEDIAMTX_VERSION:-1.21.2}"
 LOG=/var/log/fnav-install.log
 BOOT_DIR=/boot/firmware
 [ -d "$BOOT_DIR" ] || BOOT_DIR=/boot
