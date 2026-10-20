@@ -117,6 +117,7 @@ export async function mount(root) {
     h(".hint", { style: { marginTop: "8px" } }, "Applied on the device screen after saving. Use the \"Screen\" button at the top to check the result."),
     h("hr.sep"),
     h("h3", { style: { marginBottom: "4px" } }, "Rotation smoothing (heading-up mode)"),
+    f({ path: "display.compass_smoothing_s", label: "Compass smoothing on display", hint: "Time constant for the on-screen compass needle/scale", type: "range", min: 0, max: 2, step: 0.05, unit: "s" }),
     f({ path: "display.vehicle_rotation_lag_s", label: "Vehicle icon turn smoothing", hint: "Time constant: how quickly the car icon turns to the new heading", type: "range", min: 0, max: 3, step: 0.05, unit: "s" }),
     f({ path: "display.map_rotation_lag_s", label: "Map catch-up time", hint: "Time constant: the map follows the icon slowly (heading-up)", type: "range", min: 0, max: 10, step: 0.1, unit: "s" }),
     f({ path: "display.map_rotation_deadband_deg", label: "Ignore heading jitter below", hint: "Small heading wobbles do not rotate the map", type: "range", min: 0, max: 20, step: 0.5, unit: "°" }),
