@@ -37,6 +37,9 @@ disable_fw_kms_setup=1
 gpu_mem=128
 # Compute Modules need TV-out enabled explicitly; on CM4 this also switches HDMI off (one or the other).
 enable_tvout=1
+# Keep the core clock fixed: the HVS (scan-out) runs from it, and the firmware's dynamic core scaling
+# (500 <-> 320 MHz under changing load) disturbs the composite picture every few seconds.
+core_freq_min=500
 # Firmware/early-boot fallback: PAL (sdtv_mode=2), 4:3 (sdtv_aspect=1).
 sdtv_mode=2
 sdtv_aspect=1
