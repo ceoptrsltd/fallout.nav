@@ -57,7 +57,7 @@ Mock-камера (тестовая картинка MJPEG) — часть `fnav
 
 ## Общие правила
 
-- Язык интерфейса — **русский**. Комментарии в коде — по-русски или по-английски, кратко.
+- **All user-facing text is ENGLISH only** (web UI, display HUD, API error messages, statuses, logs shown to the user). No Russian in the interface. Code comments — English or Russian, brief.
 - Никаких внешних CDN в рантайме: в машине интернета может не быть. Все JS/CSS/шрифты — локально в `web/`.
 - Фронтенд — **без сборки**: ES-модули, `<script type="module">`.
 - Python: типизация, `asyncio`, без блокирующих вызовов в event loop (блокирующее — в `asyncio.to_thread`).

@@ -252,7 +252,7 @@ class MockSensorHub:
             active=self._calib_active,
             samples=self._calib_samples,
             coverage_pct=round(cov, 1),
-            message="mock: вращайте модуль" if self._calib_active else "",
+            message="mock: rotate the module" if self._calib_active else "",
         )
 
     def calibration_finish(self) -> CompassCalibration:
