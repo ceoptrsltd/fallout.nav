@@ -37,6 +37,8 @@ Environment=LIBSEAT_BACKEND=seatd
 # cage starts without a keyboard/mouse (otherwise wlroots/libinput refuses to start).
 Environment=WLR_LIBINPUT_NO_DEVICES=1
 # Optional extra Chromium flags and overrides: /etc/fnav/display.env (FNAV_CHROMIUM_EXTRA=...)
+# Page to show; can be overridden in display.env (e.g. the service test pattern /display/test-pattern.html?mode=bw).
+Environment=FNAV_DISPLAY_URL=http://127.0.0.1/display/?pal=1
 EnvironmentFile=-/etc/fnav/display.env
 
 # Wait for core (up to 120 s); clean up traces of an unclean shutdown in the Chromium profile.
@@ -71,7 +73,7 @@ ExecStart=/usr/bin/cage -d -- chromium \
     --enable-gpu-rasterization \
     --enable-zero-copy \
     $FNAV_CHROMIUM_EXTRA \
-    "http://127.0.0.1/display/?pal=1"
+    "${FNAV_DISPLAY_URL}"
 
 Restart=always
 RestartSec=3
