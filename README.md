@@ -89,3 +89,8 @@ written contracts in `docs/contracts/`. Plan and decisions: `PLAN.md`; hardware 
 `docs/device-report.md`.
 
 Map imagery © Esri and its data providers (Esri, Maxar, Earthstar Geographics and the GIS user community).
+
+## License
+
+MIT — see [LICENSE](LICENSE). Third‑party parts keep their own licenses: fonts in `web/display/ui/fonts/`
+(SIL OFL 1.1, see `LICENSES.md` there) and `web/admin/vendor/mpegts.js` (Apache‑2.0).

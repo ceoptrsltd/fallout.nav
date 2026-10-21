@@ -3,6 +3,7 @@ name = "fnav"
 version = "0.1.0"
 description = "fallout.nav: dashcam + navigation display for Raspberry Pi CM4"
 requires-python = ">=3.11"
+license = { text = "MIT" }
 dependencies = [
     "fastapi>=0.109",
     "uvicorn[standard]>=0.27",
