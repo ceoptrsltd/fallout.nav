@@ -8,3 +8,7 @@ venv/
 *.egg-info/
 node_modules/
 secrets.env
+
+# project page: generated / local-only
+site/display/
+site/_shots/
