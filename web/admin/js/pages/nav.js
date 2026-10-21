@@ -203,6 +203,7 @@ export async function mount(root) {
     f({ path: "display.safe_area_pct", label: "Safe area", hint: "Margin the CRT may cut off, per side", type: "range", min: 0, max: 20, step: 0.5, unit: "%" }),
     f({ path: "display.vehicle_anchor_y", label: "Vehicle position", hint: "Heading-up mode: fraction of the height from the top (0.5 = center, 0.67 = lower third)", type: "range", min: 0.3, max: 0.9, step: 0.01 }),
     f({ path: "display.show_trail", label: "Show trail", type: "switch" }),
+    f({ path: "display.mirror_x", label: "Mirror screen left-right", hint: "For monitors that mirror the picture themselves (rear-view CRTs like the WAECO RV-50). Affects only the physical screen, not this preview", type: "switch" }),
     f({ path: "display.trail_seconds", label: "Trail length", type: "number", min: 0, max: 600, step: 10, unit: "s" }),
   );
 
