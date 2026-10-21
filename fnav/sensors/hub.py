@@ -86,6 +86,7 @@ class RealSensorHub:
         self._smoother = hd.HeadingSmoother(settings.heading.smoothing_s)
         self._still = StillnessFilter()
         self._anchor = hd.CompassAnchor()
+        self._anchor_learning = False
 
         # автокалибровка по GPS-курсу
         self.autocal = AutoCalibrator(settings.compass)
@@ -197,6 +198,10 @@ class RealSensorHub:
             return
         with contextlib.suppress(Exception):
             self._last_pos = (float(d["lat"]), float(d["lon"]))
+        with contextlib.suppress(Exception):
+            off = d.get("anchor_offset_deg")
+            if off is not None:  # машина, выключенная на стоянке, не поворачивается — поправка остаётся верной
+                self._anchor.learn(0.0, float(off), 0.0)
         ac = d.get("autocal")
         if isinstance(ac, dict):
             n = self.autocal.load_state(ac)
@@ -209,6 +214,8 @@ class RealSensorHub:
         d: dict[str, Any] = {}
         if self._last_pos is not None:
             d["lat"], d["lon"] = self._last_pos
+        if self._anchor.offset_deg is not None:
+            d["anchor_offset_deg"] = round(self._anchor.offset_deg, 2)
         ac = self.autocal.to_state()
         ac["axes"] = self._autocal_axes
         d["autocal"] = ac
@@ -279,9 +286,13 @@ class RealSensorHub:
         if s.heading.anchor_to_gps and mag_deg is not None:
             self._anchor.tau_s = s.heading.anchor_tau_s
             # учимся только когда курс полностью по GPS (скорость выше зоны перехода) — там он надёжен
-            if gps_course is not None and hd.gps_weight(speed, s.heading.gps_above_mps,
-                                                        s.heading.blend_band_mps) >= 1.0:
+            learning = gps_course is not None and hd.gps_weight(speed, s.heading.gps_above_mps,
+                                                                 s.heading.blend_band_mps) >= 1.0
+            if learning:
                 self._anchor.learn(mag_deg, gps_course, dt)
+            elif self._anchor_learning and self._loop is not None:
+                self._loop.run_in_executor(None, self._save_state)  # остановились — сохранить поправку
+            self._anchor_learning = learning
             fused_mag = self._anchor.apply(mag_deg)
         deg, src = hd.fuse(fused_mag, gps_course, speed, s.heading.gps_above_mps, s.heading.blend_band_mps)
         self._smoother.tau_s = s.heading.smoothing_s
