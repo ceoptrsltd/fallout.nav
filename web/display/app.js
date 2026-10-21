@@ -42,9 +42,13 @@ for (const c of [mapCanvas, hudCanvas]) {
 const mapCtx = mapCanvas.getContext("2d", { alpha: false });
 const hudCtx = hudCanvas.getContext("2d");
 
+let mirrorX = false;   // settings.display.mirror_x (set in applySettings)
 function layout() {
   if (PAL) {
-    root.style.transform = "scaleX(0.9375)";
+    // 768 -> 720 for the PAL pixel aspect; display.mirror_x flips left-right for monitors that mirror
+    // the picture themselves (rear-view CRTs such as the WAECO RV-50). Only on the device, not in previews.
+    root.style.transformOrigin = "0 0";
+    root.style.transform = mirrorX ? "translateX(720px) scaleX(-0.9375)" : "scaleX(0.9375)";
     return;
   }
   const s = Math.min(innerWidth / W, innerHeight / H);
@@ -106,6 +110,8 @@ function applySettings(s) {
   settings = deepMerge(DEFAULT_SETTINGS, s || {});
   layers = activeLayers(settings);
   const ds = settings.display;
+  mirrorX = !!ds.mirror_x;
+  layout();
   orient.set(ds.orientation);
   rig.setOrientation(ds.orientation);
   compass.configure(ds.compass_smoothing_s);

@@ -51,6 +51,8 @@ class DisplaySettings(_Model):
     map_rotation_lag_s: float = Field(1.5, ge=0, le=10)  # постоянная времени «догоняния» карты
     map_rotation_deadband_deg: float = Field(2.0, ge=0, le=20)  # мелкие колебания курса карту не крутят
     compass_smoothing_s: float = Field(0.1, ge=0, le=2)  # компас на экране — без задержек, минимальное сглаживание
+    # Зеркалить картинку на физическом экране слева направо (RV-50 сам зеркалит — он для камеры заднего вида)
+    mirror_x: bool = False
     layers: MapLayers = MapLayers()
     show_trail: bool = True
     trail_seconds: int = Field(60, ge=0, le=600)

@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS = {
     "map_rotation_lag_s": 1.5,
     "map_rotation_deadband_deg": 2.0,
     "compass_smoothing_s": 0.1,
+    "mirror_x": false,
     "layers": {
       "imagery": true,
       "transport": true,
