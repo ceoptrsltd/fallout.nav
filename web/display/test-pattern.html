@@ -20,15 +20,17 @@
 <div id="lvl" hidden></div>
 <canvas id="c" width="720" height="576" hidden></canvas>
 <script>
-const mode = new URLSearchParams(location.search).get("mode") || "bw";
+const params = new URLSearchParams(location.search);
+const mode = params.get("mode") || "bw";
+const clean = params.get("clean") === "1";   // pure full-screen colour, no label at all
 const lvl = document.getElementById("lvl");
 const c = document.getElementById("c"), g = c.getContext("2d");
 
 function level(white, label) {
-  c.hidden = true; lvl.hidden = false;
+  c.hidden = true; lvl.hidden = clean;
   document.body.style.background = white ? "#fff" : "#000";
   lvl.style.color = white ? "#ddd" : "#222";   // label barely visible: keeps the average level ~pure
-  lvl.textContent = label;
+  lvl.textContent = clean ? "" : label;
 }
 
 function bars() {
