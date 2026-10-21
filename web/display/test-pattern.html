@@ -23,6 +23,8 @@
 const params = new URLSearchParams(location.search);
 const mode = params.get("mode") || "bw";
 const clean = params.get("clean") === "1";   // pure full-screen colour, no label at all
+const dim = parseFloat(params.get("dim") || "1");   // ?dim=0.5 - whole picture darker (average picture level test)
+if (dim < 1) document.documentElement.style.filter = `brightness(${dim})`;
 const lvl = document.getElementById("lvl");
 const c = document.getElementById("c"), g = c.getContext("2d");
 
