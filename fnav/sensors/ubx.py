@@ -187,6 +187,16 @@ def cfg_nav5(dyn_model: int) -> bytes:
     return frame(CLS_CFG, ID_CFG_NAV5, bytes(payload))
 
 
+def cfg_nav5_static_hold(thresh_cm_s: int, max_dist_m: int) -> bytes:
+    """CFG-NAV5: только Static Hold (маска 0x0040): staticHoldThresh (U1, см/с, смещение 22)
+    и staticHoldMaxDist (U2, м, смещение 28). Ниже порога приёмник «замораживает» позицию и даёт скорость 0."""
+    payload = bytearray(36)
+    struct.pack_into("<H", payload, 0, 0x0040)
+    struct.pack_into("<B", payload, 22, max(0, min(255, int(thresh_cm_s))))
+    struct.pack_into("<H", payload, 28, max(0, min(65535, int(max_dist_m))))
+    return frame(CLS_CFG, ID_CFG_NAV5, bytes(payload))
+
+
 def cfg_msg(cls: int, msg_id: int, rate: int) -> bytes:
     """CFG-MSG (короткая форма): частота сообщения на текущем порту (0 = выкл, N = каждую N-ю эпоху)."""
     return frame(CLS_CFG, ID_CFG_MSG, struct.pack("<BBB", cls, msg_id, rate))

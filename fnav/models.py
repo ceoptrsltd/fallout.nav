@@ -140,6 +140,14 @@ class GpsSettings(_Model):
     rate_hz: int = Field(10, ge=1, le=18)
     constellations: list[Literal["gps", "glonass", "galileo", "beidou"]] = ["gps", "glonass", "galileo"]
     dyn_model: Literal["portable", "automotive", "airborne1g"] = "automotive"
+    # Фильтр «стоим на месте»: ниже stationary_below_mps скорость = 0 и GPS-курс отбрасывается; снова «едем» —
+    # когда скорость выше moving_above_mps держится moving_confirm_s. При HDOP > 3 пороги удваиваются.
+    stationary_below_mps: float = Field(0.8, ge=0, le=5)
+    moving_above_mps: float = Field(1.5, ge=0, le=10)
+    moving_confirm_s: float = Field(1.0, ge=0, le=10)
+    # Static Hold в самом приёмнике u-blox (UBX-CFG-NAV5): ниже порога позиция «замораживается», скорость = 0
+    static_hold_cm_s: int = Field(50, ge=0, le=255)  # 0 = выключено
+    static_hold_max_dist_m: int = Field(20, ge=0, le=65535)
 
 
 class CompassCalibration(_Model):

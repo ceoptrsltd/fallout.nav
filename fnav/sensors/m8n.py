@@ -237,6 +237,8 @@ class M8NConfigurator:
         save: bool = True,
         enable_pvt: bool | None = None,
         measure_s: float = 3.0,
+        static_hold_cm_s: int = 50,
+        static_hold_max_dist_m: int = 20,
     ) -> dict:
         constellations = list(constellations or ["gps", "glonass", "galileo"])
         res: dict[str, Any] = {"ok": False, "steps": [], "warnings": []}
@@ -271,6 +273,8 @@ class M8NConfigurator:
         # динамическая модель
         dyn = ubx.DYN_MODELS.get(dyn_model, 4)
         step("dynamic model", self.send_and_ack(ubx.cfg_nav5(dyn)), dyn_model)
+        step("static hold", self.send_and_ack(ubx.cfg_nav5_static_hold(static_hold_cm_s, static_hold_max_dist_m)),
+             f"{static_hold_cm_s} cm/s, {static_hold_max_dist_m} m")
 
         # NMEA: каждую эпоху — GGA/RMC/VTG; раз в секунду — GSA/GSV (иначе 115200 не хватит при 10 Гц)
         per_sec = max(1, rate_hz)
@@ -369,6 +373,8 @@ def configure_receiver(
     save: bool = True,
     enable_pvt: bool | None = None,
     manage_gpsd: bool = True,
+    static_hold_cm_s: int = 50,
+    static_hold_max_dist_m: int = 20,
     log: Callable[[str], None] | None = None,
     open_port: Callable[[str, int], SerialLike] = open_serial,
 ) -> dict:
@@ -393,7 +399,8 @@ def configure_receiver(
             return result
         try:
             cfgr = M8NConfigurator(port, log=log)
-            r = cfgr.configure(baud, rate_hz, constellations, dyn_model, save=save, enable_pvt=enable_pvt)
+            r = cfgr.configure(baud, rate_hz, constellations, dyn_model, save=save, enable_pvt=enable_pvt,
+                               static_hold_cm_s=static_hold_cm_s, static_hold_max_dist_m=static_hold_max_dist_m)
             r["warnings"] = result.get("warnings", []) + r.get("warnings", [])
             result = r
         finally:

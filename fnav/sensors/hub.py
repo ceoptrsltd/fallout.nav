@@ -35,6 +35,7 @@ from fnav.sensors.compass import CompassReader
 from fnav.sensors.declination import declination_deg
 from fnav.sensors.gpio import GpioController
 from fnav.sensors.gpsd import GpsdClient, GpsState, NmeaRing
+from fnav.sensors.stillness import StillnessFilter
 
 log = logging.getLogger("fnav.sensors")
 
@@ -83,6 +84,7 @@ class RealSensorHub:
         self._mag: tuple[float, tuple[float, float, float], str] | None = None  # (monotonic, FRD мкТл, чип)
         self.calib = CalibrationCollector()
         self._smoother = hd.HeadingSmoother(settings.heading.smoothing_s)
+        self._still = StillnessFilter()
 
         # автокалибровка по GPS-курсу
         self.autocal = AutoCalibrator(settings.compass)
@@ -252,7 +254,7 @@ class RealSensorHub:
         dt = now - self._last_fuse
         self._last_fuse = now
         s = self.settings
-        fix = self.gps.current()
+        fix = self._still.apply(now, self.gps.current(), s.gps)
 
         decl = self._declination(fix)
         compass: CompassRaw | None = None
@@ -436,6 +438,7 @@ class RealSensorHub:
         try:
             res: dict[str, Any] = await asyncio.to_thread(
                 configure_receiver, g.device, g.baud, g.rate_hz, list(g.constellations), g.dyn_model,
+                static_hold_cm_s=g.static_hold_cm_s, static_hold_max_dist_m=g.static_hold_max_dist_m,
                 log=lines.append,
             )
         except Exception as e:  # noqa: BLE001

@@ -39,6 +39,7 @@ class FakeM8N:
         self.next_epoch = 0.0
         self.saved = False
         self.nav5_dyn: int | None = None
+        self.static_hold: tuple[int, int] | None = None
         self.msg_rates: dict[tuple[int, int], int] = {}
         self.resets = 0
         self.log: list[tuple[int, int]] = []
@@ -131,7 +132,11 @@ class FakeM8N:
             self.next_epoch = self.t
             self._ack(m)
         elif m.key == (ubx.CLS_CFG, ubx.ID_CFG_NAV5):
-            self.nav5_dyn = m.payload[2]
+            mask = m.payload[0] | (m.payload[1] << 8)
+            if mask & 0x0001:  # как настоящий приёмник: применяются только поля из маски
+                self.nav5_dyn = m.payload[2]
+            if mask & 0x0040:
+                self.static_hold = (m.payload[22], m.payload[28] | (m.payload[29] << 8))
             self._ack(m)
         elif m.key == (ubx.CLS_CFG, ubx.ID_CFG_MSG):
             self.msg_rates[(m.payload[0], m.payload[1])] = m.payload[2]
