@@ -5,7 +5,9 @@
 # straight into channel 2 of the WAECO RV-50: PAL, 720x576 interlaced, 50 fields/s.
 # NTSC 480i/60 Hz (with Mono the driver prefers 576i/50): the WAECO RV-50 holds vertical sync stably at 60 Hz, while PAL 576i/50 (and 288p,
 # Mono, firmware/fkms output) jumped vertically. The display page scales its 768x576 canvas to 720x480.
-video=Composite-1:720x480@60ie,tv_mode=NTSC
+# margins: the RV-50 at 60 Hz shows only the middle 80 % horizontally and 90 % vertically (measured with
+# test-pattern.html?mode=frame) - the output shrinks the picture into that area.
+video=Composite-1:720x480@60ie,tv_mode=NTSC,margin_left=74,margin_right=74,margin_top=26,margin_bottom=26
 # Alternative (HDMI -> AV converter on the mini-HDMI port): replace the two lines above with
 #   video=HDMI-A-1:720x576@50D
 #   drm.edid_firmware=HDMI-A-1:edid/fnav-576p50.bin
