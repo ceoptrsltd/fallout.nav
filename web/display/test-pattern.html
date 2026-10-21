@@ -51,7 +51,13 @@ function bars() {
   g.fillStyle = "#fff"; g.font = "bold 28px sans-serif"; g.fillText("fallout.nav PAL 720x576", 40, H * 0.6 + 40);
 }
 
-if (mode === "bars") bars();
+if (mode === "nav") {
+  // the real navigation screen inside a full-screen frame (with ?dim= applied on top) - test only
+  const f = document.createElement("iframe");
+  f.src = "/display/?pal=1";
+  f.style.cssText = "position:fixed;inset:0;width:100%;height:100%;border:0;background:#000";
+  document.body.appendChild(f);
+} else if (mode === "bars") bars();
 else if (mode === "white" || mode === "black") level(mode === "white", mode.toUpperCase());
 else if (mode === "seq") {
   // 15 s white -> 15 s black -> 15 s bars, forever (tells our signal apart from the monitor's own behaviour)
