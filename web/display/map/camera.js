@@ -4,7 +4,8 @@
 // (частые переключения на светофорах не переподключают MJPEG), затем отключается — экономия CPU.
 
 export class CameraLayer {
-  constructor(layerEl, imgEl, msgEl, { src = "/api/camera/mjpeg", retryS = 2, lingerS = 30 } = {}) {
+  constructor(layerEl, imgEl, msgEl, { src = "/api/camera/mjpeg", retryS = 2, lingerS = 30, cacheBust = true } = {}) {
+    this.cacheBust = cacheBust; // false: static picture (demo) — let the browser cache it
     this.layer = layerEl;
     this.img = imgEl;
     this.msg = msgEl;
@@ -28,7 +29,7 @@ export class CameraLayer {
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.streaming = true;
-    this.img.src = this.src + (this.src.includes("?") ? "&" : "?") + "_=" + Date.now();
+    this.img.src = this.cacheBust ? this.src + (this.src.includes("?") ? "&" : "?") + "_=" + Date.now() : this.src;
   }
 
   _disconnect() {

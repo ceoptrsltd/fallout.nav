@@ -4,7 +4,8 @@
 //
 // Параметры URL: ?pal=1 (устройство, 720×576, scaleX 0.9375), ?preview=1 (iframe веб-интерфейса),
 // ?debug=1 (статистика), ?fps=30 (ограничить частоту кадров), ?dpr=2 (чёткость на ноутбуке),
-// ?ui=debug (принудительно отладочный HUD).
+// ?ui=debug (принудительно отладочный HUD), ?demo=1 (демо в браузере без fnav-core, docs/contracts/demo.md;
+// ?camera=<url> — картинка «камеры» в демо).
 
 import { DEFAULT_SETTINGS, deepMerge } from "./map/defaults.js";
 import { TileStore, browserTileLoader } from "./map/tiles.js";
@@ -20,7 +21,8 @@ import * as debugHud from "./map/debug-hud.js";
 const W = 768;
 const H = 576;
 const params = new URLSearchParams(location.search);
-const PAL = params.get("pal") === "1";
+const DEMO = params.get("demo") === "1";
+const PAL = params.get("pal") === "1" && !DEMO; // демо — всегда без PAL-сжатия и без зеркала
 const PREVIEW = params.get("preview") === "1";
 const DEBUG = params.get("debug") === "1";
 const FPS_CAP = Number(params.get("fps")) || 0;
@@ -105,6 +107,7 @@ const camera = new CameraLayer(
   document.getElementById("camera-layer"),
   document.getElementById("camera"),
   document.getElementById("camera-msg"),
+  DEMO ? { src: params.get("camera") || "camera-demo.jpg", cacheBust: false } : {},
 );
 
 function maxZoom() {
@@ -149,19 +152,47 @@ function onMessage(msg) {
   }
 }
 
-const link = new Link(wsUrl("/ws"), {
-  onMessage,
-  now: nowS,
-  onOpen: () => store.resetFailures(),
-});
-link.start();
+let link;
+let demo = null;
+let tileUrlFor; // undefined → /tiles/... (fnav-core proxy)
+if (DEMO) {
+  // демо: телеметрия из симулятора в браузере, тайлы напрямую с Esri, без /api, /ws, /tiles
+  const mod = await import("./demo/demo.js");
+  demo = mod;
+  tileUrlFor = (layer, z, x, y) => mod.esriTileUrl(settings, layer, z, x, y);
+  link = mod.startDemo({
+    onMessage,
+    now: nowS,
+    getSettings: () => settings,
+    applyPatch: (patch) => applySettings(deepMerge(settings, patch)),
+    getState: () => {
+      const v = lastState && lastState.view;
+      if (!v) return null;
+      return {
+        speedMps: v.speedMps,
+        headingDeg: v.compassHeadingDeg ?? v.headingDeg,
+        mode: v.mode,
+        zoom: v.zoom,
+        lat: motion.hasPos ? lastPos.lat : null,
+        lon: motion.hasPos ? lastPos.lon : null,
+      };
+    },
+  });
+} else {
+  link = new Link(wsUrl("/ws"), {
+    onMessage,
+    now: nowS,
+    onOpen: () => store.resetFailures(),
+  });
+  link.start();
 
-fetch("/api/settings", { credentials: "same-origin" })
-  .then((r) => (r.ok ? r.json() : null))
-  .then((s) => {
-    if (s && !settingsFromWs) applySettings(s);
-  })
-  .catch(() => {});
+  fetch("/api/settings", { credentials: "same-origin" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((s) => {
+      if (s && !settingsFromWs) applySettings(s);
+    })
+    .catch(() => {});
+}
 
 // ───────────── HUD (агент C) с запасным вариантом ─────────────
 let ui = { drawHud: debugHud.drawHud, drawVehicle: debugHud.drawVehicle, drawTrail: debugHud.drawTrail };
@@ -220,8 +251,27 @@ let fpsEma = 0;
 let drawnFrames = 0;
 let hadPos = false;
 let lastState = null;
+let lastPos = { lat: null, lon: null };
 let mapMsEma = 0;
 let hudMsEma = 0;
+
+/** Демо: атрибуция Esri на холсте (условия Esri), мелко, внизу по центру внутри зоны безопасности. */
+function drawAttribution(ctx, state) {
+  const l = settings.display.layers || {};
+  const text = l.street_map_instead ? demo.ESRI_ATTRIBUTION.street : demo.ESRI_ATTRIBUTION.imagery;
+  const sf = state.canvas.safe;
+  ctx.save();
+  ctx.font = '11px "DejaVu Sans", Arial, sans-serif';
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  const w = ctx.measureText(text).width + 10;
+  const x = W / 2, y = sf.y + sf.h;
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(x - w / 2, y - 15, w, 15);
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillText(text, x, y - 2);
+  ctx.restore();
+}
 
 function needsMapRedraw(view, t, hasFix) {
   const d = lastDraw;
@@ -246,6 +296,7 @@ function frame(tms) {
 
   const tel = telemetry || STUB_TELEMETRY;
   const m = motion.update(t);
+  lastPos = m;
   const f = orient.update(dt);
   const zoom = zoomAnim.update(dt) ?? clamp(tel.display.target_zoom ?? 17, 1, maxZoom());
   const ds = settings.display;
@@ -306,6 +357,7 @@ function frame(tms) {
           targetZoom: zoomAnim.target,
           headingDeg: m.heading,
           speedMps: m.speed ?? 0,
+          urlFor: tileUrlFor,
         }),
       );
       lastPlan = t;
@@ -342,6 +394,7 @@ function frame(tms) {
   hudCtx.clearRect(0, 0, W, H);
   const th = DEBUG ? performance.now() : 0;
   callUi("drawHud", hudCtx, state);
+  if (DEMO && mode === "map") drawAttribution(hudCtx, state);
   if (DEBUG) {
     hudMsEma += (performance.now() - th - hudMsEma) * 0.05;
     const s = store.stats;
@@ -361,4 +414,4 @@ await Promise.race([loadExternalUi(), new Promise((r) => setTimeout(r, 3000))]);
 requestAnimationFrame(frame);
 
 // для отладки из консоли
-window.fnav = { store, motion, trail, link, camera, rig, get state() { return lastState; }, get settings() { return settings; }, get telemetry() { return telemetry; } };
+window.fnav = { store, motion, trail, link, camera, rig, get demo() { return link && link.sim ? link : null; }, get state() { return lastState; }, get settings() { return settings; }, get telemetry() { return telemetry; } };

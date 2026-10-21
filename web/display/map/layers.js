@@ -26,14 +26,14 @@ export function tileUrl(layer, z, x, y) {
  *   2) уровень целевого зума (если отличается) — заранее, к плавной смене масштаба;
  *   3) область впереди по курсу (lookahead), чтобы тайлы были готовы до въезда в кадр.
  */
-export function planRequests({ view, layers, maxZoom, targetZoom = null, headingDeg = null, speedMps = 0, margin = 48, maxRequests = 160 }) {
+export function planRequests({ view, layers, maxZoom, targetZoom = null, headingDeg = null, speedMps = 0, margin = 48, maxRequests = 160, urlFor = tileUrl }) {
   const reqs = [];
   const z = tileLevelFor(view.zoom, maxZoom);
   const push = (tiles, layerIdx, layer, basePri) => {
     for (const t of tiles) {
       reqs.push({
         key: tileKey(layer.id, t.z, t.wx, t.y),
-        url: tileUrl(layer.id, t.z, t.wx, t.y),
+        url: urlFor(layer.id, t.z, t.wx, t.y),
         priority: basePri + layerIdx * 0.75 + t.d * 0.25,
       });
     }
