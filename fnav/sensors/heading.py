@@ -102,6 +102,48 @@ def fuse(
 
 
 @dataclass
+class CompassAnchor:
+    """Привязка компаса к GPS-курсу.
+
+    Пока едем и GPS-курс надёжен, запоминаем поправку offset = GPS − компас (круговое сглаживание с tau_s).
+    На малой скорости и на стоянке курс = компас + offset: в момент остановки он равен последнему
+    GPS-курсу (нет скачка, даже если компас ещё не откалиброван), а дальше компас отрабатывает только
+    повороты машины."""
+
+    tau_s: float = 5.0
+    x: float | None = None
+    y: float | None = None
+
+    def reset(self) -> None:
+        self.x = self.y = None
+
+    @property
+    def offset_deg(self) -> float | None:
+        if self.x is None or self.y is None or (abs(self.x) < 1e-12 and abs(self.y) < 1e-12):
+            return None
+        return angle_diff(math.degrees(math.atan2(self.y, self.x)), 0.0)
+
+    def learn(self, mag_deg: float, gps_deg: float, dt: float) -> None:
+        d = math.radians(angle_diff(gps_deg, mag_deg))
+        tx, ty = math.cos(d), math.sin(d)
+        if self.x is None or self.y is None or self.tau_s <= 0:
+            self.x, self.y = tx, ty
+            return
+        alpha = 1.0 - math.exp(-max(0.0, dt) / self.tau_s)
+        self.x += (tx - self.x) * alpha
+        self.y += (ty - self.y) * alpha
+        n = math.hypot(self.x, self.y)
+        if n > 1e-9:
+            self.x, self.y = self.x / n, self.y / n
+
+    def apply(self, mag_deg: float | None) -> float | None:
+        off = self.offset_deg
+        if mag_deg is None or off is None:
+            return mag_deg
+        return norm360(mag_deg + off)
+
+
+@dataclass
 class HeadingSmoother:
     """Экспоненциальное сглаживание направления (вектором) с постоянной времени tau, с.
 

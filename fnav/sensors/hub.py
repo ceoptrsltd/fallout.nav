@@ -85,6 +85,7 @@ class RealSensorHub:
         self.calib = CalibrationCollector()
         self._smoother = hd.HeadingSmoother(settings.heading.smoothing_s)
         self._still = StillnessFilter()
+        self._anchor = hd.CompassAnchor()
 
         # автокалибровка по GPS-курсу
         self.autocal = AutoCalibrator(settings.compass)
@@ -274,7 +275,15 @@ class RealSensorHub:
 
         gps_course = fix.course_deg if fix.fix != "none" else None
         speed = fix.speed_mps if fix.fix != "none" else None
-        deg, src = hd.fuse(mag_deg, gps_course, speed, s.heading.gps_above_mps, s.heading.blend_band_mps)
+        fused_mag = mag_deg
+        if s.heading.anchor_to_gps and mag_deg is not None:
+            self._anchor.tau_s = s.heading.anchor_tau_s
+            # учимся только когда курс полностью по GPS (скорость выше зоны перехода) — там он надёжен
+            if gps_course is not None and hd.gps_weight(speed, s.heading.gps_above_mps,
+                                                        s.heading.blend_band_mps) >= 1.0:
+                self._anchor.learn(mag_deg, gps_course, dt)
+            fused_mag = self._anchor.apply(mag_deg)
+        deg, src = hd.fuse(fused_mag, gps_course, speed, s.heading.gps_above_mps, s.heading.blend_band_mps)
         self._smoother.tau_s = s.heading.smoothing_s
         sm = self._smoother.update(deg, dt)
 
@@ -298,6 +307,8 @@ class RealSensorHub:
                 mag_deg=None if mag_deg is None else round(mag_deg, 1),
                 gps_course_deg=None if gps_course is None else round(gps_course, 1),
                 declination_deg=None if decl is None else round(decl, 2),
+                anchor_offset_deg=None if self._anchor.offset_deg is None or not s.heading.anchor_to_gps
+                else round(self._anchor.offset_deg, 1),
             ),
             compass=compass,
             compass_cal=self._autocal_status(),

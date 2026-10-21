@@ -83,6 +83,9 @@ class HeadingSettings(_Model):
     gps_above_mps: float = Field(3.0, ge=0)  # выше — курс по GPS
     blend_band_mps: float = Field(1.0, ge=0)  # ширина зоны плавного перехода компас↔GPS
     smoothing_s: float = Field(0.15, ge=0)  # постоянная времени сглаживания курса
+    # На ходу запоминать поправку «GPS-курс − компас», на стоянке курс = компас + поправка (без скачка)
+    anchor_to_gps: bool = True
+    anchor_tau_s: float = Field(5.0, gt=0, le=60)
 
 
 class LoresSettings(_Model):
@@ -251,6 +254,7 @@ class Heading(_Model):
     mag_deg: float | None = None  # по компасу (уже с калибровкой, склонением и поправкой установки)
     gps_course_deg: float | None = None
     declination_deg: float | None = None
+    anchor_offset_deg: float | None = None  # текущая поправка компаса по GPS (CompassAnchor), °
 
 
 class CompassRaw(_Model):
