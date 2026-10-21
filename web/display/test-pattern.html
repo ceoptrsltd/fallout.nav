@@ -25,6 +25,7 @@ const mode = params.get("mode") || "bw";
 const clean = params.get("clean") === "1";   // pure full-screen colour, no label at all
 const dim = parseFloat(params.get("dim") || "1");   // ?dim=0.5 - whole picture darker (average picture level test)
 if (dim < 1) document.documentElement.style.filter = `brightness(${dim})`;
+if (params.get("mirror") === "1") document.documentElement.style.transform = "scaleX(-1)";  // for monitors that mirror
 const lvl = document.getElementById("lvl");
 const c = document.getElementById("c"), g = c.getContext("2d");
 
@@ -51,7 +52,26 @@ function bars() {
   g.fillStyle = "#fff"; g.font = "bold 28px sans-serif"; g.fillText("fallout.nav PAL 720x576", 40, H * 0.6 + 40);
 }
 
-if (mode === "nav") {
+if (mode === "frame") {
+  // overscan ruler: nested frames every 5 % of the real output size, numbered on every side
+  lvl.hidden = true; c.hidden = false; document.body.style.background = "#000";
+  const W2 = innerWidth || 720, H2 = innerHeight || 576;
+  c.width = W2; c.height = H2; c.style.width = W2 + "px"; c.style.height = H2 + "px";
+  g.fillStyle = "#000"; g.fillRect(0, 0, W2, H2);
+  g.textAlign = "center"; g.textBaseline = "middle";
+  for (let p = 0; p <= 25; p += 5) {
+    const x = W2 * p / 100, y = H2 * p / 100;
+    g.strokeStyle = p % 10 === 0 ? "#fff" : "#999"; g.lineWidth = p === 0 ? 4 : 2;
+    g.strokeRect(x + 1, y + 1, W2 - 2 * x - 2, H2 - 2 * y - 2);
+    g.fillStyle = "#fff"; g.font = "bold 22px sans-serif";
+    const t = String(p);
+    g.fillText(t, W2 / 2, y + 16);            // top
+    g.fillText(t, W2 / 2, H2 - y - 16);       // bottom
+    g.fillText(t, x + 18, H2 / 2);            // left
+    g.fillText(t, W2 - x - 18, H2 / 2);       // right
+  }
+  g.font = "bold 26px sans-serif"; g.fillText("TOP", W2 / 2, H2 * 0.32); g.fillText("LEFT", W2 * 0.33, H2 / 2);
+} else if (mode === "nav") {
   // the real navigation screen inside a full-screen frame (with ?dim= applied on top) - test only
   const f = document.createElement("iframe");
   f.src = "/display/?pal=1";
