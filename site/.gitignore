@@ -1,0 +1,4 @@
+# build output (bash site/build.sh) and local-only material
+display/
+_shots/
+_work/
