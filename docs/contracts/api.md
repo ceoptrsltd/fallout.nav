@@ -67,7 +67,7 @@
 - `GET /api/camera/mjpeg` → поток `multipart/x-mixed-replace` 768×576 (для экрана и превью).
 - `GET /api/camera/snapshot.jpg`.
 - `POST /api/camera/whep` — прокси WebRTC WHEP к MediaMTX `http://127.0.0.1:8889/cam/whep` (тело SDP и заголовки `Content-Type`/`Location` проброшены; `PATCH`/`DELETE` по `Location` — тоже через `/api/camera/whep/...`).
-- Кнопка на GPS-модуле (`press`) → `POST 127.0.0.1:8081/protect-current` + событие WS + короткий сигнал. `long_press` — зарезервировано.
+- Кнопка на GPS-модуле: `press` (короткое) → вкл/выкл видеовыход на монитор (`POST /api/display/output`, wlr-randr у cage, ЦАП обесточивается); `long_press` (2 с) → `POST 127.0.0.1:8081/protect-current` + событие WS + сигнал.
 - LED на модуле: `recording` → `blink_slow` (мигает), `error` → `blink_fast`, нет записи → `off`; после нажатия кнопки 3 с подтверждение: `on` (защищено) или `blink_fast` (ошибка).
 
 ## Датчики

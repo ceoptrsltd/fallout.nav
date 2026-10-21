@@ -21,6 +21,7 @@ from fnav.core.recordings import Recordings
 from fnav.core.system import SystemService
 from fnav.core.tiles import TileService
 from fnav.core.util import cancel_tasks, spawn
+from fnav.core.videoout import VideoOutput, VideoOutputError
 from fnav.core.ws import WsManager, new_nmea_lines
 from fnav.interfaces import ButtonEvent, LedMode, SensorHub, create_sensor_hub
 from fnav.models import (
@@ -109,6 +110,7 @@ class Core:
                                     base_url=opts.camera_url, whep_url=opts.whep_url,
                                     transport=opts.local_transport)
         self.system = SystemService(mock=opts.mock)
+        self.video = VideoOutput(mock=opts.mock)
         self.hub: SensorHub = self._make_hub(s)
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
         self._tasks: list[asyncio.Task] = []
@@ -356,8 +358,12 @@ class Core:
             loop.call_soon_threadsafe(lambda: spawn(self.handle_button(event), name="button"))
 
     async def handle_button(self, event: ButtonEvent) -> dict | None:
+        """Кнопка на GPS-модуле: короткое нажатие — вкл/выкл видеовыход на монитор,
+        долгое — защитить текущую запись."""
         self.ws.event("button", value=event)
-        if event != "press":
+        if event == "press":
+            return await self.toggle_video_output()
+        if event != "long_press":
             return None
         try:
             res = await self.protect_current()
@@ -369,6 +375,19 @@ class Core:
             self._flash_led("blink_fast")
             self.ws.toast(f"Failed to protect recording: {e}", "error")
             return None
+
+    async def toggle_video_output(self, on: bool | None = None) -> dict | None:
+        try:
+            state = await self.video.set(on)
+        except VideoOutputError as e:
+            self._flash_led("blink_fast")
+            self.ws.toast(f"Video output: {e}", "error")
+            return None
+        self._beep("short")
+        self._flash_led("on" if state else "off", seconds=1.5)
+        self.ws.event("video_output", on=state)
+        self.ws.toast(f"Video output {'ON' if state else 'OFF'}", "info")
+        return {"ok": True, "on": state}
 
     def _beep(self, pattern: str) -> None:
         try:

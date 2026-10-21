@@ -227,6 +227,22 @@ def _register_settings(app: FastAPI, core: Core) -> None:
         s = await core.store.patch({"display": {"force_mode": body.mode}})
         return {"ok": True, "force_mode": s.display.force_mode}
 
+    @app.get("/api/display/output")
+    async def video_output_get():
+        try:
+            name, on = await core.video.state()
+        except Exception as e:  # noqa: BLE001
+            return _err(503, f"Video output: {e}")
+        return {"output": name, "on": on}
+
+    @app.post("/api/display/output")
+    async def video_output_set(body: dict | None = None):
+        on = None if not body or body.get("on") is None else bool(body.get("on"))
+        res = await core.toggle_video_output(on)
+        if res is None:
+            return _err(503, "Video output could not be switched")
+        return res
+
     @app.get("/api/telemetry")
     async def telemetry():
         return core.build_telemetry().model_dump(mode="json")

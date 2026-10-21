@@ -65,7 +65,7 @@ async def test_ws_telemetry_rate_settings_nmea(live_server):
         # событие кнопки (mock)
         async with httpx.AsyncClient(base_url=srv.url) as c:
             await login(c)
-            await c.post("/api/mock/button", json={"event": "press"})
+            await c.post("/api/mock/button", json={"event": "long_press"})
         events = set()
         for _ in range(30):
             m = await _recv_json(ws)

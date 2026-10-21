@@ -155,7 +155,7 @@ async def test_protect_current_unavailable_non_mock(data_dir):
     opts = make_opts(mock=False, local_transport=FU().transport, hub_factory=MockSensorHub)
     async with running_app(opts, client_addr=("127.0.0.1", 1)) as c:
         core = c.app.state.core
-        res = await core.handle_button("press")
+        res = await core.handle_button("long_press")
         assert res is None
         st = core.camera.status
         assert st.state == "error"
@@ -167,9 +167,24 @@ async def test_button_press_mock(data_dir):
         core = c.app.state.core
         assert core.hub.led == "blink_slow"  # mock-камера «пишет» → LED мигает
         await login(c)
-        r = await c.post("/api/mock/button", json={"event": "press"})
+        r = await c.post("/api/mock/button", json={"event": "long_press"})
         seg = r.json()["result"]["segment"]
         assert seg and (paths.recordings_dir() / (seg + ".lock")).exists()
         assert core.hub.led == "on"  # подтверждение нажатия — горит ровно
         core._led_timer._run()  # время подтверждения истекло
         assert core.hub.led == "blink_slow"
+
+
+async def test_button_short_press_toggles_video_output(data_dir):
+    async with running_app() as c:
+        core = c.app.state.core
+        await login(c)
+        r = await c.get("/api/display/output")
+        assert r.json()["on"] is True
+        r = await c.post("/api/mock/button", json={"event": "press"})
+        assert r.json()["result"] == {"ok": True, "on": False}
+        assert core.hub.led == "off"  # подтверждение: LED гаснет
+        r = await c.post("/api/display/output", json={"on": True})
+        assert r.json()["on"] is True
+        r = await c.post("/api/display/output", json={})  # без "on" — переключить
+        assert r.json()["on"] is False
