@@ -331,7 +331,7 @@
       </div>
 
       <div class="plate diagram reveal" style="--d:.08s">
-        <h3>Video: pin 111 → DIN, channel 2</h3>
+        <h3>Video: pin 111 → DIN camera input</h3>
         <p>The CM4's composite DAC is on the module connector but the carrier board doesn't route it out, so it gets a wire of its own.</p>
         <svg viewBox="0 0 640 290" role="img" aria-label="Wiring of composite video from CM4 J2 pin 111 to the RV-50 DIN input">
           <text x="20" y="24" class="svg-label" fill="#ffb43a">CM4 MODULE · J2, INNER ROW</text>
@@ -350,19 +350,20 @@
           </g>
           <path d="M195 160 L195 184" stroke="#ff5b3d" stroke-width="1.5"/>
           <text x="20" y="200" font-size="12.5" fill="#ff8a70">109 = PCIe_nRST: one pin off gives a flat 0 V</text>
-          <path class="wire" d="M231 78 C 231 10, 420 6, 488 112" stroke="#ffb43a"/>
-          <path class="wire wire-anim" d="M231 78 C 231 10, 420 6, 488 112" stroke="#fff3d6" stroke-width="1.4" opacity=".8"/>
-          <path class="wire" d="M326 156 C 360 236, 600 236, 560 150" stroke="#9da08f"/>
+          <path class="wire" d="M231 78 C 231 10, 430 20, 496 146" stroke="#ffb43a"/>
+          <path class="wire wire-anim" d="M231 78 C 231 10, 430 20, 496 146" stroke="#fff3d6" stroke-width="1.4" opacity=".8"/>
+          <path class="wire" d="M326 156 C 360 236, 590 236, 544 146" stroke="#9da08f"/>
           <rect x="318" y="142" width="16" height="14" rx="2" fill="#9da08f"/>
           <text x="312" y="153" font-size="10" fill="#9da08f" class="svg-mono" text-anchor="end">GND</text>
           <circle cx="520" cy="124" r="62" fill="#191b16" stroke="#6d6f66" stroke-width="2"/>
           <rect x="512" y="56" width="16" height="10" rx="2" fill="#6d6f66"/>
-          <circle cx="488" cy="112" r="9" fill="#ffb43a" style="filter: drop-shadow(0 0 6px rgba(255,180,58,.9))"/>
-          <circle cx="552" cy="112" r="9" fill="#9da08f"/>
-          <circle cx="520" cy="152" r="8" fill="#2a2e24"/><circle cx="496" cy="146" r="6" fill="#2a2e24"/><circle cx="544" cy="146" r="6" fill="#2a2e24"/>
-          <text x="636" y="30" text-anchor="end" class="svg-label" fill="#ecebdd">RV‑50 · INPUT 2 (DIN)</text>
-          <text x="470" y="96" text-anchor="end" font-size="11" fill="#ffb43a" class="svg-mono">video</text>
-          <text x="568" y="96" font-size="11" fill="#9da08f" class="svg-mono">GND</text>
+          <circle cx="488" cy="112" r="6" fill="#2a2e24"/><circle cx="552" cy="112" r="6" fill="#2a2e24"/>
+          <circle cx="520" cy="152" r="6" fill="#2a2e24"/>
+          <circle cx="496" cy="146" r="9" fill="#ffb43a" style="filter: drop-shadow(0 0 6px rgba(255,180,58,.9))"/>
+          <circle cx="544" cy="146" r="9" fill="#9da08f"/>
+          <text x="636" y="30" text-anchor="end" class="svg-label" fill="#ecebdd">RV‑50 · CAMERA INPUT (DIN)</text>
+          <text x="482" y="176" text-anchor="end" font-size="11" fill="#ffb43a" class="svg-mono">video</text>
+          <text x="558" y="176" font-size="11" fill="#9da08f" class="svg-mono">GND</text>
           <text x="20" y="240" font-size="12.5" fill="#959a83">Monitor input ≈ 82 Ω to ground on the video pin. No converter, no amplifier.</text>
           <text x="20" y="266" font-size="11" fill="#c7b48a" class="svg-mono">video=Composite-1:720x480@60ie,tv_mode=NTSC,margin_left=62,margin_right=86,…</text>
         </svg>
