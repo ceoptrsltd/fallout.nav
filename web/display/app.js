@@ -47,8 +47,13 @@ function layout() {
   if (PAL) {
     // 768 -> 720 for the PAL pixel aspect; display.mirror_x flips left-right for monitors that mirror
     // the picture themselves (rear-view CRTs such as the WAECO RV-50). Only on the device, not in previews.
+    // The 768x576 canvas is squeezed into whatever the output really is: 720x576 (576i) -> 0.9375 x 1,
+    // 720x288 (288p, progressive) -> 0.9375 x 0.5. The CRT stretches it back to the full 4:3 screen.
+    const sx = (innerWidth || 720) / W, sy = (innerHeight || 576) / H;
     root.style.transformOrigin = "0 0";
-    root.style.transform = mirrorX ? "translateX(720px) scaleX(-0.9375)" : "scaleX(0.9375)";
+    root.style.transform = mirrorX
+      ? `translateX(${innerWidth || 720}px) scale(${-sx}, ${sy})`
+      : `scale(${sx}, ${sy})`;
     return;
   }
   const s = Math.min(innerWidth / W, innerHeight / H);
