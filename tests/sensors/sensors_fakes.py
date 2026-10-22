@@ -38,6 +38,7 @@ class FakeM8N:
         self.gnss = cfg
         self.next_epoch = 0.0
         self.saved = False
+        self.nmea_cfg = bytes([0, 0x40, 0, 0x02, 0, 0, 0, 0, 0, 0, 0, 1] + [0] * 8)  # CFG-NMEA v1, NMEA 4.0
         self.nav5_dyn: int | None = None
         self.static_hold: tuple[int, int] | None = None
         self.msg_rates: dict[tuple[int, int], int] = {}
@@ -140,6 +141,12 @@ class FakeM8N:
             self._ack(m)
         elif m.key == (ubx.CLS_CFG, ubx.ID_CFG_MSG):
             self.msg_rates[(m.payload[0], m.payload[1])] = m.payload[2]
+            self._ack(m)
+        elif m.key == (ubx.CLS_CFG, ubx.ID_CFG_NMEA):
+            if not m.payload:
+                self.out += ubx.frame(ubx.CLS_CFG, ubx.ID_CFG_NMEA, self.nmea_cfg)
+                return
+            self.nmea_cfg = bytes(m.payload)
             self._ack(m)
         elif m.key == (ubx.CLS_CFG, ubx.ID_CFG_CFG):
             self.saved = True

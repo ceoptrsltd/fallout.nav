@@ -282,6 +282,7 @@ class M8NConfigurator:
         bad = [n for n, r in msg_rates.items()
                if not self.send_and_ack(ubx.cfg_msg(ubx.CLS_NMEA_STD, ubx.NMEA_IDS[n], r))]
         step("NMEA messages", not bad, ("no ACK: " + ",".join(bad)) if bad else "")
+        self._configure_nmea_version(step)
         if enable_pvt is not None:
             step("NAV-PVT", self.send_and_ack(ubx.cfg_msg(ubx.CLS_NAV, ubx.ID_NAV_PVT, 1 if enable_pvt else 0)),
                  "on" if enable_pvt else "off")
@@ -314,6 +315,16 @@ class M8NConfigurator:
             warns.append("settings were not saved to flash - factory defaults return after power-off")
         res["ok"] = True
         return res
+
+    def _configure_nmea_version(self, step) -> None:
+        """NMEA 4.10: иначе спутники Galileo (их приёмник использует) не попадают в GSV и не видны в gpsd/UI."""
+        msg = self.poll(ubx.CLS_CFG, ubx.ID_CFG_NMEA)
+        cur = msg.payload if msg else None
+        if cur and len(cur) > 2 and cur[1] == ubx.NMEA_V41 and cur[2] == 0:
+            step("NMEA 4.10", True, "unchanged")
+            return
+        ack = self.send_and_ack(ubx.cfg_nmea_v41(cur))
+        step("NMEA 4.10", bool(ack), "" if ack else ("NAK" if ack is False else "no response"))
 
     def _configure_gnss(self, constellations: list[str], res: dict, step) -> None:
         warns = res["warnings"]

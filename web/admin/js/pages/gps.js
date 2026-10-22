@@ -128,7 +128,7 @@ export function mount(root) {
     f({ path: "gps.device", label: "Device", type: "text" }),
     f({ path: "gps.baud", label: "Port speed", type: "select", options: [9600, 38400, 57600, 115200, 230400, 460800].map((b) => ({ value: b, label: String(b) })), unit: "baud" }),
     f({ path: "gps.rate_hz", label: "Update rate", type: "number", min: 1, max: 18, step: 1, unit: "Hz" }),
-    f({ path: "gps.constellations", label: "Constellations", type: "multi", options: [{ value: "gps", label: "GPS" }, { value: "glonass", label: "GLONASS" }, { value: "galileo", label: "Galileo" }, { value: "beidou", label: "BeiDou" }] }),
+    f({ path: "gps.constellations", label: "Constellations", type: "multi", options: [{ value: "gps", label: "GPS" }, { value: "glonass", label: "GLONASS" }, { value: "galileo", label: "Galileo" }, { value: "beidou", label: "BeiDou" }], help: "NEO-M8N tracks at most 3 systems at once, and GLONASS and BeiDou exclude each other (one RF channel). The Holybro M8N antenna does not receive BeiDou: keep GPS + GLONASS + Galileo." }),
     f({ path: "gps.dyn_model", label: "Dynamic model", type: "select", options: [{ value: "automotive", label: "Automotive" }, { value: "portable", label: "Portable" }, { value: "airborne1g", label: "Airborne (1g)" }] }),
     form.bar,
   );

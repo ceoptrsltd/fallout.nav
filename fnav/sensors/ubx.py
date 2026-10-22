@@ -17,7 +17,7 @@ CLS_NMEA_STD = 0xF0  # стандартные NMEA-сообщения (для CF
 
 ID_ACK_NAK, ID_ACK_ACK = 0x00, 0x01
 ID_CFG_PRT, ID_CFG_MSG, ID_CFG_RST, ID_CFG_RATE, ID_CFG_CFG = 0x00, 0x01, 0x04, 0x08, 0x09
-ID_CFG_NAV5, ID_CFG_GNSS = 0x24, 0x3E
+ID_CFG_NAV5, ID_CFG_GNSS, ID_CFG_NMEA = 0x24, 0x3E, 0x17
 ID_MON_VER = 0x04
 ID_NAV_PVT = 0x07
 
@@ -205,6 +205,21 @@ def cfg_msg(cls: int, msg_id: int, rate: int) -> bytes:
 def cfg_msg_ports(cls: int, msg_id: int, uart1_rate: int) -> bytes:
     """CFG-MSG (длинная форма, 6 портов): I2C, UART1, UART2, USB, SPI, reserved."""
     return frame(CLS_CFG, ID_CFG_MSG, struct.pack("<BB6B", cls, msg_id, 0, uart1_rate, 0, 0, 0, 0))
+
+
+NMEA_V41 = 0x41
+
+
+def cfg_nmea_v41(current: bytes | None) -> bytes:
+    """CFG-NMEA с версией NMEA 4.10: в GSV/GSA появляется Galileo (talker GA; в 4.0 его нет вообще),
+    без ограничения числа спутников. Остальные поля — как сейчас в приёмнике (или заводские)."""
+    # v1 (20 байт): filter, nmeaVersion, numSV, flags, gnssToFilter(4), svNumbering, mainTalkerId, gsvTalkerId,
+    # version=1, bdsTalkerId(2), reserved(6)
+    p = bytearray(current) if current and len(current) >= 12 else bytearray(
+        [0, 0x40, 0, 0x02, 0, 0, 0, 0, 0, 0, 0, 1] + [0] * 8)
+    p[1] = NMEA_V41
+    p[2] = 0  # numSV: без ограничения
+    return frame(CLS_CFG, ID_CFG_NMEA, bytes(p))
 
 
 def cfg_cfg_save(devices: int = 0x17) -> bytes:

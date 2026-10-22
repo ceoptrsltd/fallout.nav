@@ -39,6 +39,8 @@ def test_full_configure_from_factory() -> None:
     assert dev.msg_rates[(0xF0, ubx.NMEA_IDS["GLL"])] == 0
     assert res["version"]["sw"].startswith("ROM CORE")
     assert not res["warnings"]
+    # NMEA 4.10: иначе спутники Galileo не попадают в GSV (их не видно в gpsd/UI)
+    assert dev.nmea_cfg[1] == 0x41 and dev.nmea_cfg[2] == 0 and dev.nmea_cfg[3] == 0x02 and len(dev.nmea_cfg) == 20
 
 
 def test_already_configured_is_idempotent() -> None:
@@ -49,6 +51,7 @@ def test_already_configured_is_idempotent() -> None:
     res = make(dev).configure(baud=115200, rate_hz=5, constellations=["gps", "glonass"])
     assert res["ok"] and res["baud_found"] == 115200
     assert dev.resets == resets  # созвездия не менялись — перезапуска нет
+    assert {"step": "NMEA 4.10", "ok": True, "info": "unchanged"} in res["steps"]
 
 
 def test_rate_reduced_when_module_cannot_keep_up() -> None:
