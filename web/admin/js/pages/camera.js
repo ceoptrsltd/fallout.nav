@@ -1,24 +1,16 @@
-// Camera: live video (WebRTC WHEP | live MPEG-TS stream | MJPEG), status, camera.* settings.
-// Remote access (docs/contracts/remote.md): WebRTC does not pass the tunnel, so the default there is the
-// on-demand MPEG-TS stream; nothing is streamed unless this page is open and the tab is visible.
+// Camera: live video, status, camera.* settings.
+// The transport is chosen automatically: on the device's network WebRTC (WHEP, lowest latency), falling back
+// to the on-demand MPEG-TS stream if WebRTC cannot connect; through the server (docs/contracts/remote.md)
+// WebRTC does not pass the tunnel, so the stream right away. Nothing is streamed unless this page is open
+// and the tab is visible.
 import { h, icon, fmt, isNum } from "../dom.js";
 import { appUrl, goLogin, REMOTE } from "../api.js";
 import { loadMpegts } from "../vendor.js";
 import { SettingsForm, section } from "../form.js";
 import { store, on } from "../store.js";
-import { banner, confirmDialog, segmented } from "../ui.js";
+import { banner, confirmDialog } from "../ui.js";
 
-const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 const CAM_STATE = { starting: "starting", recording: "recording", stopped: "stopped", error: "error" };
-const MODES = ["webrtc", "stream", "mjpeg"];
-const MODE_KEY = "fnav.camera.mode." + (REMOTE ? "remote" : "local");
-
-/** Mode chosen by the user earlier (per local/remote), else: remote → stream, device → webrtc. */
-export function initialMode(saved, remote = REMOTE) {
-  return MODES.includes(saved) ? saved : remote ? "stream" : "webrtc";
-}
-function loadMode() { try { return initialMode(localStorage.getItem(MODE_KEY)); } catch { return initialMode(null); } }
-function saveMode(m) { try { localStorage.setItem(MODE_KEY, m); } catch { /* */ } }
 
 /** Minimal WHEP client (RFC 9725) on RTCPeerConnection. */
 export class WhepClient {
@@ -214,13 +206,12 @@ export class TsLiveClient {
 export function mount(root) {
   const video = h("video", { autoplay: true, muted: true, playsinline: true, hidden: true });
   video.muted = true;
-  const img = h("img", { alt: "MJPEG", hidden: true });
   const msg = h(".overlay-msg", null, "Connecting…");
   const tag = h(".tag.badge", null, "—");
-  const box = h(".video-box", null, video, img, msg, tag);
+  const box = h(".video-box", null, video, msg, tag);
   const statsEl = h(".mono.dim", { style: { fontSize: "12.5px", marginTop: "8px", minHeight: "20px" } });
 
-  let mode = loadMode();
+  let mode = null; // "webrtc" | "stream" — what is playing (or connecting) now
   let client = null;
   let gen = 0;
   let retryTimer = null;
@@ -231,46 +222,21 @@ export function mount(root) {
     clearTimeout(retryTimer);
     clearInterval(statsTimer);
     if (client) { client.stop(); client = null; }
-    img.onerror = img.onload = null;
-    img.src = BLANK; // aborts the MJPEG stream
     video.hidden = true;
-    img.hidden = true;
   }
 
   function showMsg(t) { msg.textContent = t; msg.hidden = !t; }
 
-  /** Start (or restart) a mode; remember = the user picked it. */
-  function start(m, { remember = false } = {}) {
-    if (remember) saveMode(m);
-    if (m === "webrtc") startWebrtc();
-    else if (m === "stream") startStream();
-    else startMjpeg("");
-  }
-
-  function startMjpeg(reason) {
-    stopAll();
-    const my = gen;
-    mode = "mjpeg";
-    seg.set("mjpeg");
-    tag.textContent = "MJPEG 768×576";
-    showMsg("Connecting to MJPEG…");
-    const load = () => {
-      if (my !== gen) return;
-      img.hidden = false;
-      img.onload = () => { showMsg(""); };
-      img.onerror = () => { showMsg("No signal from the camera. Retrying…"); retryTimer = setTimeout(load, 3000); };
-      // remote: thin the JPEG stream out (~5 fps) — it goes through the phone's mobile uplink
-      img.src = appUrl("api/camera/mjpeg") + (REMOTE ? "?fps=5&" : "?") + "t=" + Date.now();
-    };
-    load();
-    statsEl.textContent = reason ? "WebRTC unavailable: " + reason : REMOTE ? "MJPEG reduced to ~5 fps for remote viewing" : "";
+  /** Automatic choice: WebRTC on the device's network (stream if it fails), the stream through the server. */
+  function start() {
+    if (REMOTE) startStream();
+    else startWebrtc();
   }
 
   async function startWebrtc() {
     stopAll();
     const my = gen;
     mode = "webrtc";
-    seg.set("webrtc");
     tag.textContent = "WebRTC";
     showMsg("Connecting WebRTC…");
     statsEl.textContent = "";
@@ -294,10 +260,8 @@ export function mount(root) {
     } catch (e) {
       if (my !== gen) return;
       console.warn("WHEP:", e);
-      if (!REMOTE) { startMjpeg(e.message || String(e)); return; }
-      // through the server WebRTC cannot connect: the TS stream is the better fallback (less data than MJPEG)
       startStream();
-      statsEl.textContent = "WebRTC is not available remotely — using the live stream";
+      statsEl.textContent = "WebRTC unavailable (" + (e.message || e) + ") — using the live stream";
     }
   }
 
@@ -305,7 +269,6 @@ export function mount(root) {
     stopAll();
     const my = gen;
     mode = "stream";
-    seg.set("stream");
     tag.textContent = "Stream";
     showMsg(attempt ? "Reconnecting to the live stream…" : "Starting the live stream…");
     if (!attempt) statsEl.textContent = "";
@@ -342,17 +305,10 @@ export function mount(root) {
     }
   }
 
-  const seg = segmented({
-    name: "camsrc",
-    value: mode,
-    options: [{ value: "webrtc", label: "WebRTC" }, { value: "stream", label: "Stream" }, { value: "mjpeg", label: "MJPEG" }],
-    onchange: (v) => start(v, { remember: true }),
-  });
-
   // hidden tab: stop streaming (no traffic through the phone's mobile data), resume when visible again
   const onVis = () => {
     if (document.hidden) { stopAll(); showMsg("Paused while the tab is hidden"); }
-    else start(mode);
+    else start();
   };
   document.addEventListener("visibilitychange", onVis);
 
@@ -397,6 +353,7 @@ export function mount(root) {
       ? f({ path: "camera.live_bitrate_kbps", label: "Live stream bitrate", hint: "The on-demand \"Stream\" for remote viewing; recordings are not affected", type: "number", min: 200, max: 5000, step: 50, unit: "kbit/s", help: "800 kbit/s ≈ 360 MB per hour of watching through the phone's mobile data." })
       : null,
     f({ path: "camera.segment_minutes", label: "Segment length", hint: "Recording is split into files of this length", type: "number", min: 1, max: 60, step: 1, unit: "min" }),
+    f({ path: "storage.max_recordings_gb", label: "Recordings limit", hint: "All recordings together; the oldest are deleted first, protected ones are kept", type: "number", min: 1, max: 500, step: 1, unit: "GB", help: "At 6000 kbit/s, 10 GB ≈ 3.5 hours of driving." }),
     f({ path: "camera.hflip", label: "Mirror horizontally", type: "switch" }),
     f({ path: "camera.vflip", label: "Flip vertically", type: "switch" }),
     f({ path: "camera.exposure_mode", label: "Exposure", type: "select", options: [
@@ -414,7 +371,7 @@ export function mount(root) {
     h(".cam-layout", null,
       h("div", null,
         h(".card", null,
-          h(".card-head", null, h("h2", null, "Live video"), seg, h("button.btn.sm", { type: "button", title: "Reconnect", onclick: () => start(mode) }, icon("refresh"), "Reload")),
+          h(".card-head", null, h("h2", null, "Live video"), h("button.btn.sm", { type: "button", title: "Reconnect", onclick: () => start() }, icon("refresh"), "Reload")),
           box, statsEl,
         ),
       ),
@@ -426,7 +383,7 @@ export function mount(root) {
   renderStatus();
   const offT = on("telemetry", renderStatus);
   if (document.hidden) showMsg("Paused while the tab is hidden");
-  else start(mode);
+  else start();
 
   return () => {
     offT();

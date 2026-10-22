@@ -134,3 +134,9 @@ test("esriTemplates: hybrid layers, settings templates and the API key", () => {
   assert.equal(k.imagery, "https://x/{z}/{y}/{x}?f=1&token=abc");
   assert.ok(k.places.endsWith("?token=abc"));
 });
+
+test("googleMapsUrl: coordinates as a search query", async () => {
+  const { googleMapsUrl } = await import("../../web/admin/js/tracking-fmt.js");
+  assert.equal(googleMapsUrl(36.1146958, -115.1728), "https://www.google.com/maps/search/?api=1&query=36.114696%2C-115.172800");
+  assert.equal(googleMapsUrl(-33.9, -70.1), "https://www.google.com/maps/search/?api=1&query=-33.900000%2C-70.100000");
+});

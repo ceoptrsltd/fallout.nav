@@ -101,3 +101,8 @@ export function esriTemplates(settings) {
     transport: pick("transport_url", "Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}"),
   };
 }
+
+/** Google Maps link for a point (opens the app on a phone, the site on a laptop). */
+export function googleMapsUrl(lat, lon) {
+  return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(`${(+lat).toFixed(6)},${(+lon).toFixed(6)}`);
+}

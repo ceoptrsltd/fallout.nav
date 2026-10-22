@@ -1,4 +1,4 @@
-"""Хранилище записей: очистка по свободному месту, статистика, восстановление после сбоя."""
+"""Хранилище записей: очистка по свободному месту и лимиту объёма, статистика, восстановление после сбоя."""
 
 from __future__ import annotations
 
@@ -68,6 +68,8 @@ class CleanupResult:
     free_bytes: int = 0
     target_bytes: int = 0
     ok: bool = True  # свободного места ≥ target
+    total_bytes: int = 0  # все записи после очистки (с защищёнными и текущей)
+    over_limit: bool = False  # лимит объёма не выдержан: остались только защищённые
 
     @property
     def free_gb(self) -> float:
@@ -94,23 +96,36 @@ def cleanup(
     target_free_bytes: int,
     current: Path | None = None,
     free_fn: DiskFree = disk_free,
+    max_total_bytes: int | None = None,
 ) -> CleanupResult:
-    """Пока свободно < target — удалять самые старые незащищённые .ts (кроме текущего)."""
+    """Удалять самые старые незащищённые .ts (кроме текущего), пока свободно < target или все записи
+    вместе (с защищёнными) занимают > max_total_bytes. Защищённые не удаляются никогда."""
     res = CleanupResult(target_bytes=target_free_bytes)
+    files: list[tuple[Path, int]] = []
+    for p in list_recordings(root):
+        try:
+            files.append((p, p.stat().st_size))
+        except OSError:
+            continue
+    total = sum(size for _, size in files)
     free = free_fn(root)
-    if free < target_free_bytes:
+
+    def need() -> bool:
+        return free < target_free_bytes or (max_total_bytes is not None and total > max_total_bytes)
+
+    if need():
         cur = current.resolve() if current else None
-        for p in list_recordings(root):
-            if free >= target_free_bytes:
+        for p, size in files:
+            if not need():
                 break
             if is_protected(p):
                 continue
             try:
                 if cur is not None and p.resolve() == cur:
                     continue
-                size = p.stat().st_size
                 p.unlink()
                 res.deleted.append(p)
+                total -= size
                 log.info("cleanup: deleted %s (%.1f MB)", p.relative_to(root).as_posix(), size / 1e6)
             except OSError as e:
                 log.warning("cleanup: cannot delete %s: %s", p, e)
@@ -120,6 +135,8 @@ def cleanup(
             _remove_empty_dirs(root)
     res.free_bytes = free
     res.ok = free >= target_free_bytes
+    res.total_bytes = total
+    res.over_limit = max_total_bytes is not None and total > max_total_bytes
     return res
 
 

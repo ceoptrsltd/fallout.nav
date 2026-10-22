@@ -118,6 +118,7 @@ class CameraSettings(_Model):
 class StorageSettings(_Model):
     tile_cache_mb: int = Field(1024, ge=50)
     min_free_gb: float = Field(2.0, ge=0.5)  # столько свободного места держим всегда (резерв системы)
+    max_recordings_gb: float = Field(10.0, ge=1)  # все записи вместе (с защищёнными); старые удаляются
 
 
 class TileSettings(_Model):

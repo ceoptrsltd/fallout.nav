@@ -72,6 +72,19 @@ def test_cleanup_all_protected_reports_not_ok(tmp_path: Path):
     assert res.deleted == [] and not res.ok
 
 
+def test_cleanup_total_size_limit(tmp_path: Path):
+    files = make_files(tmp_path, [f"d/{i}.ts" for i in range(6)])  # 6 × 1 МБ, места на диске много
+    files[1].with_name(files[1].name + ".lock").touch()  # защищённые считаются в лимит, но не удаляются
+    disk = FakeDisk(tmp_path, capacity=1000 * MB)
+    res = cleanup(tmp_path, 1 * MB, current=files[5], free_fn=disk, max_total_bytes=3 * MB)
+    assert [p.name for p in res.deleted] == ["0.ts", "2.ts", "3.ts"]
+    assert res.total_bytes == 3 * MB and not res.over_limit
+    # остались защищённый и текущий; лимит ниже них — удалять больше нечего
+    res = cleanup(tmp_path, 1 * MB, current=files[5], free_fn=disk, max_total_bytes=1 * MB)
+    assert [p.name for p in res.deleted] == ["4.ts"] and res.over_limit
+    assert {p.name for p in list_recordings(tmp_path)} == {"1.ts", "5.ts"}
+
+
 def test_service_no_space_error_and_resume(tmp_path: Path):
     root = tmp_path / "rec"
     fs = make_files(root, ["a/x.ts", "a/y.ts"], size=2 * MB)

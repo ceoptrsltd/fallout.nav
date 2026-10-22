@@ -103,6 +103,7 @@ class CameraService(FrameSink):
         self._source_error: str | None = None
         self._error: str | None = None
         self._no_space = False
+        self._over_limit = False
         self._state_starting = False
         self._threads: list[threading.Thread] = []
         self._repaired = False
@@ -396,9 +397,15 @@ class CameraService(FrameSink):
         min_free = int(s.storage.min_free_gb * GB)
         p = self._p
         rec = p.recorder if p else None
+        # лимит объёма — с местом под следующий сегмент: после очистки записи + сегмент ≤ лимита
+        max_total = max(0, int(s.storage.max_recordings_gb * GB) - reserve)
         res = cleanup(self.root, min_free + reserve, current=rec.current_path if rec else None,
-                      free_fn=self.free_fn)
+                      free_fn=self.free_fn, max_total_bytes=max_total)
         self.free_gb = res.free_gb
+        if res.over_limit and not self._over_limit:
+            log.warning("recordings take %.2f GB > limit %.1f GB: only protected recordings are left to delete",
+                        res.total_bytes / GB, s.storage.max_recordings_gb)
+        self._over_limit = res.over_limit
         if res.free_bytes < min_free:
             if not self._no_space:
                 log.error("%s (free %.2f GB)", NO_SPACE, res.free_gb)

@@ -6,7 +6,7 @@ import { api, ApiError, errText } from "../api.js";
 import { store, on } from "../store.js";
 import { modal, segmented, switchEl, banner, poll } from "../ui.js";
 import { loadVendorCss, loadVendorScript } from "../vendor.js";
-import { RANGES, rangeQuery, fmtStay, fmtVisit, fmtWhen, agoText, sortVisits, esriTemplates } from "../tracking-fmt.js";
+import { RANGES, rangeQuery, fmtStay, fmtVisit, fmtWhen, agoText, sortVisits, esriTemplates, googleMapsUrl } from "../tracking-fmt.js";
 
 const OPTS_KEY = "fnav.tracking.opts";
 const REFRESH_MS = 60000;
@@ -237,7 +237,7 @@ export async function mount(root) {
       body,
       width: 600,
       foot: [
-        h("button.btn", { onclick: () => { m.close(); map.setView([p.lat, p.lon], Math.max(map.getZoom(), 17)); } }, icon("pin"), "Show on map"),
+        h("a.btn", { href: googleMapsUrl(p.lat, p.lon), target: "_blank", rel: "noopener noreferrer", style: { textDecoration: "none" } }, icon("pin"), "Open in Google Maps"),
         h("button.btn", { onclick: () => m.close() }, "Close"),
       ],
     });
