@@ -10,6 +10,16 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
 SRC="$(mktemp -d /var/tmp/eduke32.XXXXXX)"
 trap 'rm -rf "$SRC"' EXIT
 git clone -q --depth 1 "$REPO" "$SRC/eduke32"
+
+# Fix: Debian's SDL2 is sdl2-compat over SDL3; with only a Bluetooth (bluez-alsa) output it lists no audio
+# device, SDL_GetAudioDeviceName(0, 0) returns NULL and EDuke32 crashes in strdup right after opening sound.
+DRV="$SRC/eduke32/source/audiolib/src/driver_sdl.cpp"
+OLD='Xstrdup(SDL_GetAudioDeviceName(0, 0))'
+NEW='Xstrdup(SDL_GetAudioDeviceName(0, 0) ? SDL_GetAudioDeviceName(0, 0) : "default")'
+grep -qF "$OLD" "$DRV" || { echo "EDuke32 source changed: patch site not found in $DRV" >&2; exit 1; }
+python3 -I -c 'import sys; p, o, n = sys.argv[1:]; s = open(p).read(); open(p, "w").write(s.replace(o, n, 1))' \
+    "$DRV" "$OLD" "$NEW"
+
 # one core stays free for the camera pipeline; no GTK startup window, no VPX, Polymost (GL) without Polymer
 nice -n 10 make -C "$SRC/eduke32" -j3 duke3d HAVE_GTK2=0 STARTUP_WINDOW=0 USE_LIBVPX=0 POLYMER=0 RELEASE=1 >/dev/null
 install -d -m 0755 "$BIN"
