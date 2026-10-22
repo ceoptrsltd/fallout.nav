@@ -63,7 +63,8 @@ async def test_launch_rules(tmp_path, monkeypatch):
     assert e.value.status == 404
     st = await svc.launch("deadeus")
     assert st["running"] and st["current"]["id"] == "deadeus"
-    assert gm.ARGS_FILE.read_text().splitlines()[1].endswith("Deadeus.gb")
+    args = gm.ARGS_FILE.read_text().splitlines()
+    assert args[0] == "retroarch" and args[1].endswith("gambatte_libretro.so") and args[2].endswith("Deadeus.gb")
     with pytest.raises(gm.GamesError):
         await svc.launch("freedoom-phase-2")  # уже идёт игра
     st = await svc.stop("test")
@@ -86,3 +87,33 @@ async def test_api_local_kiosk_may_launch(tmp_path, monkeypatch, data_dir):
             assert (await local.post("/api/games/stop")).status_code == 401  # закрыть — из админки, со входом
             await login(remote)
             assert (await remote.post("/api/games/stop")).json()["running"] is False
+
+
+def test_duke3d_native(tmp_path, monkeypatch):
+    content, _cores, _doom = _setup(tmp_path, monkeypatch)
+    (content / "duke3d").mkdir()
+    grp = content / "duke3d" / "DUKE3D.GRP"
+    grp.write_bytes(b"x" * 64)
+    eduke = tmp_path / "eduke32"
+    monkeypatch.setattr(gm, "EDUKE32", eduke)
+    assert "duke-nukem-3d" not in [g.id for g in gm.scan_games()]  # нет движка — нет игры
+    eduke.write_bytes(b"")
+    g = next(g for g in gm.scan_games() if g.id == "duke-nukem-3d")
+    assert g.kind == "native" and g.argv[0] == str(eduke) and g.argv[-3:] == ("-gamegrp", "DUKE3D.GRP", "-nosetup")
+
+
+def test_pad_exit_combo():
+    w = gm.PadWatcher(pattern="/nonexistent/*")
+
+    def ev(code: int, value: int) -> bytes:
+        return gm.EVENT.pack(0, 0, gm.EV_KEY, code, value)
+
+    w.feed(ev(0x138, 1), now=10.0)
+    assert not w.exit_held(1.0, now=12.0)  # только Share
+    w.feed(ev(0x139, 1), now=10.5)
+    assert not w.exit_held(1.0, now=11.0)
+    assert w.exit_held(1.0, now=11.6)  # Share + Options держат 1 с
+    w.feed(ev(0x139, 0), now=11.7)
+    assert not w.exit_held(1.0, now=13.0)
+    w.feed(ev(0x13A, 1) + ev(0x13B, 1), now=20.0)  # Select + Start (стандартная раскладка)
+    assert w.exit_held(1.0, now=21.0)

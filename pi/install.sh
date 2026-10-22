@@ -288,12 +288,14 @@ install_mediamtx
 step "Games (RetroArch on the car screen)"
 # Debian ships the Game Boy core and the free Freedoom WADs; the PrBoom (Doom) core is built from source.
 bash "$APP/pi/bin/fnav-build-prboom" || warn "PrBoom core build failed - Freedoom will not be listed"
+bash "$APP/pi/bin/fnav-build-eduke32" || warn "EDuke32 build failed - Duke Nukem 3D will not be listed"
 install -d -m 0755 /opt/fnav/games/cores
 for core in /usr/lib/*-linux-gnu/libretro/*_libretro.so; do
     [ -e "$core" ] && ln -sf "$core" "/opt/fnav/games/cores/$(basename "$core")"
 done
 # Game files (ROMs) go to content/<anything>/ - fnav-core lists everything it has a core for
 install -d -m 0755 -o fnav -g fnav /var/lib/fnav/games /var/lib/fnav/games/content /var/lib/fnav/retroarch
+bash "$APP/pi/bin/fnav-get-duke3d-shareware" || warn "Duke Nukem 3D shareware download failed"
 
 # ------------------------------------------------------------------------------------------
 step "systemd units, sysctl, sudoers, polkit, udev"

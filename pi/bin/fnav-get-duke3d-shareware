@@ -1,0 +1,29 @@
+#!/bin/bash
+# Duke Nukem 3D 1.3D shareware (episode 1 "L.A. Meltdown", freely distributable shareware by 3D Realms):
+# download the original 3dduke13.zip, unpack DUKE3D.GRP + DUKE.RTS into the games content directory and check
+# the GRP against the known checksum (the same one Debian's game-data-packager uses). Run as root.
+set -euo pipefail
+DEST=/var/lib/fnav/games/content/duke3d
+URL="${DUKE3D_SHAREWARE_URL:-https://www.dosgamesarchive.com/file.php?id=1396}"
+GRP_MD5=c03558e3a78d1c5356dc69b6134c5b55
+if [ -f "$DEST/DUKE3D.GRP" ]; then echo "DUKE3D.GRP already present"; exit 0; fi
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+curl -fsSL -m 120 -A "Mozilla/5.0" -o "$TMP/3dduke13.zip" "$URL"
+python3 -I - "$TMP" <<'PY'
+import sys, zipfile, io, pathlib
+tmp = pathlib.Path(sys.argv[1])
+z = zipfile.ZipFile(tmp / "3dduke13.zip")
+names = z.namelist()
+if "DN3DSW13.SHR" in names:  # original 3D Realms packaging
+    inner = zipfile.ZipFile(io.BytesIO(z.read("DN3DSW13.SHR")))
+else:  # DUKE3DS._1 … ._5 parts of one archive
+    parts = sorted(n for n in names if n.upper().startswith("DUKE3DS._"))
+    inner = zipfile.ZipFile(io.BytesIO(b"".join(z.read(n) for n in parts)))
+for name in ("DUKE3D.GRP", "DUKE.RTS"):
+    (tmp / name).write_bytes(inner.read(name))
+PY
+echo "$GRP_MD5  $TMP/DUKE3D.GRP" | md5sum -c --quiet || { echo "DUKE3D.GRP checksum mismatch" >&2; exit 1; }
+install -d -m 0755 -o fnav -g fnav "$DEST"
+install -m 0644 -o fnav -g fnav "$TMP/DUKE3D.GRP" "$TMP/DUKE.RTS" "$DEST/"
+echo "Duke Nukem 3D shareware installed: $DEST"

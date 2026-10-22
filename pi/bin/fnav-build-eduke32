@@ -1,0 +1,17 @@
+#!/bin/bash
+# Build EDuke32 (Duke Nukem 3D engine, GPL; not packaged by Debian for arm64) from the official sources and
+# install it as /opt/fnav/games/bin/eduke32. Run as root; skips if installed (--force rebuilds).
+set -euo pipefail
+BIN=/opt/fnav/games/bin
+REPO=https://voidpoint.io/terminx/eduke32.git
+if [ -x "$BIN/eduke32" ] && [ "${1:-}" != "--force" ]; then echo "EDuke32 already installed"; exit 0; fi
+DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+    build-essential git pkg-config libsdl2-dev libvorbis-dev libflac-dev libgl-dev >/dev/null
+SRC="$(mktemp -d /var/tmp/eduke32.XXXXXX)"
+trap 'rm -rf "$SRC"' EXIT
+git clone -q --depth 1 "$REPO" "$SRC/eduke32"
+# one core stays free for the camera pipeline; no GTK startup window, no VPX, Polymost (GL) without Polymer
+nice -n 10 make -C "$SRC/eduke32" -j3 duke3d HAVE_GTK2=0 STARTUP_WINDOW=0 USE_LIBVPX=0 POLYMER=0 RELEASE=1 >/dev/null
+install -d -m 0755 "$BIN"
+install -m 0755 "$SRC/eduke32/eduke32" "$BIN/eduke32"
+echo "EDuke32 installed: $BIN/eduke32"
