@@ -103,6 +103,8 @@ class CameraSettings(_Model):
     fps: int = Field(15, ge=1, le=30)
     bitrate_kbps: int = Field(6000, ge=500, le=25000)
     gop: int = Field(15, ge=1)  # ключевой кадр каждые N кадров (15 = раз в секунду)
+    # живое видео по требованию (/api/camera/live.ts): отдельный энкодер lores, только пока есть зрители
+    live_bitrate_kbps: int = Field(800, ge=200, le=5000)
     segment_minutes: int = Field(10, ge=1, le=60)
     fsync_interval_s: float = Field(1.0, gt=0, le=10)
     hflip: bool = False
@@ -209,6 +211,14 @@ class GpioSettings(_Model):
     long_press_s: float = 2.0
 
 
+class TrackingSettings(_Model):
+    """Журнал позиций (хранится на сервере, см. docs/contracts/remote.md)."""
+
+    enabled: bool = True
+    interval_s: float = Field(60.0, ge=10, le=3600)  # как часто брать точку
+    max_hdop: float = Field(5.0, gt=0)  # точки с худшим HDOP не пишем
+
+
 class Settings(_Model):
     version: int = 1
     display: DisplaySettings = DisplaySettings()
@@ -220,6 +230,7 @@ class Settings(_Model):
     gps: GpsSettings = GpsSettings()
     compass: CompassSettings = CompassSettings()
     gpio: GpioSettings = GpioSettings()
+    tracking: TrackingSettings = TrackingSettings()
 
 
 # ───────────────────────────── Датчики ─────────────────────────────

@@ -18,8 +18,9 @@ QUEUE_MAX = 50  # 5 с телеметрии; клиент, который не �
 
 
 class Client:
-    def __init__(self, ws: WebSocket):
+    def __init__(self, ws: WebSocket, telemetry_every: int = 1):
         self.ws = ws
+        self.telemetry_every = max(1, telemetry_every)  # 1 — каждый кадр телеметрии, 5 — каждый пятый
         self.queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=QUEUE_MAX)
         self.topics: set[str] = set()
         self.nmea_last: str | None = None
@@ -53,6 +54,11 @@ class WsManager:
             if topic is None or topic in c.topics:
                 c.send(text)
 
+    def broadcast_telemetry(self, text: str, tick: int) -> None:
+        for c in list(self.clients):
+            if tick % c.telemetry_every == 0:
+                c.send(text)
+
     def broadcast(self, msg: dict[str, Any], topic: str | None = None) -> None:
         if self.clients:
             self.broadcast_text(json.dumps(msg, ensure_ascii=False), topic)
@@ -66,9 +72,9 @@ class WsManager:
     def subscribers(self, topic: str) -> list[Client]:
         return [c for c in self.clients if topic in c.topics]
 
-    async def serve(self, ws: WebSocket, hello: list[str]) -> None:
+    async def serve(self, ws: WebSocket, hello: list[str], telemetry_every: int = 1) -> None:
         await ws.accept()
-        client = Client(ws)
+        client = Client(ws, telemetry_every)
         for h in hello:
             client.send(h)
         self.clients.add(client)

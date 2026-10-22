@@ -96,6 +96,8 @@ class FakeSource:
         self.encoder_name: str | None = None
         self.frames = 0
         self.done = threading.Event()
+        self._live: tuple | None = None  # (кодек lores, callback) — второй энкодер живого видео
+        self.live_starts = 0
 
     def start(self) -> None:
         self._cc, self.encoder_name = open_h264_encoder(self.w, self.h, self.cam.fps, self.cam.gop,
@@ -113,6 +115,15 @@ class FakeSource:
 
     def request_keyframe(self) -> None:
         self._force_key = True
+
+    def start_live(self, bitrate_kbps: int, on_video) -> None:
+        if self._live is None:
+            cc, _ = open_h264_encoder(self.lw, self.lh, self.cam.fps, self.cam.fps, bitrate_kbps)
+            self._live = (cc, on_video)
+            self.live_starts += 1
+
+    def stop_live(self) -> None:
+        self._live = None
 
     # ── рисование ──
     def _prepare(self) -> None:
@@ -176,9 +187,14 @@ class FakeSource:
                 for pkt in self._cc.encode(vf):
                     pts_us = ts_map.pop(pkt.pts, ts_us) if pkt.pts is not None else ts_us
                     self.sink.on_video(bytes(pkt), bool(pkt.is_keyframe), pts_us)
-                if self.sink.wants_lores():
+                live = self._live
+                want_jpeg = self.sink.wants_lores()
+                if want_jpeg or live is not None:
                     lo = np.asarray(Image.fromarray(rgb, "RGB").resize((self.lw, self.lh)))
-                    self.sink.on_lores(LoresFrame("rgb", lo, self.lw, self.lh, ts_us))
+                    if want_jpeg:
+                        self.sink.on_lores(LoresFrame("rgb", lo, self.lw, self.lh, ts_us))
+                    if live is not None:
+                        self._encode_live(live, lo, i, ts_us)
                 i += 1
                 self.frames = i
         except Exception as e:
@@ -186,3 +202,15 @@ class FakeSource:
             self.sink.on_error(f"Fake source: {e}")
         finally:
             self.done.set()
+
+    def _encode_live(self, live: tuple, lo: np.ndarray, i: int, ts_us: int) -> None:
+        import av
+
+        cc, on_video = live
+        try:
+            vf = av.VideoFrame.from_ndarray(np.ascontiguousarray(lo), format="rgb24").reformat(format="yuv420p")
+            vf.pts = i
+            for pkt in cc.encode(vf):
+                on_video(bytes(pkt), bool(pkt.is_keyframe), ts_us)
+        except Exception:
+            log.exception("fake live encode failed")

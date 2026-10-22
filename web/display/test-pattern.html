@@ -74,7 +74,7 @@ if (mode === "frame") {
 } else if (mode === "nav") {
   // the real navigation screen inside a full-screen frame (with ?dim= applied on top) - test only
   const f = document.createElement("iframe");
-  f.src = "/display/?pal=1";
+  f.src = "./?pal=1";
   f.style.cssText = "position:fixed;inset:0;width:100%;height:100%;border:0;background:#000";
   document.body.appendChild(f);
 } else if (mode === "bars") bars();

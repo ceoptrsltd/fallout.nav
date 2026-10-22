@@ -1,16 +1,17 @@
-// Modal screen preview: iframe /display/?preview=1 (768×576) at real physical size.
+// Modal screen preview: iframe <root>display/?preview=1 (768×576) at real physical size.
 import { h, clear } from "./dom.js";
 import { modal, segmented, switchEl } from "./ui.js";
 import { on, store } from "./store.js";
+import { appUrl } from "./api.js";
 
 const OPTS_KEY = "fnav.preview.opts";
 const CANVAS_W = 768, CANVAS_H = 576;
 
 let physPromise = null;
-/** Shared module from /display/ui/physical.js if present; otherwise the local fallback. */
+/** Shared module from display/ui/physical.js if present; otherwise the local fallback. */
 export function loadPhysical() {
   if (!physPromise) {
-    physPromise = import("/display/ui/physical.js")
+    physPromise = import(appUrl("display/ui/physical.js"))
       .then((m) => {
         if (typeof m.getPxPerMm === "function" && typeof m.setPxPerMm === "function" && typeof m.renderCalibrator === "function") return m;
         throw new Error("bad physical.js");
@@ -32,7 +33,7 @@ export async function openPreview() {
   const phys = await loadPhysical();
   const opts = loadOpts();
 
-  const iframe = h("iframe", { src: "/display/?preview=1", title: "Device screen", allow: "autoplay", scrolling: "no" });
+  const iframe = h("iframe", { src: appUrl("display/?preview=1"), title: "Device screen", allow: "autoplay", scrolling: "no" });
   const safe = h(".pv-safe");
   const grid = h(".pv-grid");
   const frame = h(".pv-frame", null, iframe, grid, safe);
@@ -54,7 +55,7 @@ export async function openPreview() {
     calib.hidden = !calib.hidden;
     if (!calib.hidden && !calibDispose) { clear(calib); const r = phys.renderCalibrator(calib); calibDispose = typeof r === "function" ? r : r && typeof r.destroy === "function" ? () => r.destroy() : () => {}; }
   } }, "Calibrate");
-  const openBtn = h("a.btn", { href: "/display/", target: "_blank", rel: "noopener" }, "Open in new tab");
+  const openBtn = h("a.btn", { href: appUrl("display/"), target: "_blank", rel: "noopener" }, "Open in new tab");
 
   function render() {
     const s = store.settings?.display || {};

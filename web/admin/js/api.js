@@ -1,6 +1,34 @@
 // REST client. On 401 — redirect to the login page.
+//
+// Address prefix (docs/contracts/remote.md): on the device the app lives at "/", through the server at
+// "/fnadmin/". Every app URL is built from ROOT; request() resolves "/api/…" against it centrally.
+// Same functions as web/display/map/root.js (the admin does not depend on display modules).
 
-export const LOGIN_URL = "/admin/login.html";
+/** "/admin/…" → "/", "/fnadmin/admin/…" → "/fnadmin/". */
+export function appRoot(pathname) {
+  const r = String(pathname || "/").replace(/\/(admin|display)(\/.*)?$/, "");
+  return r.endsWith("/") ? r : r + "/";
+}
+
+export const ROOT = typeof location !== "undefined" ? appRoot(location.pathname) : "/";
+/** Opened through the server (tunnel), not from the device itself. */
+export const REMOTE = ROOT !== "/";
+
+/** "api/x" or "/api/x" → URL under the app root; full URLs (https://…) are returned as is. */
+export function appUrl(p, root = ROOT) {
+  const s = String(p);
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s) || s.startsWith("//")) return s;
+  return root + s.replace(/^\/+/, "");
+}
+
+export const LOGIN_URL = appUrl("admin/login.html");
+
+/** Login "next" target: a path relative to ROOT inside admin/ (no open redirect) → full URL. */
+export function safeNext(n, root = ROOT) {
+  const p = String(n || "").replace(/^\//, ""); // the device middleware sends "/admin/…"
+  const ok = /^admin\/[\w\-./#?=&%]*$/.test(p) && !p.includes("//") && !p.includes("..") && !p.includes("login.html");
+  return root + (ok ? p : "admin/");
+}
 
 export class ApiError extends Error {
   constructor(status, detail, raw) {
@@ -34,11 +62,12 @@ let redirecting = false;
 export function goLogin() {
   if (redirecting) return;
   redirecting = true;
-  const next = encodeURIComponent(location.pathname + location.hash);
-  location.href = LOGIN_URL + "?next=" + next;
+  const path = location.pathname.startsWith(ROOT) ? location.pathname.slice(ROOT.length) : "admin/";
+  location.href = LOGIN_URL + "?next=" + encodeURIComponent(path + location.hash);
 }
 
 export async function request(method, url, body, opts = {}) {
+  if (typeof url === "string" && url.startsWith("/") && !url.startsWith("//")) url = appUrl(url);
   const init = { method, credentials: "same-origin", headers: {}, ...opts.init };
   if (body !== undefined && body !== null) {
     if (typeof body === "string") {

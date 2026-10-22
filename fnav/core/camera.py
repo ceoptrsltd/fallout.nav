@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 import httpx
 from pydantic import ValidationError
+from starlette.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from fnav.core.mockcam import BOUNDARY, MockCamera
 from fnav.core.util import cancel_tasks
@@ -23,6 +25,7 @@ CAMERA_URL = "http://127.0.0.1:8081"
 WHEP_URL = "http://127.0.0.1:8889/cam/whep"
 POLL_S = 1.0
 UNAVAILABLE = "Camera service (fnav-camera) is not responding"
+LIVE_UNAVAILABLE = "Live stream is unavailable"
 
 
 class CameraUnavailable(Exception):
@@ -131,11 +134,12 @@ class CameraService:
             raise CameraUnavailable(UNAVAILABLE) from None
 
     # ── видео ──
-    async def open_mjpeg(self) -> tuple[str, AsyncIterator[bytes]]:
-        """→ (content-type, поток байт). Камеры нет → CameraUnavailable (или mock)."""
+    async def open_mjpeg(self, fps: int | None = None) -> tuple[str, AsyncIterator[bytes]]:
+        """→ (content-type, поток байт). Камеры нет → CameraUnavailable (или mock). fps — прореживание."""
+        params = {"fps": str(fps)} if fps else None
         if self.available is not False:
             try:
-                req = self._client.build_request("GET", f"{self.base_url}/mjpeg",
+                req = self._client.build_request("GET", f"{self.base_url}/mjpeg", params=params,
                                                  timeout=httpx.Timeout(10.0, connect=1.0))
                 resp = await self._client.send(req, stream=True)
                 if resp.status_code == 200:
@@ -155,8 +159,41 @@ class CameraService:
             except httpx.HTTPError:
                 pass
         if self.mockcam is not None:
-            return f"multipart/x-mixed-replace; boundary={BOUNDARY}", self.mockcam.mjpeg()
+            return f"multipart/x-mixed-replace; boundary={BOUNDARY}", self.mockcam.mjpeg(fps)
         raise CameraUnavailable(UNAVAILABLE)
+
+    async def open_live(self) -> tuple[AsyncIterator[bytes], Callable[[], Awaitable[None]]]:
+        """Живое видео MPEG-TS (второй энкодер камеры, по требованию) → (поток, закрыть)."""
+        if self.available is not False:
+            try:
+                req = self._client.build_request("GET", f"{self.base_url}/live.ts",
+                                                 timeout=httpx.Timeout(30.0, connect=1.0))
+                resp = await self._client.send(req, stream=True)
+            except httpx.HTTPError:
+                resp = None
+            if resp is not None:
+                if resp.status_code == 200:
+                    async def gen() -> AsyncIterator[bytes]:
+                        try:
+                            async for chunk in resp.aiter_raw():
+                                yield chunk
+                        except httpx.HTTPError:
+                            pass
+
+                    return gen(), resp.aclose
+                detail = LIVE_UNAVAILABLE
+                try:
+                    await resp.aread()
+                    detail = resp.json().get("error") or detail
+                except (httpx.HTTPError, ValueError, AttributeError):
+                    pass
+                finally:
+                    await resp.aclose()
+                raise CameraUnavailable(detail)
+        if self.mockcam is not None and self.mockcam.live_available():
+            stream = self.mockcam.live_ts()
+            return stream, stream.aclose
+        raise CameraUnavailable(UNAVAILABLE if self.mockcam is None else LIVE_UNAVAILABLE)
 
     async def snapshot(self) -> bytes:
         if self.available is not False:
@@ -191,3 +228,21 @@ def rewrite_whep_location(loc: str | None, whep_url: str = WHEP_URL) -> str | No
         rest = path[len(base_path):].lstrip("/")
         return "/api/camera/whep" + (f"/{rest}" if rest else "")
     return loc
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    """StreamingResponse, который гарантированно вызывает on_close (обрыв клиента до первого байта — тоже):
+    иначе соединение с камерой осталось бы открытым и второй энкодер не выключился бы."""
+
+    def __init__(self, content: AsyncIterator[bytes], on_close: Callable[[], Awaitable[None]], **kw) -> None:
+        super().__init__(content, **kw)
+        self._on_close = on_close
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            try:
+                await self._on_close()
+            except Exception:
+                log.debug("stream close failed", exc_info=True)

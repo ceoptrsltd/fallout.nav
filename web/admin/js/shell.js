@@ -7,6 +7,7 @@ import { openPreview } from "./preview.js";
 
 const PAGES = [
   { id: "dashboard", title: "Dashboard", icon: "dash", load: () => import("./pages/dashboard.js") },
+  { id: "tracking", title: "Tracking", icon: "track", load: () => import("./pages/tracking.js") },
   { id: "camera", title: "Camera", icon: "cam", load: () => import("./pages/camera.js") },
   { id: "recordings", title: "Recordings", icon: "rec", load: () => import("./pages/recordings.js") },
   { id: "nav", title: "Navigation", icon: "nav", load: () => import("./pages/nav.js") },
@@ -26,7 +27,8 @@ for (const p of PAGES) {
 }
 
 async function route() {
-  const id = (location.hash.match(/^#\/([\w-]+)/) || [])[1] || "dashboard";
+  // device offline (remote): only the server-side journal is available — open Tracking by default
+  const id = (location.hash.match(/^#\/([\w-]+)/) || [])[1] || (store.offline ? "tracking" : "dashboard");
   const page = PAGES.find((p) => p.id === id) || PAGES[0];
   const token = ++routeToken;
   for (const a of navEl.children) a.classList.toggle("active", a.dataset.id === page.id);
@@ -126,11 +128,24 @@ document.getElementById("logout").addEventListener("click", async () => {
   goLogin();
 });
 
+// ───── device offline (remote access, docs/contracts/remote.md) ─────
+const offlineBanner = banner("warn", "Device is offline — showing data from the server");
+offlineBanner.classList.add("offline-banner");
+offlineBanner.hidden = true;
+view.before(offlineBanner);
+function setOffline(v) {
+  store.offline = v;
+  offlineBanner.hidden = !v;
+}
+// the device came back (WS delivers telemetry again) — hide the banner
+on("conn", (o) => { if (o && store.offline) setOffline(false); });
+
 // ───── startup ─────
 (async function init() {
   try {
     const s = await api.get("/api/session", { noRedirect: true });
     if (!s || !s.authenticated) return goLogin();
+    if (s.offline) setOffline(true);
   } catch (e) {
     toast("error", "No connection to the device: " + errText(e));
   }

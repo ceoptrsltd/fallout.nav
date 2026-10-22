@@ -20,6 +20,7 @@ from fnav.core.navlogic import NavLogic
 from fnav.core.recordings import Recordings
 from fnav.core.system import SystemService
 from fnav.core.tiles import TileService
+from fnav.core.tracking import RelayConfig, TrackService
 from fnav.core.util import cancel_tasks, spawn
 from fnav.core.videoout import VideoOutput, VideoOutputError
 from fnav.core.ws import WsManager, new_nmea_lines
@@ -36,6 +37,7 @@ from fnav.models import (
 log = logging.getLogger("fnav.core")
 
 TELEMETRY_HZ = 10.0
+REMOTE_TELEMETRY_EVERY = 5  # через туннель (мобильный интернет) — 2 Гц вместо 10
 DEV_PASSWORD = "fnav-dev"
 
 
@@ -50,6 +52,9 @@ class CoreOptions:
     tile_transport: httpx.AsyncBaseTransport | None = None  # для Esri (тесты)
     hub_factory: Callable[[Settings], SensorHub] | None = None
     secrets_path: Path | None = None
+    remote_port: int | None = None  # вход ssh-туннеля с сервера (без доверия к localhost)
+    relay: RelayConfig | None = None  # None — из окружения (/etc/fnav/remote.env)
+    relay_transport: httpx.AsyncBaseTransport | None = None  # для fnav-relay (тесты)
 
 
 class NullSensorHub:
@@ -100,7 +105,7 @@ class Core:
         self.mock = opts.mock
         self.store = SettingsStore()
         self.auth = AuthManager(secrets_path=opts.secrets_path or paths.secrets_file(),
-                                trust_localhost=opts.trust_localhost)
+                                trust_localhost=opts.trust_localhost, remote_port=opts.remote_port)
         self.ws = WsManager()
         s = self.store.get()
         self.nav = NavLogic(s.nav, s.display, start_time=time.monotonic())
@@ -111,6 +116,9 @@ class Core:
                                     transport=opts.local_transport)
         self.system = SystemService(mock=opts.mock)
         self.video = VideoOutput(mock=opts.mock)
+        self.tracking = TrackService(paths.data_dir() / "track_outbox.db", opts.relay or RelayConfig.from_env(),
+                                     lambda: (self.auth.password_hash, self.auth.session_secret),
+                                     transport=opts.relay_transport)
         self.hub: SensorHub = self._make_hub(s)
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
         self._tasks: list[asyncio.Task] = []
@@ -163,13 +171,14 @@ class Core:
                 asyncio.create_task(self._telemetry_loop(), name="telemetry"),
                 asyncio.create_task(self._slow_loop(), name="slow-status"),
             ]
+            self.tracking.start(lambda: self.hub.snapshot().gps, lambda: self.store.get().tracking)
         self.started = True
         log.info("fnav-core started (mock=%s)", self.mock)
 
     async def stop(self) -> None:
         await cancel_tasks(*self._tasks)
         self._tasks.clear()
-        for closer in (self.hub.stop, self.camera.stop, self.tiles.stop):
+        for closer in (self.tracking.stop, self.hub.stop, self.camera.stop, self.tiles.stop):
             try:
                 await closer()
             except Exception:
@@ -220,7 +229,7 @@ class Core:
             try:
                 tel = self.build_telemetry()
                 if len(self.ws):
-                    self.ws.broadcast_text(tel.model_dump_json())
+                    self.ws.broadcast_telemetry(tel.model_dump_json(), tick)
                     self.telemetry_sent += 1
                 if tick % 2 == 0:
                     self._push_nmea()

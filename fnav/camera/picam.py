@@ -44,6 +44,7 @@ class PicameraSource:
         self.sink = sink
         self.picam2: Any = None
         self.encoder: Any = None
+        self._live_enc: Any = None
         self.sensor_mode: str | None = None
         self.output_size = f"{cam.out_w}x{cam.out_h}"
         self._overlay_main: TimestampOverlay | None = None
@@ -140,7 +141,50 @@ class PicameraSource:
         log.info("camera started (%s, %d fps, %d kbps, gop %d)", self.output_size, cam.fps,
                  cam.bitrate_kbps, cam.gop)
 
+    # ── живое видео: второй аппаратный энкодер на lores (запись main не трогаем) ──
+    def start_live(self, bitrate_kbps: int, on_video) -> None:
+        from picamera2.encoders import H264Encoder  # type: ignore[import-not-found]
+        from picamera2.outputs import Output  # type: ignore[import-not-found]
+
+        p = self.picam2
+        if p is None:
+            raise RuntimeError("camera is not running")
+        if self._live_enc is not None:
+            return
+        t0 = self._t0
+
+        class _LiveOut(Output):  # type: ignore[misc, valid-type]
+            # поток опроса V4L2: только быстрые операции, иначе встанет камера (буферы lores не вернутся)
+            def outputframe(self, frame, keyframe=True, timestamp=None, packet=None, audio=False):
+                if audio:
+                    return
+                ts = int(timestamp) if timestamp is not None else int((time.monotonic() - t0) * 1e6)
+                on_video(bytes(frame), bool(keyframe), ts)
+
+        fps = self.cam.fps
+        kwargs: dict[str, Any] = {"bitrate": int(bitrate_kbps) * 1000, "repeat": True, "iperiod": fps}
+        try:
+            enc = H264Encoder(framerate=fps, **kwargs)
+        except TypeError:  # старый Picamera2
+            enc = H264Encoder(**kwargs)
+        # start_encoder запускает энкодер и только потом добавляет его в рассылку кадров;
+        # если запуск упал — main это не затрагивает
+        p.start_encoder(enc, _LiveOut(), name="lores")
+        self._live_enc = enc
+
+    def stop_live(self) -> None:
+        enc, self._live_enc = self._live_enc, None
+        p = self.picam2
+        if enc is None or p is None:
+            return
+        # Сначала убрать из рассылки (под замком камеры): Encoder.stop() держит свой замок, пока ждёт
+        # поток опроса, и поток камеры, отдающий ему кадр, ждал бы вместе с ним — пострадала бы запись.
+        with p.lock:
+            p.encoders.discard(enc)
+        enc.stop()
+
     def stop(self) -> None:
+        self._live_enc = None  # stop_recording остановит все энкодеры, включая live
         p, self.picam2 = self.picam2, None
         if p is None:
             return

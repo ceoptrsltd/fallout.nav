@@ -52,6 +52,9 @@ class AuthManager:
 
     secrets_path: Path
     trust_localhost: bool = True
+    # Порт «удалённого» входа (туда приходит ssh-туннель с сервера): для него localhost-доверие киоска не
+    # действует, а IP клиента берётся из X-Real-IP (его ставит nginx на сервере). None — входа нет.
+    remote_port: int | None = None
     password_hash: str | None = None
     session_secret: str = ""
     _attempts: dict[str, _Attempts] = field(default_factory=dict)
@@ -138,8 +141,20 @@ class AuthManager:
         self.password_hash = new_hash
 
     # ── запросы ──
+    def is_remote(self, conn: HTTPConnection) -> bool:
+        srv = conn.scope.get("server")
+        return bool(self.remote_port) and bool(srv) and srv[1] == self.remote_port
+
     def is_local(self, conn: HTTPConnection) -> bool:
-        return self.trust_localhost and conn.client is not None and conn.client.host in LOCAL_HOSTS
+        return (self.trust_localhost and not self.is_remote(conn)
+                and conn.client is not None and conn.client.host in LOCAL_HOSTS)
+
+    def client_ip(self, conn: HTTPConnection) -> str:
+        if self.is_remote(conn):
+            ip = conn.headers.get("x-real-ip", "").strip()
+            if ip:
+                return ip
+        return conn.client.host if conn.client else "?"
 
     def is_authenticated(self, conn: HTTPConnection) -> bool:
         return self.check_token(conn.cookies.get(COOKIE_NAME))

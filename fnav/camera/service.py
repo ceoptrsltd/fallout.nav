@@ -12,6 +12,7 @@ from fnav import paths
 from fnav.models import CameraStatus, Settings
 
 from .jpeg import LoresFrame
+from .live import LiveHub, LiveMux
 from .mjpeg import JpegWorker, MjpegHub
 from .recorder import Recorder, TimeSync
 from .rtsp import DEFAULT_URL, RtspPublisher
@@ -71,6 +72,7 @@ class CameraService(FrameSink):
         retry_s: float = 5.0,
         frame_timeout_s: float = 5.0,
         housekeeping_s: float = 30.0,
+        live_grace_s: float = 5.0,
     ) -> None:
         self.fake = fake
         self.root = Path(root) if root else paths.recordings_dir()
@@ -85,6 +87,12 @@ class CameraService(FrameSink):
         self.frame_timeout_s = frame_timeout_s
         self.housekeeping_s = housekeeping_s
         self.hub = MjpegHub()
+        # живое видео (/live.ts): второй энкодер на lores, только пока есть зрители
+        self.live = LiveHub(self.set_live_demand, grace_s=live_grace_s)
+        self._live_wanted = False
+        self._live_src: Source | None = None  # источник, на котором сейчас работает live-энкодер
+        self._live_mux = LiveMux(self.settings.camera.fps)
+        self._live_bitrate = self.settings.camera.live_bitrate_kbps
 
         self._p: _Pipeline | None = None
         self._lock = threading.RLock()
@@ -125,15 +133,86 @@ class CameraService(FrameSink):
         self._wake.set()
 
     def reload(self) -> bool:
-        """Перечитать настройки; True — изменились параметры камеры, конвейер перезапускается."""
+        """Перечитать настройки; True — изменились параметры камеры, конвейер перезапускается.
+
+        Битрейт живого видео запись не трогает: перезапускается только live-энкодер (если он работает)."""
         new = load_settings(self.settings_path, fallback=self.settings)
-        changed = new.camera != self.settings.camera
+        old_cam, new_cam = self.settings.camera, new.camera
+        changed = _rec_params(new_cam) != _rec_params(old_cam)
         self.settings = new
         self._hk_wake.set()
         if changed:
             log.info("camera settings changed -> restart")
             self.restart()
+        elif new_cam.live_bitrate_kbps != old_cam.live_bitrate_kbps:
+            with self._lock:
+                if self._live_src is not None:
+                    log.info("live bitrate changed -> restart live encoder")
+                    self._live_stop()
+                    self._sync_live()
         return changed
+
+    # ───────────── живое видео ─────────────
+    @property
+    def live_running(self) -> bool:
+        return self._live_src is not None
+
+    def set_live_demand(self, wanted: bool) -> str | None:
+        """Есть ли зрители /live.ts (вызывается из потока). → текст ошибки или None."""
+        with self._lock:
+            if wanted:
+                p = self._p
+                if p is None or p.source is None:
+                    return "Camera is not running"
+                self._live_wanted = True
+                err = self._sync_live()
+                if err:
+                    self._live_wanted = False
+                return err
+            self._live_wanted = False
+            self._sync_live()
+            return None
+
+    def _sync_live(self) -> str | None:
+        """Привести live-энкодер к желаемому состоянию (под self._lock). Ошибки — только в лог и наружу."""
+        p = self._p
+        src = p.source if p else None
+        if self._live_wanted and src is not None and self._live_src is not src:
+            start = getattr(src, "start_live", None)
+            if start is None:
+                return "Live stream is not supported by this camera source"
+            cam = self.settings.camera
+            self._live_mux.new_session(cam.fps)
+            try:
+                start(cam.live_bitrate_kbps, self._on_live_video)
+            except Exception as e:
+                log.exception("live encoder start failed")
+                return f"Live stream: {e}"
+            self._live_src = src
+            self._live_bitrate = cam.live_bitrate_kbps
+            log.info("live encoder started (%dx%d, %d kbps)", cam.lores.w, cam.lores.h, cam.live_bitrate_kbps)
+        elif not self._live_wanted and self._live_src is not None:
+            self._live_stop()
+        return None
+
+    def _live_stop(self) -> None:
+        src, self._live_src = self._live_src, None
+        if src is None:
+            return
+        try:
+            src.stop_live()  # type: ignore[attr-defined]
+        except Exception:
+            log.exception("live encoder stop failed")
+        log.info("live encoder stopped")
+
+    def _on_live_video(self, au: bytes, keyframe: bool, ts_us: int) -> None:
+        """Поток энкодера: никаких ожиданий — только мультиплексирование и передача в asyncio."""
+        try:
+            r = self._live_mux.push(au, keyframe, ts_us)
+            if r is not None:
+                self.live.publish(*r)
+        except Exception:
+            log.exception("live mux failed")
 
     def protect_current(self) -> str | None:
         p = self._p
@@ -231,6 +310,9 @@ class CameraService(FrameSink):
         p.source = self.source_factory(s, self)
         p.source.start()
         p.started_mono = time.monotonic()
+        with self._lock:
+            if self._live_wanted:  # конвейер перезапустился, а зрители остались
+                self._sync_live()
 
     def _request_keyframe(self) -> None:
         p = self._p
@@ -242,6 +324,8 @@ class CameraService(FrameSink):
             p = self._p
             if p is None:
                 return
+            if self._live_src is not None and self._live_src is p.source:
+                self._live_src = None  # source.stop() остановит и live-энкодер
             if p.source is not None:
                 try:
                     p.source.stop()
@@ -339,3 +423,8 @@ class CameraService(FrameSink):
                 except Exception:
                     log.exception("housekeeping failed")
             self._hk_wake.wait(min(10.0, self.housekeeping_s))
+
+
+def _rec_params(cam) -> object:
+    """Параметры камеры, от которых зависит запись (всё, кроме битрейта живого видео)."""
+    return cam.model_copy(update={"live_bitrate_kbps": 0})

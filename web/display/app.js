@@ -6,6 +6,8 @@
 // ?debug=1 (статистика), ?fps=30 (ограничить частоту кадров), ?dpr=2 (чёткость на ноутбуке),
 // ?ui=debug (принудительно отладочный HUD), ?demo=1 (демо в браузере без fnav-core, docs/contracts/demo.md;
 // ?camera=<url> — картинка «камеры» в демо).
+// Удалённый доступ (страница не с устройства, а через сервер, docs/contracts/remote.md): адреса — от корня
+// приложения, тайлы Esri — напрямую с arcgisonline (не через мобильный интернет машины), MJPEG — ~5 к/с.
 
 import { DEFAULT_SETTINGS, deepMerge } from "./map/defaults.js";
 import { TileStore, browserTileLoader } from "./map/tiles.js";
@@ -15,6 +17,8 @@ import { CompassFilter, MotionModel, OrientationBlend, RotationRig, ZoomAnimator
 import { Trail } from "./map/trail.js";
 import { CameraLayer } from "./map/camera.js";
 import { Link, wsUrl } from "./map/link.js";
+import { REMOTE, appUrl } from "./map/root.js";
+import { ESRI_ATTRIBUTION, esriTileUrl } from "./map/esri.js";
 import { clamp, makeView, tileLevelFor } from "./map/mercator.js";
 import * as debugHud from "./map/debug-hud.js";
 
@@ -28,6 +32,7 @@ const DEBUG = params.get("debug") === "1";
 const FPS_CAP = Number(params.get("fps")) || 0;
 const PR = clamp(Number(params.get("dpr")) || 1, 1, 3);
 const FORCE_DEBUG_UI = params.get("ui") === "debug";
+const DIRECT_TILES = DEMO || REMOTE; // Esri напрямую: на карте нужна подпись источников
 
 const nowS = () => performance.now() / 1000;
 
@@ -107,7 +112,9 @@ const camera = new CameraLayer(
   document.getElementById("camera-layer"),
   document.getElementById("camera"),
   document.getElementById("camera-msg"),
-  DEMO ? { src: params.get("camera") || "camera-demo.jpg", cacheBust: false } : {},
+  DEMO
+    ? { src: params.get("camera") || "camera-demo.jpg", cacheBust: false }
+    : { src: appUrl("api/camera/mjpeg") + (REMOTE ? "?fps=5" : "") },
 );
 
 function maxZoom() {
@@ -154,7 +161,7 @@ function onMessage(msg) {
 
 let link;
 let demo = null;
-let tileUrlFor; // undefined → /tiles/... (fnav-core proxy)
+let tileUrlFor; // undefined → <root>tiles/... (fnav-core proxy)
 if (DEMO) {
   // демо: телеметрия из симулятора в браузере, тайлы напрямую с Esri, без /api, /ws, /tiles
   const mod = await import("./demo/demo.js");
@@ -179,14 +186,15 @@ if (DEMO) {
     },
   });
 } else {
-  link = new Link(wsUrl("/ws"), {
+  if (REMOTE) tileUrlFor = (layer, z, x, y) => esriTileUrl(settings, layer, z, x, y);
+  link = new Link(wsUrl("ws"), {
     onMessage,
     now: nowS,
     onOpen: () => store.resetFailures(),
   });
   link.start();
 
-  fetch("/api/settings", { credentials: "same-origin" })
+  fetch(appUrl("api/settings"), { credentials: "same-origin" })
     .then((r) => (r.ok ? r.json() : null))
     .then((s) => {
       if (s && !settingsFromWs) applySettings(s);
@@ -255,10 +263,10 @@ let lastPos = { lat: null, lon: null };
 let mapMsEma = 0;
 let hudMsEma = 0;
 
-/** Демо: атрибуция Esri на холсте (условия Esri), мелко, внизу по центру внутри зоны безопасности. */
+/** Тайлы напрямую (демо, удалённо): атрибуция Esri на холсте (условия Esri), мелко, внизу по центру. */
 function drawAttribution(ctx, state) {
   const l = settings.display.layers || {};
-  const text = l.street_map_instead ? demo.ESRI_ATTRIBUTION.street : demo.ESRI_ATTRIBUTION.imagery;
+  const text = l.street_map_instead ? ESRI_ATTRIBUTION.street : ESRI_ATTRIBUTION.imagery;
   const sf = state.canvas.safe;
   ctx.save();
   ctx.font = '11px "DejaVu Sans", Arial, sans-serif';
@@ -394,7 +402,7 @@ function frame(tms) {
   hudCtx.clearRect(0, 0, W, H);
   const th = DEBUG ? performance.now() : 0;
   callUi("drawHud", hudCtx, state);
-  if (DEMO && mode === "map") drawAttribution(hudCtx, state);
+  if (DIRECT_TILES && mode === "map") drawAttribution(hudCtx, state);
   if (DEBUG) {
     hudMsEma += (performance.now() - th - hudMsEma) * 0.05;
     const s = store.stats;

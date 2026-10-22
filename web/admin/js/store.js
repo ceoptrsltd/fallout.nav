@@ -1,7 +1,8 @@
-// Shared state: WebSocket /ws (telemetry, settings, events) + settings.
-import { api, goLogin } from "./api.js";
+// Shared state: WebSocket <root>ws (telemetry, settings, events) + settings.
+import { api, goLogin, ROOT } from "./api.js";
 
 export const store = {
+  offline: false, // remote and the device is not connected: api/session answered by the server (remote.md)
   telemetry: null,
   telemetryAt: 0, // Date.now() of the last packet
   settings: null,
@@ -63,7 +64,7 @@ function updateOnline() {
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws = new WebSocket(`${proto}//${location.host}${ROOT}ws`);
   ws.onopen = () => {
     store.wsOpen = true;
     everOpened = true;

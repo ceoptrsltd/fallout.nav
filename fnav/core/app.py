@@ -16,10 +16,10 @@ from starlette.staticfiles import StaticFiles
 from fnav import __version__, paths
 from fnav.core import secretsfile as sf
 from fnav.core.auth import COOKIE_NAME, SESSION_TTL_S, AuthMiddleware
-from fnav.core.camera import CameraUnavailable, rewrite_whep_location
+from fnav.core.camera import CameraUnavailable, ClosingStreamingResponse, rewrite_whep_location
 from fnav.core.config import SettingsError
 from fnav.core.recordings import RecordingError, iter_file, parse_range
-from fnav.core.runtime import Core, CoreOptions
+from fnav.core.runtime import REMOTE_TELEMETRY_EVERY, Core, CoreOptions
 from fnav.core.system import SystemError_
 from fnav.core.tiles import TileError
 from fnav.models import Settings
@@ -76,10 +76,6 @@ async def _json_body(request: Request):
         return await request.json()
     except ValueError:
         raise SettingsError("Invalid JSON in request body") from None
-
-
-def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "?"
 
 
 def _set_session_cookie(resp: Response, token: str) -> None:
@@ -140,6 +136,7 @@ def create_app(opts: CoreOptions | None = None) -> FastAPI:
     _register_camera(app, core)
     _register_sensors(app, core)
     _register_system(app, core)
+    _register_tracking(app, core)
     _register_static(app)
     return app
 
@@ -152,7 +149,7 @@ def _register_auth(app: FastAPI, core: Core) -> None:
     async def login(body: LoginBody, request: Request):
         if not core.auth.password_hash:
             return _err(503, "No password is set on the device: run python -m fnav.core.passwd")
-        ip = _client_ip(request)
+        ip = core.auth.client_ip(request)
         ok, wait = await core.auth.try_password(ip, body.password)
         if wait > 0:
             return _err(429, f"Too many attempts. Wait {int(wait) + 1} s",
@@ -173,11 +170,11 @@ def _register_auth(app: FastAPI, core: Core) -> None:
     @app.get("/api/session")
     async def session(request: Request):
         return {"authenticated": core.auth.is_authenticated(request), "local": core.auth.is_local(request),
-                "mock": core.mock}
+                "remote": core.auth.is_remote(request), "mock": core.mock}
 
     @app.post("/api/system/password")
     async def change_password(body: PasswordBody, request: Request):
-        ok, wait = await core.auth.try_password(_client_ip(request), body.old)
+        ok, wait = await core.auth.try_password(core.auth.client_ip(request), body.old)
         if wait > 0:
             return _err(429, f"Too many attempts. Wait {int(wait) + 1} s",
                         headers={"Retry-After": str(int(wait) + 1)})
@@ -255,7 +252,7 @@ def _register_ws(app: FastAPI, core: Core) -> None:
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):
         hello = [core.settings_message(), core.build_telemetry().model_dump_json()]
-        await core.ws.serve(ws, hello)
+        await core.ws.serve(ws, hello, REMOTE_TELEMETRY_EVERY if core.auth.is_remote(ws) else 1)
 
 
 # ───────────────────────── тайлы ─────────────────────────
@@ -339,10 +336,21 @@ def _register_camera(app: FastAPI, core: Core) -> None:
         return {**st.model_dump(mode="json"), "mock": core.camera.using_mock}
 
     @app.get("/api/camera/mjpeg")
-    async def cam_mjpeg():
-        ct, stream = await core.camera.open_mjpeg()
+    async def cam_mjpeg(request: Request):
+        try:  # ?fps=N (1…30) — прореживание (удалённый просмотр), иначе полная частота
+            fps = min(30, max(1, int(request.query_params["fps"])))
+        except (KeyError, ValueError):
+            fps = None
+        ct, stream = await core.camera.open_mjpeg(fps)
         return StreamingResponse(stream, media_type=ct,
                                  headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"})
+
+    @app.get("/api/camera/live.ts")
+    async def cam_live():
+        # живое видео по требованию: второй энкодер камеры работает, только пока этот поток открыт
+        stream, close = await core.camera.open_live()
+        return ClosingStreamingResponse(stream, close, media_type="video/mp2t",
+                                        headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"})
 
     @app.get("/api/camera/snapshot.jpg")
     async def cam_snapshot():
@@ -468,6 +476,23 @@ def _register_system(app: FastAPI, core: Core) -> None:
     @app.delete("/api/system/wifi/{ssid}")
     async def wifi_delete(ssid: str):
         return await core.system.wifi_delete(ssid)
+
+
+# ───────────────────────── журнал позиций, удалённый доступ ─────────────────────────
+
+
+def _register_tracking(app: FastAPI, core: Core) -> None:
+    @app.get("/api/remote/status")
+    async def remote_status(request: Request):
+        return {**await core.tracking.status(), "remote_request": core.auth.is_remote(request)}
+
+    @app.get("/api/tracking/{path:path}")
+    async def tracking_proxy(path: str, request: Request):
+        # журнал хранится на сервере (fnav-relay); удалённо nginx отдаёт /api/tracking/* сам, без устройства
+        if ".." in path.split("/"):
+            return _err(400, "Invalid path")
+        status, body, ctype = await core.tracking.proxy_get(path, request.url.query)
+        return Response(body, status_code=status, media_type=ctype, headers={"Cache-Control": "no-store"})
 
 
 # ───────────────────────── статика ─────────────────────────

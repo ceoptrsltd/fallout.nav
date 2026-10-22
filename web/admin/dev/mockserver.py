@@ -6,6 +6,11 @@ the goal is to exercise the UI, not to duplicate fnav-core.
 
     python web/admin/dev/mockserver.py --port 8300      # login password: fnav-dev
 
+Remote access (docs/contracts/remote.md) is emulated under /fnadmin/: the prefix is stripped, loopback
+clients get no auth exemption there, and with --offline (or POST /api/_mock/offline) only what the
+server itself answers works (api/tracking/*, login/logout/session with "offline": true).
+The tracking journal is a few weeks of simulated driving; POST /api/_mock/tracking-down → 503.
+
 Telemetry comes from fnav.mock.sensors.MockSensorHub; settings live in memory (fnav.models.Settings).
 """
 
@@ -13,12 +18,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import io
+import itertools
 import json
+import queue
 import re
 import secrets
 import sys
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -47,6 +56,11 @@ WEB = REPO / "web"
 PASSWORD = "fnav-dev"
 COOKIE = "fnav_session"
 STRICT_AUTH = False  # --strict-auth: do not exempt loopback clients from auth
+REMOTE_PREFIX = "/fnadmin"  # remote access through the server (docs/contracts/remote.md)
+OFFLINE = False  # --offline: under /fnadmin/ the device is "not connected"
+TRACK_DOWN = False  # api/tracking/* → 503 (tracking server unreachable)
+# what the server answers itself when the device is offline
+SERVER_PATHS = ("/api/tracking/", "/api/login", "/api/logout", "/api/session", "/api/_mock/")
 
 settings = Settings()
 settings_version = 1
@@ -165,6 +179,189 @@ def make_sample_ts(path: Path) -> bool:
         return False
 
 
+# ───────────────────────── tracking journal (fake, docs/contracts/remote.md §2) ─────────────────────────
+#
+# A few weeks of plausible driving (home ↔ work along the mock route, shop/fuel stops, traffic lights) are
+# sampled once a minute and merged exactly like fnav-relay does: same place within 50 m → the visit goes on,
+# a known place within 50 m → a new visit there, otherwise a new place.
+
+TRACK_RADIUS_M = 50.0
+TRACK_STOP_MIN_S = 300
+
+
+def _dist_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    import math
+
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371000.0 * math.asin(min(1.0, math.sqrt(a)))
+
+
+class FakeJournal:
+    def __init__(self) -> None:
+        self.places: list[dict] = []
+        self.visits: list[dict] = []
+        self.grid: dict[tuple[int, int], list[int]] = {}
+        self.last: dict = {}
+
+    def _cell(self, lat: float, lon: float) -> tuple[int, int]:
+        return int(lat * 1000 // 1), int(lon * 600 // 1)  # ~110 m × ~105 m at 55°N
+
+    def _near(self, lat: float, lon: float) -> int | None:
+        cy, cx = self._cell(lat, lon)
+        best, bd = None, TRACK_RADIUS_M
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                for pid in self.grid.get((cy + dy, cx + dx), ()):
+                    p = self.places[pid]
+                    d = _dist_m(lat, lon, p["lat"], p["lon"])
+                    if d <= bd:
+                        best, bd = pid, d
+        return best
+
+    def add(self, ts: float, lat: float, lon: float, speed: float = 0.0, course: float | None = None) -> None:
+        self.last = {"ts": ts, "lat": lat, "lon": lon, "speed_mps": speed, "course_deg": course, "received_ts": ts + 2}
+        cur = self.visits[-1] if self.visits else None
+        if cur is not None:
+            p = self.places[cur["place_id"]]
+            if _dist_m(lat, lon, p["lat"], p["lon"]) <= TRACK_RADIUS_M:
+                cur["end_ts"] = ts
+                cur["samples"] += 1
+                return
+        pid = self._near(lat, lon)
+        if pid is None:
+            pid = len(self.places)
+            self.places.append({"id": pid + 1, "lat": round(lat, 6), "lon": round(lon, 6), "created_ts": ts})
+            self.grid.setdefault(self._cell(lat, lon), []).append(pid)
+        self.visits.append({"place_id": pid, "start_ts": ts, "end_ts": ts, "samples": 1})
+
+    def _in_range(self, frm: float | None, to: float | None):
+        for v in self.visits:
+            if (frm is None or v["end_ts"] >= frm) and (to is None or v["start_ts"] <= to):
+                yield v
+
+    def places_json(self, frm: float | None, to: float | None) -> dict:
+        agg: dict[int, dict] = {}
+        for v in self._in_range(frm, to):
+            a = agg.setdefault(v["place_id"], {"visits": 0, "first_ts": v["start_ts"], "last_ts": v["end_ts"], "longest_s": 0.0, "total_s": 0.0})
+            d = v["end_ts"] - v["start_ts"]
+            a["visits"] += 1
+            a["first_ts"] = min(a["first_ts"], v["start_ts"])
+            a["last_ts"] = max(a["last_ts"], v["end_ts"])
+            a["longest_s"] = max(a["longest_s"], d)
+            a["total_s"] += d
+        out = []
+        for pid, a in agg.items():
+            p = self.places[pid]
+            out.append({"id": p["id"], "lat": p["lat"], "lon": p["lon"], "kind": "stop" if a["longest_s"] >= TRACK_STOP_MIN_S else "transit", **a})
+        return {"places": out, "stop_min_s": TRACK_STOP_MIN_S, "radius_m": TRACK_RADIUS_M}
+
+    def place_json(self, place_id: int) -> dict | None:
+        pid = place_id - 1
+        if not (0 <= pid < len(self.places)):
+            return None
+        vs = [v for v in self.visits if v["place_id"] == pid]
+        p = dict(self.places[pid])
+        p["visits"] = len(vs)
+        p["longest_s"] = max((v["end_ts"] - v["start_ts"] for v in vs), default=0.0)
+        p["total_s"] = sum(v["end_ts"] - v["start_ts"] for v in vs)
+        p["kind"] = "stop" if p["longest_s"] >= TRACK_STOP_MIN_S else "transit"
+        visits = [{"start_ts": v["start_ts"], "end_ts": v["end_ts"], "duration_s": v["end_ts"] - v["start_ts"], "samples": v["samples"]} for v in vs]
+        visits.sort(key=lambda v: v["start_ts"], reverse=True)
+        return {"place": p, "visits": visits}
+
+    def track_json(self, frm: float | None, to: float | None) -> dict:
+        pts = []
+        for v in self._in_range(frm, to):
+            p = self.places[v["place_id"]]
+            pts.append([v["start_ts"], p["lat"], p["lon"]])
+        return {"points": pts}
+
+
+def _polyline_at(pts: list[tuple[float, float]], dist: float) -> tuple[float, float]:
+    dist = max(0.0, dist)
+    for a, b in itertools.pairwise(pts):
+        seg = _dist_m(a[0], a[1], b[0], b[1])
+        if dist <= seg:
+            k = dist / seg if seg else 0.0
+            return a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k
+        dist -= seg
+    return pts[-1]
+
+
+def _polyline_len(pts: list[tuple[float, float]]) -> float:
+    return sum(_dist_m(a[0], a[1], b[0], b[1]) for a, b in itertools.pairwise(pts))
+
+
+def build_journal(now: float | None = None, days: int = 24) -> FakeJournal:
+    import random
+
+    from fnav.mock.sensors import ROUTE
+
+    rnd = random.Random(7)
+    j = FakeJournal()
+    out_route = ROUTE[: len(ROUTE) // 2 + 1]
+    home, work = out_route[0], out_route[-1]
+    shop_d, fuel_d = 1900.0, 3300.0  # metres along the route
+    length = _polyline_len(out_route)
+    now = now or time.time()
+    day0 = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
+
+    def jit() -> float:  # ≈ 7 m of GPS scatter while parked
+        return rnd.gauss(0, 6e-5)
+
+    def park(t: float, until: float, pos: tuple[float, float], every: float = 60.0) -> float:
+        while t < until and t < now:
+            j.add(t, pos[0] + jit(), pos[1] + jit())
+            t += every
+        return t
+
+    def drive(t: float, a: float, b: float, stops: dict[float, float]) -> float:
+        """From a to b metres along the route (either direction) at ~40 km/h, one sample a minute."""
+        sign = 1 if b >= a else -1
+        pending = sorted(stops.items(), key=lambda kv: kv[0] * sign)
+        d = a
+        while (b - d) * sign > 0 and t < now:
+            lat, lon = _polyline_at(out_route, d)
+            j.add(t, lat + rnd.gauss(0, 1e-5), lon + rnd.gauss(0, 1e-5), 11.0)
+            t += 60
+            if rnd.random() < 0.12:  # red light: the same point again a minute later
+                j.add(t, lat + jit(), lon + jit(), 0.0)
+                t += 60
+            nd = d + sign * (11.0 * 60 + rnd.uniform(-120, 120))
+            if pending and (pending[0][0] - d) * sign > 0 and (nd - pending[0][0]) * sign >= 0:
+                sd, dur = pending.pop(0)
+                t = park(t, t + dur, _polyline_at(out_route, sd))
+                nd = sd + sign * 200
+            d = nd
+        return t
+
+    for i in range(days + 1):
+        day = day0 + timedelta(days=i)
+        if day.timestamp() > now:
+            break
+        weekend = day.weekday() >= 5
+        t = day.timestamp() + (9.5 if weekend else 8) * 3600 + rnd.uniform(0, 1500)
+        j.add(t, home[0] + jit(), home[1] + jit())  # Pi wakes up at home (the night visit goes on)
+        t += 60
+        if weekend:
+            t = drive(t, 0, shop_d, {})
+            t = park(t, t + rnd.uniform(1500, 3600), _polyline_at(out_route, shop_d))
+            t = drive(t, shop_d, 0, {})
+        else:
+            stops = {fuel_d: rnd.uniform(300, 520)} if i % 5 == 2 else {}
+            t = drive(t, 0, length, stops)
+            t = park(t, day.timestamp() + 17.5 * 3600 + rnd.uniform(0, 2400), work)
+            back = {shop_d: rnd.uniform(900, 1500)} if i % 2 else {}
+            t = drive(t, length, 0, back)
+        park(t, t + 300, home)
+    return j
+
+
+journal: FakeJournal | None = None
+
+
 # ───────────────────────── telemetry ─────────────────────────
 
 
@@ -270,8 +467,9 @@ def make_frame(n: int) -> bytes:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global sample_ts, recordings
+    global sample_ts, recordings, journal
     recordings = build_recordings()
+    journal = await asyncio.to_thread(build_journal)
     tmp = Path(tempfile.gettempdir()) / "fnav_mock_sample.ts"
     if not tmp.exists() or tmp.stat().st_size < 100_000:
         make_sample_ts(tmp)
@@ -295,21 +493,29 @@ PUBLIC_API = {"/api/login", "/api/session"}
 LOOPBACK_OK = ("/api/camera/mjpeg", "/api/settings", "/ws")
 
 
+def is_remote(conn) -> bool:
+    return bool(conn.scope.get("fnav_remote"))
+
+
 def is_local(request: Request) -> bool:
-    return (not STRICT_AUTH) and request.client is not None and request.client.host in ("127.0.0.1", "::1")
+    return (not STRICT_AUTH) and not is_remote(request) and request.client is not None and request.client.host in ("127.0.0.1", "::1")
 
 
 @app.middleware("http")
 async def auth_and_headers(request: Request, call_next):
     path = request.url.path
     authed = request.cookies.get(COOKIE) in sessions
+    remote = is_remote(request)
     if path.startswith("/admin/dev"):
         return err(404, "Not found")
+    if remote and OFFLINE and path.startswith(("/api/", "/tiles/")) and not path.startswith(SERVER_PATHS):
+        return err(503, "Device is offline")
     if path.startswith("/api/") and path not in PUBLIC_API and not authed:
         local_ok = is_local(request) and request.method == "GET" and path in LOOPBACK_OK
         if not local_ok:
             return err(401, "Login required")
-    if path in ("/admin/", "/admin/index.html") and not authed:
+    # remotely the static files come from the server without a redirect: the UI checks the session itself
+    if path in ("/admin/", "/admin/index.html") and not authed and not remote:
         return RedirectResponse("/admin/login.html")
     resp = await call_next(request)
     if path.startswith(("/admin", "/display")):
@@ -353,7 +559,10 @@ async def logout(request: Request):
 
 @app.get("/api/session")
 async def session(request: Request):
-    return {"authenticated": request.cookies.get(COOKIE) in sessions}
+    out = {"authenticated": request.cookies.get(COOKIE) in sessions}
+    if is_remote(request) and OFFLINE:
+        out.update(local=False, mock=False, offline=True)  # answered by the server instead of the device
+    return out
 
 
 # ── settings ──
@@ -540,14 +749,16 @@ async def camera_status():
 
 
 @app.get("/api/camera/mjpeg")
-async def camera_mjpeg():
+async def camera_mjpeg(fps: float = 10.0):
+    period = 1.0 / max(1.0, min(30.0, fps))
+
     async def gen():
         n = 0
         while True:
             jpg = await asyncio.to_thread(make_frame, n)
             yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n"
             n += 1
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(period)
 
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
@@ -560,6 +771,154 @@ async def camera_snapshot():
 @app.post("/api/camera/whep")
 async def camera_whep():
     return err(503, "WebRTC is not available in the mock server (MediaMTX is not running)")
+
+
+# ── tracking (on the device: a proxy to fnav-relay; through /fnadmin/: fnav-relay itself) ──
+def _track_guard():
+    if TRACK_DOWN:
+        return err(503, "Tracking server is unreachable")
+    if journal is None:
+        return err(503, "Tracking server is starting")
+    return None
+
+
+def _num(q: str | None) -> float | None:
+    try:
+        return float(q) if q not in (None, "") else None
+    except ValueError:
+        return None
+
+
+@app.get("/api/tracking/places")
+async def tracking_places(request: Request):
+    if (r := _track_guard()) is not None:
+        return r
+    q = request.query_params
+    return journal.places_json(_num(q.get("from")), _num(q.get("to")))  # type: ignore[union-attr]
+
+
+@app.get("/api/tracking/places/{place_id}")
+async def tracking_place(place_id: int):
+    if (r := _track_guard()) is not None:
+        return r
+    d = journal.place_json(place_id)  # type: ignore[union-attr]
+    return d if d is not None else err(404, "No such place")
+
+
+@app.get("/api/tracking/track")
+async def tracking_track(request: Request):
+    if (r := _track_guard()) is not None:
+        return r
+    q = request.query_params
+    return journal.track_json(_num(q.get("from")), _num(q.get("to")))  # type: ignore[union-attr]
+
+
+@app.get("/api/tracking/last")
+async def tracking_last():
+    if (r := _track_guard()) is not None:
+        return r
+    if OFFLINE:
+        return journal.last  # type: ignore[union-attr]
+    # the device is online: its live position is also the server's last point
+    g = hub.snapshot().gps
+    if g.lat is None:
+        return journal.last  # type: ignore[union-attr]
+    t = time.time()
+    return {"ts": t - 20, "lat": g.lat, "lon": g.lon, "speed_mps": g.speed_mps, "course_deg": g.course_deg, "received_ts": t - 18}
+
+
+@app.post("/api/_mock/offline")
+async def mock_offline(request: Request):
+    """{"offline": true} — /fnadmin/ behaves as if the device dropped off (only the server answers)."""
+    global OFFLINE
+    b = await request.json() if (await request.body()) else {}
+    OFFLINE = bool(b.get("offline", not OFFLINE))
+    return {"ok": True, "offline": OFFLINE}
+
+
+@app.post("/api/_mock/tracking-down")
+async def mock_tracking_down(request: Request):
+    global TRACK_DOWN
+    b = await request.json() if (await request.body()) else {}
+    TRACK_DOWN = bool(b.get("down", not TRACK_DOWN))
+    return {"ok": True, "down": TRACK_DOWN}
+
+
+# ── live MPEG-TS (fnav-camera /live.ts: a separate low-bitrate encode, only while someone watches) ──
+class _TsPipe(io.RawIOBase):
+    def __init__(self, q: queue.Queue[bytes]) -> None:
+        self.q = q
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b) -> int:  # type: ignore[override]
+        try:
+            self.q.put(bytes(b), timeout=2)
+        except queue.Full:
+            pass
+        return len(b)
+
+
+def _live_encoder(q: queue.Queue[bytes], stop: threading.Event) -> None:
+    """libx264 768×576 at 15 fps in real time → MPEG-TS packets into the queue."""
+    from fractions import Fraction
+
+    import av
+    import numpy as np
+
+    out = av.open(_TsPipe(q), "w", format="mpegts")
+    st = out.add_stream("libx264", rate=15)
+    st.width, st.height, st.pix_fmt = 768, 576, "yuv420p"
+    st.bit_rate = 800_000
+    st.options = {"g": "15", "preset": "ultrafast", "bf": "0", "tune": "zerolatency"}
+    xs = np.arange(768)[None, :]
+    ys = np.arange(576)[:, None]
+    t0 = time.monotonic()
+    i = 0
+    try:
+        while not stop.is_set():
+            arr = np.zeros((576, 768, 3), dtype=np.uint8)
+            arr[:, :, 1] = ((xs // 48 + ys // 48) % 2 * 40 + 30).astype(np.uint8)
+            x = (i * 9) % 768
+            arr[250:330, max(0, x - 30) : x + 30, 0] = 255
+            arr[250:330, max(0, x - 30) : x + 30, 1] = 182
+            arr[:40, : (i % 15 + 1) * 51, 2] = 200  # a 1-second "clock" bar
+            fr = av.VideoFrame.from_ndarray(arr, format="rgb24")
+            fr.pts, fr.time_base = i, Fraction(1, 15)
+            for p in st.encode(fr):
+                out.mux(p)
+            i += 1
+            delay = t0 + i / 15 - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+    finally:
+        with contextlib.suppress(Exception):  # the client is gone, the pipe may be full
+            out.close()
+
+
+@app.get("/api/camera/live.ts")
+async def camera_live_ts():
+    try:
+        import av  # noqa: F401
+    except ImportError:
+        return err(503, "Live stream is not available in the mock server (PyAV is not installed)")
+    q: queue.Queue[bytes] = queue.Queue(maxsize=400)
+    stop = threading.Event()
+    threading.Thread(target=_live_encoder, args=(q, stop), daemon=True).start()
+
+    async def gen():
+        try:
+            while True:
+                try:
+                    chunk = await asyncio.to_thread(q.get, True, 5.0)
+                except queue.Empty:
+                    return
+                yield chunk
+        finally:
+            stop.set()
+
+    return StreamingResponse(gen(), media_type="video/mp2t", headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"})
 
 
 # ── sensors ──
@@ -692,7 +1051,10 @@ async def mock_button(request: Request):
 # ── websocket ──
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
-    local = (not STRICT_AUTH) and ws.client is not None and ws.client.host in ("127.0.0.1", "::1")
+    if is_remote(ws) and OFFLINE:
+        await ws.close(code=1013)
+        return
+    local = (not STRICT_AUTH) and not is_remote(ws) and ws.client is not None and ws.client.host in ("127.0.0.1", "::1")
     if ws.cookies.get(COOKIE) not in sessions and not local:
         await ws.close(code=4401)
         return
@@ -739,16 +1101,40 @@ if (WEB / "display").exists():
     app.mount("/display", StaticFiles(directory=WEB / "display", html=True), name="display")
 
 
+class RemotePrefix:
+    """/fnadmin/x → /x with scope["fnav_remote"] (what nginx on the server + the tunnel do); /fnadmin → admin."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            path = scope.get("path", "")
+            if scope["type"] == "http" and path in (REMOTE_PREFIX, REMOTE_PREFIX + "/"):
+                await send({"type": "http.response.start", "status": 301, "headers": [(b"location", (REMOTE_PREFIX + "/admin/").encode())]})
+                await send({"type": "http.response.body", "body": b""})
+                return
+            if path.startswith(REMOTE_PREFIX + "/"):
+                scope = dict(scope)
+                scope["path"] = path[len(REMOTE_PREFIX):]
+                scope["raw_path"] = scope["path"].encode()
+                scope["fnav_remote"] = True
+        await self.inner(scope, receive, send)
+
+
 def main() -> None:
-    global STRICT_AUTH
+    global STRICT_AUTH, OFFLINE
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8300)
     ap.add_argument("--strict-auth", action="store_true", help="require a session even from loopback (to test the UI auth flow)")
+    ap.add_argument("--offline", action="store_true", help=f"under {REMOTE_PREFIX}/ act as if the device were not connected")
     a = ap.parse_args()
     STRICT_AUTH = a.strict_auth
+    OFFLINE = a.offline
     print(f"fnav web UI mock: http://{a.host}:{a.port}/admin/   (password: {PASSWORD})")
-    uvicorn.run(app, host=a.host, port=a.port, log_level="warning")
+    print(f"  remote access:   http://{a.host}:{a.port}{REMOTE_PREFIX}/" + ("   (device offline)" if OFFLINE else ""))
+    uvicorn.run(RemotePrefix(app), host=a.host, port=a.port, log_level="warning")
 
 
 if __name__ == "__main__":

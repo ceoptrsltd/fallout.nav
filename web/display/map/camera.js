@@ -1,10 +1,12 @@
-// Слой видео с камеры: <img id="camera" src="/api/camera/mjpeg"> поверх карты.
+// Слой видео с камеры: <img id="camera" src="<root>api/camera/mjpeg"> поверх карты.
 // Переход 300 мс (CSS), повтор каждые 2 с при ошибке, надпись "NO CAMERA".
 // Поток держится открытым, пока режим «камера», и ещё lingerS после возврата к карте
 // (частые переключения на светофорах не переподключают MJPEG), затем отключается — экономия CPU.
 
+import { appUrl } from "./root.js";
+
 export class CameraLayer {
-  constructor(layerEl, imgEl, msgEl, { src = "/api/camera/mjpeg", retryS = 2, lingerS = 30, cacheBust = true } = {}) {
+  constructor(layerEl, imgEl, msgEl, { src = appUrl("api/camera/mjpeg"), retryS = 2, lingerS = 30, cacheBust = true } = {}) {
     this.cacheBust = cacheBust; // false: static picture (demo) — let the browser cache it
     this.layer = layerEl;
     this.img = imgEl;

@@ -16,6 +16,12 @@ fallout.nav turns a Raspberry Pi CM4 into an in‑car computer for an old van:
 - **Composite video straight from the SoC** — a wire on CM4 pin 111 (`VDAC_COMP`), NTSC 480i/60 Hz with output
   margins and mirroring tuned for the RV‑50. The button on the GPS module switches the video output off so it
   does not bleed into the monitor's other camera input.
+- **Remote access over the internet** — the device keeps an outgoing ssh tunnel to a public server (it sits behind
+  a phone hotspot), so the same web UI opens at `https://<server>/fnadmin/`; live video there is a low‑bitrate
+  H.264 stream that is only encoded while someone watches.
+- **Position log (Tracking)** — a GPS point every minute, queued on the device while offline, merged on the server
+  into places and visits (the same spot within 50 m is not recorded twice); a hybrid Esri map with parking and
+  transit points, the visit history of each place, and the live vehicle position.
 
 Project page with a live demo: **https://ptrs.ltd/apps/fallout.nav/**
 
@@ -57,11 +63,13 @@ fnav/sensors  gpsd client, UBX configuration, IST8310 driver, calibration + GPS 
 web/display   the car screen (Canvas renderer for Esri tiles + Pip-Boy HUD), also runs as an in-browser demo (?demo=1)
 web/admin     the web UI
 pi/           install.sh, deploy.sh, systemd units, boot config, MediaMTX, sudoers/polkit
+server/       fnav-relay (position log, login while the device is offline; stdlib Python) and the nginx snippet
+tools/        remote.sh (server + tunnel setup), publish_site.sh, UBX/I2C helpers
 site/         the project page
 ```
 
-Services on the device: `fnav-core` (port 80), `fnav-camera`, `mediamtx`, `fnav-display` (cage + Chromium kiosk),
-`gpsd`, `chrony`.
+Services on the device: `fnav-core` (port 80; 127.0.0.1:8090 for the tunnel), `fnav-camera`, `mediamtx`,
+`fnav-display` (cage + Chromium kiosk), `fnav-tunnel`, `gpsd`, `chrony`.
 
 ### Install on the device
 
@@ -71,13 +79,33 @@ ssh <device> 'cd ~/fallout.nav && sudo ./pi/install.sh && sudo reboot'
 pi/deploy.sh                    # later updates
 ```
 
+### Remote access and the position log
+
+```
+browser ─ https://<server>/fnadmin/ ─ nginx ─┬─ static copy of web/          (opens even when the device is off)
+                                             ├─ /api/tracking/  → fnav-relay  (the log lives on the server)
+                                             └─ /api, /ws       → 127.0.0.1:18080 ─ ssh -R ─ device fnav-core :8090
+device: fnav-core ─ a point a minute → SQLite outbox ─ ssh -L 127.0.0.1:18095 → fnav-relay
+```
+
+Requests through the tunnel arrive at a separate listener with no localhost trust; the password is the same as on
+the device (the server checks the same session cookie). One-time setup from a PC, after `pi/deploy.sh`:
+
+```bash
+cp tools/remote.env.example tools/.remote.env   # server login, site name, nginx site file
+tools/remote.sh setup                           # relay, nginx, tunnel user/key, device config, web copy
+tools/remote.sh web                             # after UI changes
+```
+
+Details: `docs/contracts/remote.md`.
+
 ### Develop on a PC (no hardware)
 
 ```bash
 pip install -e .[dev]
 python -m fnav.core --mock --port 8000     # http://127.0.0.1:8000/admin/  (password: fnav-dev)
 python -m fnav.camera --fake               # synthetic camera + recorder
-python -m pytest                           # Python tests
+python -m pytest                           # Python tests (core, camera, sensors, server)
 node --test tests/display/*.test.mjs       # display tests
 ```
 

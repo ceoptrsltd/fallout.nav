@@ -314,6 +314,50 @@ tbody tr:hover { background: var(--panel2); }
 .pv-toolbar { display: flex; gap: 10px 16px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .pv-info { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin-top: 10px; display: flex; gap: 6px 20px; flex-wrap: wrap; }
 
+/* ───── tracking ───── */
+.offline-banner { margin: 10px 22px 0; flex: none; }
+.trk-card { padding: 10px 12px 10px; }
+.trk-info { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; font-family: var(--mono); font-size: 13px; margin-bottom: 8px; }
+.trk-pos { color: var(--dim); }
+.trk-pos.live { color: var(--green); }
+.trk-pos.stale { color: var(--amber); }
+.trk-map { position: relative; isolation: isolate; /* Leaflet panes (z 200…1000) stay below modals */ height: calc(100vh - 250px); height: calc(100dvh - 250px); min-height: 420px; border: 1px solid var(--line2); border-radius: var(--radius); overflow: hidden; background: #0b0f0b; }
+.trk-map.leaflet-container { font: 12px/1.4 var(--sans); background: #0b0f0b; }
+.trk-map .overlay-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); font-family: var(--mono); }
+.trk-map .leaflet-bar { border: 1px solid var(--line2); box-shadow: var(--shadow); }
+.trk-map .leaflet-bar a { background: var(--panel2); color: var(--text); border-bottom-color: var(--line2); }
+.trk-map .leaflet-bar a:hover { background: var(--panel3); color: var(--amber); }
+.trk-map .leaflet-bar a.leaflet-disabled { background: var(--panel); color: var(--faint); }
+.trk-map .leaflet-control-attribution { background: rgba(10, 12, 10, .78); color: var(--dim); }
+.trk-map .leaflet-control-attribution a { color: var(--amber); }
+.trk-map .leaflet-tooltip.trk-tip { background: var(--panel2); color: var(--text); border: 1px solid var(--line2); border-radius: 5px; box-shadow: var(--shadow); padding: 5px 9px; font-size: 12.5px; }
+.trk-map .leaflet-tooltip.trk-tip b { color: var(--amber); }
+.trk-map .leaflet-tooltip-top.trk-tip::before { border-top-color: var(--line2); }
+.trk-stop { cursor: pointer; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .7)); }
+.trk-stop svg { display: block; }
+.trk-stop .n { position: absolute; top: -6px; right: -8px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--green); color: #031a0b; font: 700 10.5px/17px var(--mono); text-align: center; box-shadow: 0 0 0 1.5px #031a0b; }
+.trk-veh .rot { width: 36px; height: 36px; transform-origin: 50% 50%; }
+.trk-veh svg { display: block; overflow: visible; filter: drop-shadow(0 0 4px rgba(93, 255, 138, .65)); }
+.trk-veh .halo { fill: rgba(93, 255, 138, .16); stroke: rgba(93, 255, 138, .55); stroke-width: 1; }
+.trk-veh .arrow { fill: var(--green); stroke: #031a0b; stroke-width: 1.5; stroke-linejoin: round; }
+.trk-veh .dot { display: none; fill: var(--green); stroke: #031a0b; stroke-width: 1.5; }
+.trk-veh.nohead .arrow { display: none; }
+.trk-veh.nohead .dot { display: block; }
+.trk-veh.stale svg { filter: drop-shadow(0 0 3px rgba(0, 0, 0, .8)); }
+.trk-veh.stale .halo { fill: rgba(141, 153, 135, .18); stroke: rgba(141, 153, 135, .6); }
+.trk-veh.stale .arrow, .trk-veh.stale .dot { fill: var(--dim); }
+.trk-legend { display: flex; gap: 6px 18px; flex-wrap: wrap; margin-top: 8px; color: var(--dim); font-size: 12.5px; }
+.trk-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.trk-legend i { display: inline-block; flex: none; font-style: normal; }
+.trk-legend .lg-stop { width: 17px; height: 17px; border: 2px solid var(--amber); border-radius: 4px; color: var(--amber); font: 800 11px/13px var(--sans); text-align: center; background: var(--panel); }
+.trk-legend .lg-dot { width: 9px; height: 9px; border-radius: 50%; background: #ffd24a; box-shadow: 0 0 0 2px #0a0c0a; }
+.trk-legend .lg-veh { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 14px solid var(--green); }
+.trk-modal { min-width: min(520px, 80vw); }
+.trk-sum { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-bottom: 12px; }
+.trk-sum .k { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.trk-visits { max-height: 52vh; }
+.trk-visits td { font-variant-numeric: tabular-nums; }
+
 /* ───── login ───── */
 .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; background: radial-gradient(ellipse at 50% 30%, #131a12, var(--bg) 70%); }
 .login-card { width: 360px; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; padding: 26px 26px 22px; box-shadow: var(--shadow); }

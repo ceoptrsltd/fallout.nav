@@ -1,4 +1,6 @@
-// WebSocket /ws с переподключением (backoff 0.5 → 5 с) и сторожем тишины.
+// WebSocket <root>ws с переподключением (backoff 0.5 → 5 с) и сторожем тишины.
+
+import { appUrl } from "./root.js";
 
 export class Link {
   constructor(url, { onMessage, onOpen = null, now = () => performance.now() / 1000, silenceS = 5 } = {}) {
@@ -82,7 +84,8 @@ export class Link {
   }
 }
 
-export function wsUrl(path = "/ws") {
+/** Адрес WebSocket от корня приложения: "ws" → ws(s)://host<root>ws. */
+export function wsUrl(path = "ws") {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${location.host}${path}`;
+  return `${proto}//${location.host}${appUrl(path)}`;
 }

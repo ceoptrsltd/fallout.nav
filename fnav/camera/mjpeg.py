@@ -19,6 +19,7 @@ class MjpegHub:
         self.jpeg: bytes | None = None
         self.seq = 0
         self.clients = 0
+        self.rates: dict[object, float | None] = {}  # клиент → нужная частота (None — полная)
         self.last_snapshot_request = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._event: asyncio.Event | None = None
@@ -59,6 +60,13 @@ class MjpegHub:
             return None
         return self.seq, self.jpeg
 
+    def max_rate(self) -> float | None:
+        """Наибольшая частота, нужная клиентам MJPEG; None — полная (или клиентов с ограничением нет)."""
+        rates = list(self.rates.values())
+        if not rates or any(r is None for r in rates):
+            return None
+        return max(rates)  # type: ignore[type-var]
+
     @property
     def demand(self) -> bool:
         """Нужны ли кадры с полной частотой (есть клиенты или недавно просили снимок)."""
@@ -68,7 +76,7 @@ class MjpegHub:
 class JpegWorker:
     """Берёт самый свежий lores-кадр (слот на 1 кадр, старые выбрасываются) и кодирует в JPEG.
 
-    Частота: lores.fps при наличии клиентов, иначе 1 кадр/с (для /snapshot.jpg).
+    Частота: lores.fps при наличии клиентов (или наибольшая из запрошенных ?fps), иначе 1 кадр/с (для /snapshot.jpg).
     """
 
     def __init__(self, hub: MjpegHub, fps: float, quality: int) -> None:
@@ -92,7 +100,11 @@ class JpegWorker:
 
     def wants_frame(self) -> bool:
         """Источнику: стоит ли вообще копировать lores-кадр сейчас."""
-        interval = 1.0 / self.fps if self.hub.demand else 1.0
+        if self.hub.demand:
+            want = self.hub.max_rate()
+            interval = 1.0 / (min(self.fps, want) if want else self.fps)
+        else:
+            interval = 1.0
         now = time.monotonic()
         if now - self._last >= interval * 0.8:  # по моменту прихода кадра (не по концу кодирования)
             self._last = now

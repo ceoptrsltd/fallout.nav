@@ -5,20 +5,8 @@ import { DemoSim } from "./sim.js";
 import { NavLogic } from "./navlogic.js";
 import { installBridge, settingsPatch } from "./bridge.js";
 
-export const ESRI_ATTRIBUTION = {
-  imagery: "Esri, Maxar, Earthstar Geographics",
-  street: "Esri, HERE, Garmin, © OpenStreetMap contributors",
-};
-
-/** Direct Esri tile URL from the TileSettings templates (the demo has no /tiles proxy). */
-export function esriTileUrl(settings, layer, z, x, y) {
-  const t = settings.tiles || {};
-  const tpl = t[`${layer}_url`];
-  if (!tpl) return null;
-  let url = tpl.replace("{z}", z).replace("{x}", x).replace("{y}", y);
-  if (t.esri_api_key) url += (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(t.esri_api_key);
-  return url;
-}
+// the demo has no /tiles proxy: Esri tiles directly (shared with remote access)
+export { ESRI_ATTRIBUTION, esriTileUrl } from "../map/esri.js";
 
 /**
  * @param {object} o

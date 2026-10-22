@@ -42,7 +42,7 @@ put() {
 echo "Installing system files from $PI"
 
 # systemd
-for u in fnav-core fnav-camera fnav-display mediamtx; do
+for u in fnav-core fnav-camera fnav-display fnav-tunnel mediamtx; do
     put "$PI/systemd/$u.service" "/etc/systemd/system/$u.service" 0644 unit
 done
 put "$PI/systemd/seatd.service.d/fnav.conf" /etc/systemd/system/seatd.service.d/fnav.conf 0644 unit

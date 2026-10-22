@@ -1,6 +1,6 @@
 // Navigation: map orientation, speed -> zoom table, thresholds, layers, tile cache, display options.
 import { h, icon, clear, fmt, isNum, clone } from "../dom.js";
-import { api, errText } from "../api.js";
+import { api, appUrl, errText } from "../api.js";
 import { SettingsForm, section } from "../form.js";
 import { store, on } from "../store.js";
 import { segmented, toast, confirmDialog, poll } from "../ui.js";
@@ -101,7 +101,7 @@ function zoomTableWidget(f) {
 async function loadCompassStyles() {
   const fallback = [{ id: "v1", name: "v1" }, { id: "v2", name: "v2" }, { id: "v3", name: "v3" }];
   try {
-    const m = await import("/display/ui/compass.js");
+    const m = await import(appUrl("display/ui/compass.js"));
     if (Array.isArray(m.compassStyles) && m.compassStyles.length) return m.compassStyles.map((s) => ({ id: s.id, name: s.name || s.id }));
   } catch { /* module not available */ }
   return fallback;

@@ -1,0 +1,37 @@
+[Unit]
+Description=fallout.nav: ssh tunnel to the remote admin server (https://<server>/fnadmin/)
+Documentation=file:///opt/fnav/app/docs/contracts/remote.md
+# Configured by tools/remote.sh setup: /etc/fnav/remote.env, /etc/fnav/tunnel_key, /etc/fnav/tunnel_known_hosts.
+ConditionPathExists=/etc/fnav/remote.env
+After=network-online.target fnav-core.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fnav
+Group=fnav
+EnvironmentFile=/etc/fnav/remote.env
+# -R: the server's nginx reaches fnav-core's remote listener (127.0.0.1:8090, no localhost trust).
+# -L: fnav-core reaches fnav-relay on the server (position log) at 127.0.0.1:18095.
+# Keepalives detect a dead link in ~45 s; the server drops stale sessions in ~90 s, and ExitOnForwardFailure
+# makes a retry wait until the old -R listener is gone. Idle traffic is only the keepalives.
+ExecStart=/usr/bin/ssh -N -T -F none \
+    -i /etc/fnav/tunnel_key -o IdentitiesOnly=yes \
+    -o UserKnownHostsFile=/etc/fnav/tunnel_known_hosts -o StrictHostKeyChecking=yes \
+    -o BatchMode=yes -o ExitOnForwardFailure=yes -o ConnectTimeout=20 \
+    -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o TCPKeepAlive=no \
+    -R 127.0.0.1:18080:127.0.0.1:8090 \
+    -L 127.0.0.1:18095:127.0.0.1:8095 \
+    -p ${FNAV_TUNNEL_PORT} ${FNAV_TUNNEL_USER}@${FNAV_TUNNEL_HOST}
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

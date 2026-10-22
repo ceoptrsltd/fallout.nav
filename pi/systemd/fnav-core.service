@@ -19,6 +19,8 @@ RuntimeDirectory=fnav-core
 Environment=LG_WD=/run/fnav-core
 # Password hash and session secret (0600, owned by fnav). "-" = do not fail if the file is missing yet.
 EnvironmentFile=-/etc/fnav/secrets.env
+# Remote access and the position log server (FNAV_RELAY_URL, FNAV_RELAY_DEVICE_TOKEN): tools/remote.sh setup.
+EnvironmentFile=-/etc/fnav/remote.env
 ExecStart=/opt/fnav/venv/bin/python -m fnav.core
 
 # Port 80 without root.

@@ -1,24 +1,10 @@
 // Recordings: list by day, in-browser .ts playback (local mpegts.js), download, protect, delete.
 import { h, icon, clear, fmtBytes, fmtDur, isNum } from "../dom.js";
-import { api, encPath, errText } from "../api.js";
+import { api, appUrl, encPath, errText } from "../api.js";
+import { loadMpegts } from "../vendor.js";
 import { modal, confirmDialog, toast, poll, badge, emptyState, banner } from "../ui.js";
 
-let mpegtsPromise = null;
-function loadMpegts() {
-  if (window.mpegts) return Promise.resolve(window.mpegts);
-  if (!mpegtsPromise) {
-    mpegtsPromise = new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = "/admin/vendor/mpegts.js";
-      s.onload = () => (window.mpegts ? resolve(window.mpegts) : reject(new Error("mpegts.js failed to initialize")));
-      s.onerror = () => { mpegtsPromise = null; reject(new Error("could not load the mpegts.js player")); };
-      document.head.append(s);
-    });
-  }
-  return mpegtsPromise;
-}
-
-function fileUrl(path) { return "/api/recordings/file/" + encPath(path); }
+function fileUrl(path) { return appUrl("api/recordings/file/" + encPath(path)); }
 function timeOf(r) {
   if (r.start) { const m = String(r.start).match(/T(\d\d:\d\d:\d\d)/); if (m) return m[1]; }
   const m = r.path.match(/_(\d\d)-(\d\d)-(\d\d)\.ts$/);

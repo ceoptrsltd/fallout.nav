@@ -409,6 +409,8 @@ systemctl daemon-reload
 systemctl enable avahi-daemon.service chrony.service seatd.service 2>/dev/null || warn "could not enable avahi/chrony/seatd"
 systemctl enable gpsd.socket gpsd.service 2>/dev/null || warn "could not enable gpsd"
 systemctl enable mediamtx.service fnav-core.service fnav-camera.service fnav-display.service
+# Remote access (optional): the unit only runs once tools/remote.sh setup has written /etc/fnav/remote.env.
+systemctl enable fnav-tunnel.service 2>/dev/null || warn "could not enable fnav-tunnel"
 [ "$CHRONY_CHANGED" = 1 ] && systemctl restart chrony.service 2>/dev/null || true
 [ "$GPSD_CHANGED" = 1 ] && { systemctl restart gpsd.socket gpsd.service 2>/dev/null || true; }
 # Safe to start right away; camera and display need the boot configuration (reboot) first.

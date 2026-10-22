@@ -1,4 +1,4 @@
-"""Встроенная mock-камера для разработки на ПК: MJPEG 768×576 ~10 fps (Pillow)."""
+"""Встроенная mock-камера для разработки на ПК: MJPEG 768×576 ~10 fps (Pillow), живое видео MPEG-TS (PyAV)."""
 
 from __future__ import annotations
 
@@ -51,6 +51,11 @@ class MockCamera:
 
     # ── картинка ──
     def _render(self, n: int) -> bytes:
+        buf = io.BytesIO()
+        self._draw(n).save(buf, "JPEG", quality=75)
+        return buf.getvalue()
+
+    def _draw(self, n: int):
         from PIL import Image, ImageDraw
 
         if self._base is None:
@@ -89,9 +94,7 @@ class MockCamera:
         d.rectangle([nx - 12, H - 110, nx + (nb[2] - nb[0]) + 12, H - 50], fill=(0, 0, 0))
         d.text((nx, H - 104), now, font=mid, fill=(255, 255, 255))
         d.text((20, H - 36), f"768x576  frame {n}", font=small, fill=(220, 220, 220))
-        buf = io.BytesIO()
-        img.save(buf, "JPEG", quality=75)
-        return buf.getvalue()
+        return img
 
     async def _producer(self) -> None:
         n = 0
@@ -145,12 +148,62 @@ class MockCamera:
             self._viewers -= 1
             self._idle_since = time.monotonic()
 
-    async def mjpeg(self) -> AsyncIterator[bytes]:
+    async def mjpeg(self, fps: float | None = None) -> AsyncIterator[bytes]:
+        min_dt = 0.9 / fps if fps else 0.0
+        sent = 0.0
         async for frame in self.frames():
+            if min_dt:
+                now = time.monotonic()
+                if now - sent < min_dt:
+                    continue
+                sent = now
             yield (
                 f"--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame)}\r\n\r\n".encode()
                 + frame + b"\r\n"
             )
+
+    # ── живое видео (MPEG-TS) ──
+    @staticmethod
+    def live_available() -> bool:
+        try:
+            import av  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    async def live_ts(self) -> AsyncIterator[bytes]:
+        """Свой программный H.264 на каждого зрителя (только для разработки на ПК)."""
+        from fnav.camera.h264 import AccessUnitFixer
+        from fnav.camera.sources import open_h264_encoder
+        from fnav.camera.tsmux import PTS_START, TsMuxer
+
+        fps = int(FPS)
+        cc, _ = await asyncio.to_thread(open_h264_encoder, W, H, fps, fps, 800)
+        mux, fixer = TsMuxer(), AccessUnitFixer()
+
+        def encode(n: int) -> list[bytes]:
+            import av
+            import numpy as np
+
+            vf = av.VideoFrame.from_ndarray(np.asarray(self._draw(n)), format="rgb24").reformat(format="yuv420p")
+            vf.pts = n
+            out = []
+            for pkt in cc.encode(vf):
+                au, key = fixer.fix(bytes(pkt), bool(pkt.is_keyframe))
+                out.append(mux.mux(au, PTS_START + int(pkt.pts or 0) * 90000 // fps, keyframe=key))
+            return out
+
+        n = 0
+        nxt = time.monotonic()
+        while True:
+            for chunk in await asyncio.to_thread(encode, n):
+                yield chunk
+            n += 1
+            nxt += 1.0 / fps
+            delay = nxt - time.monotonic()
+            if delay < -1:
+                nxt = time.monotonic()
+            await asyncio.sleep(max(0.0, delay))
 
     # ── статус и «записи» ──
     def status(self) -> CameraStatus:

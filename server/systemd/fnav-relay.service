@@ -1,0 +1,45 @@
+[Unit]
+Description=fallout.nav relay (remote tracking log, login when the device is offline)
+Documentation=https://github.com/ceoptrsltd/fallout.nav/blob/master/docs/contracts/remote.md
+After=network.target
+
+[Service]
+Type=simple
+User=fnav-relay
+Group=fnav-relay
+EnvironmentFile=/etc/fnav-relay/relay.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/fnav-relay
+WorkingDirectory=/opt/fnav-relay
+ExecStart=/usr/bin/python3 -m fnav_relay
+Restart=always
+RestartSec=3
+
+# база (хэш пароля, секрет сессий, журнал) — только для владельца
+StateDirectory=fnav-relay
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

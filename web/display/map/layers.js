@@ -1,6 +1,7 @@
 // Какие слои рисовать и какие тайлы запрашивать — чистые функции.
 
 import { latOfMercY, makeView, metersPerPixel, moveMerc, tileKey, tileLevelFor, visibleTiles } from "./mercator.js";
+import { ROOT } from "./root.js";
 
 /**
  * Слои снизу вверх по settings.display.layers: imagery|street → transport → places.
@@ -16,8 +17,9 @@ export function activeLayers(settings) {
   return out;
 }
 
-export function tileUrl(layer, z, x, y) {
-  return `/tiles/${layer}/${z}/${x}/${y}`;
+/** Тайл через кэш fnav-core: <root>tiles/… (docs/contracts/remote.md). */
+export function tileUrl(layer, z, x, y, root = ROOT) {
+  return `${root}tiles/${layer}/${z}/${x}/${y}`;
 }
 
 /**
