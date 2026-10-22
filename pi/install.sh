@@ -166,6 +166,7 @@ else
         gpsd gpsd-clients chrony ffmpeg i2c-tools
         cage seatd fonts-dejavu-core avahi-daemon rsync curl ca-certificates sudo network-manager
         mpv bluez bluez-alsa-utils libasound2-plugin-bluez rfkill
+        retroarch libretro-core-info libretro-gambatte freedoom build-essential git
     )
     "${APT[@]}" install "${REQUIRED[@]}"
     # Packages whose name differs between releases/repos: first one that installs wins.
@@ -282,6 +283,17 @@ install_mediamtx() {
     log "installed $(/usr/local/bin/mediamtx --version 2>/dev/null | head -n1 || echo "v$ver")"
 }
 install_mediamtx
+
+# ------------------------------------------------------------------------------------------
+step "Games (RetroArch on the car screen)"
+# Debian ships the Game Boy core and the free Freedoom WADs; the PrBoom (Doom) core is built from source.
+bash "$APP/pi/bin/fnav-build-prboom" || warn "PrBoom core build failed - Freedoom will not be listed"
+install -d -m 0755 /opt/fnav/games/cores
+for core in /usr/lib/*-linux-gnu/libretro/*_libretro.so; do
+    [ -e "$core" ] && ln -sf "$core" "/opt/fnav/games/cores/$(basename "$core")"
+done
+# Game files (ROMs) go to content/<anything>/ - fnav-core lists everything it has a core for
+install -d -m 0755 -o fnav -g fnav /var/lib/fnav/games /var/lib/fnav/games/content /var/lib/fnav/retroarch
 
 # ------------------------------------------------------------------------------------------
 step "systemd units, sysctl, sudoers, polkit, udev"

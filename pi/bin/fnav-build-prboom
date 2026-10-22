@@ -1,0 +1,19 @@
+#!/bin/bash
+# Build the PrBoom libretro core (Doom engine for RetroArch; Debian does not package it) from the official
+# libretro sources and install it with its prboom.wad. Run as root; skips if already installed (--force rebuilds).
+set -euo pipefail
+CORES=/opt/fnav/games/cores
+SYSTEM=/opt/fnav/games/system
+REPO=https://github.com/libretro/libretro-prboom.git
+if [ -f "$CORES/prboom_libretro.so" ] && [ -f "$SYSTEM/prboom.wad" ] && [ "${1:-}" != "--force" ]; then
+    echo "PrBoom core already installed"; exit 0
+fi
+SRC="$(mktemp -d /var/tmp/prboom.XXXXXX)"
+trap 'rm -rf "$SRC"' EXIT
+git clone -q --depth 1 "$REPO" "$SRC/libretro-prboom"
+# one core stays free for the camera pipeline
+nice -n 10 make -C "$SRC/libretro-prboom" -j3 platform=unix >/dev/null
+install -d -m 0755 "$CORES" "$SYSTEM"
+install -m 0644 "$SRC/libretro-prboom/prboom_libretro.so" "$CORES/prboom_libretro.so"
+install -m 0644 "$SRC/libretro-prboom/prboom.wad" "$SYSTEM/prboom.wad"
+echo "PrBoom core installed: $CORES/prboom_libretro.so"

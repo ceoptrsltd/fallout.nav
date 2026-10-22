@@ -1,0 +1,20 @@
+#!/bin/bash
+# Runs inside cage (fnav-games.service, user fnav): mirror the output like the navigation screen does
+# (display.mirror_x - the reversing monitor shows the picture mirrored), then RetroArch with the game
+# from /run/fnav-core/game.args (line 1: libretro core, line 2: game file), written by fnav-core.
+set -u
+ARGS=/run/fnav-core/game.args
+CFG_DIR=/var/lib/fnav/retroarch
+mapfile -t A < "$ARGS" || { echo "no $ARGS" >&2; exit 1; }
+CORE="${A[0]:-}"
+CONTENT="${A[1]:-}"
+[ -f "$CORE" ] && [ -f "$CONTENT" ] || { echo "bad game args: $CORE $CONTENT" >&2; exit 1; }
+
+if python3 -I -c 'import json, sys; s = json.load(open("/var/lib/fnav/settings.json")); sys.exit(0 if s.get("display", {}).get("mirror_x") else 1)' 2>/dev/null; then
+    wlr-randr --output Composite-1 --transform flipped || echo "wlr-randr: mirror failed" >&2
+fi
+
+mkdir -p "$CFG_DIR" /var/lib/fnav/games/saves /var/lib/fnav/games/states
+[ -f "$CFG_DIR/retroarch.cfg" ] || : > "$CFG_DIR/retroarch.cfg"
+exec retroarch --config "$CFG_DIR/retroarch.cfg" --appendconfig /opt/fnav/app/pi/games/retroarch-fnav.cfg \
+    -L "$CORE" "$CONTENT"

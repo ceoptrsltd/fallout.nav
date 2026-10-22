@@ -68,6 +68,38 @@
       white-space: nowrap;
     }
     #camera-msg[hidden] { display: none; }
+    /* меню игр (ui/games-menu.js): поверх карты, в координатах холста 768×576 */
+    #games-menu {
+      position: absolute; left: 0; top: 0; width: 768px; height: 576px; z-index: 10;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, 0.82);
+      font-family: "FnavRusso", "Russo One", "Arial Black", sans-serif; color: #ecf7d8;
+    }
+    #games-menu[hidden] { display: none; }
+    #games-menu .gm-panel {
+      width: 610px; padding: 18px 26px 14px; background: #0a0c08;
+      border: 4px solid #ecf7d8; outline: 2px solid rgba(236, 247, 216, 0.35); outline-offset: 6px;
+    }
+    #games-menu .gm-head {
+      display: flex; align-items: baseline; justify-content: space-between;
+      border-bottom: 3px solid #ecf7d8; padding-bottom: 8px; margin-bottom: 12px;
+    }
+    #games-menu .gm-title { font-family: "FnavStencil", "Black Ops One", sans-serif; font-size: 48px; letter-spacing: 4px; color: #ffc23d; }
+    #games-menu .gm-sub, #games-menu .gm-foot, #games-menu .sys { font-family: "FnavOswald", "Oswald", "Arial Narrow", sans-serif; letter-spacing: 2px; }
+    #games-menu .gm-sub { font-size: 25px; color: rgba(236, 247, 216, 0.6); }
+    #games-menu .gm-list { list-style: none; margin: 0; padding: 0; }
+    #games-menu .gm-list li { display: flex; align-items: center; height: 62px; padding: 0 12px; font-size: 32px; }
+    #games-menu .gm-list .mark { width: 36px; }
+    #games-menu .gm-list .title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #games-menu .gm-list .sys { font-size: 25px; text-transform: uppercase; color: rgba(236, 247, 216, 0.6); margin-left: 12px; }
+    #games-menu .gm-list li.sel { background: #ecf7d8; color: #0a0c08; }
+    #games-menu .gm-list li.sel .sys { color: rgba(10, 12, 8, 0.7); }
+    #games-menu .gm-msg { font-size: 30px; padding: 44px 10px; text-align: center; letter-spacing: 2px; }
+    #games-menu .gm-msg.warn { background: #f2e7c4; color: #0a0c08; }
+    #games-menu .gm-foot {
+      display: flex; justify-content: space-between; margin-top: 14px; padding-top: 10px;
+      border-top: 2px solid rgba(236, 247, 216, 0.35); font-size: 25px; color: rgba(236, 247, 216, 0.75);
+    }
   </style>
 </head>
 <body>

@@ -176,6 +176,8 @@ def is_local_allowed(path: str, method: str) -> bool:
         return True
     if path == "/api/camera/mjpeg":
         return True
+    if path == "/api/games" and method in ("GET", "HEAD") or path == "/api/games/launch" and method == "POST":
+        return True  # меню игр на экране (геймпад у киоска)
     return path == "/api/settings" and method in ("GET", "HEAD")
 
 

@@ -19,6 +19,7 @@ import { CameraLayer } from "./map/camera.js";
 import { Link, wsUrl } from "./map/link.js";
 import { REMOTE, appUrl } from "./map/root.js";
 import { ESRI_ATTRIBUTION, esriTileUrl } from "./map/esri.js";
+import { GamesMenu } from "./ui/games-menu.js";
 import { clamp, makeView, tileLevelFor } from "./map/mercator.js";
 import * as debugHud from "./map/debug-hud.js";
 
@@ -47,6 +48,8 @@ for (const c of [mapCanvas, hudCanvas]) {
   c.height = H * PR;
 }
 const mapCtx = mapCanvas.getContext("2d", { alpha: false });
+// меню игр (геймпад) — только на самом устройстве
+const gamesMenu = !DEMO && !REMOTE && !PREVIEW ? new GamesMenu(root, appUrl) : null;
 const hudCtx = hudCanvas.getContext("2d");
 
 let mirrorX = false;   // settings.display.mirror_x (set in applySettings)
@@ -303,6 +306,7 @@ function frame(tms) {
   lastFrame = t;
 
   const tel = telemetry || STUB_TELEMETRY;
+  if (gamesMenu) gamesMenu.poll(t, tel.gps ? tel.gps.speed_mps : null);
   const m = motion.update(t);
   lastPos = m;
   const f = orient.update(dt);

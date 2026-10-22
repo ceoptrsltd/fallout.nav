@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -19,6 +20,7 @@ from fnav.core.auth import COOKIE_NAME, SESSION_TTL_S, AuthMiddleware
 from fnav.core.bluetooth import BluetoothError
 from fnav.core.camera import CameraUnavailable, ClosingStreamingResponse, rewrite_whep_location
 from fnav.core.config import SettingsError
+from fnav.core.games import GamesError
 from fnav.core.radio import GENRES, RadioError
 from fnav.core.recordings import RecordingError, iter_file, parse_range
 from fnav.core.runtime import REMOTE_TELEMETRY_EVERY, Core, CoreOptions
@@ -141,6 +143,7 @@ def create_app(opts: CoreOptions | None = None) -> FastAPI:
     _register_tracking(app, core)
     _register_radio(app, core)
     _register_bluetooth(app, core)
+    _register_games(app, core)
     _register_static(app)
     return app
 
@@ -596,6 +599,31 @@ def _register_bluetooth(app: FastAPI, core: Core) -> None:
     @app.delete("/api/bluetooth/devices/{mac}")
     async def bt_remove(mac: str):
         return (await core.bt.remove(mac)).model_dump()
+
+
+# ───────────────────────── игры ─────────────────────────
+
+
+class GameLaunchBody(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+
+
+def _register_games(app: FastAPI, core: Core) -> None:
+    @app.exception_handler(GamesError)
+    async def _games_err(_r: Request, e: GamesError):
+        return _err(e.status, e.detail)
+
+    @app.get("/api/games")
+    async def games_state():
+        return await asyncio.to_thread(core.games.state)
+
+    @app.post("/api/games/launch")
+    async def games_launch(body: GameLaunchBody):
+        return await core.games.launch(body.id)
+
+    @app.post("/api/games/stop")
+    async def games_stop():
+        return await core.games.stop("stopped from the web UI")
 
 
 # ───────────────────────── статика ─────────────────────────

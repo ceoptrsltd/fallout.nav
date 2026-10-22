@@ -1,0 +1,39 @@
+[Unit]
+Description=fallout.nav games (cage + RetroArch on the car screen instead of the navigation)
+Documentation=file:///opt/fnav/app/pi/README.md
+# Started by fnav-core (gamepad menu on the screen or the web UI) after it wrote /run/fnav-core/game.args.
+# The navigation screen stops while a game runs and comes back by itself when the game is closed.
+Conflicts=fnav-display.service getty@tty1.service lightdm.service
+After=fnav-display.service seatd.service
+Requires=seatd.service
+
+[Service]
+Type=simple
+User=fnav
+Group=fnav
+SupplementaryGroups=video render input tty audio bluetooth
+RuntimeDirectory=fnav-games
+RuntimeDirectoryMode=0700
+
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
+
+Environment=HOME=/var/lib/fnav
+Environment=XDG_RUNTIME_DIR=/run/fnav-games
+Environment=XDG_CONFIG_HOME=/var/lib/fnav/config
+Environment=LIBSEAT_BACKEND=seatd
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+ExecStart=/usr/bin/cage -d -- /bin/bash /opt/fnav/app/pi/bin/fnav-games-run
+# Back to the navigation screen however the game ended (quit combo, fnav-core stop, crash).
+ExecStopPost=+/usr/bin/systemctl start --no-block fnav-display.service
+Restart=no
+TimeoutStopSec=10
+
+Nice=0
+OOMScoreAdjust=500
+MemoryMax=700M

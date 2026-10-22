@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Games menu preview</title>
+  <!-- Стили меню — те же, что в ../index.html; здесь подключаются копией через fetch, чтобы не расходились. -->
+  <style>
+    body { margin: 0; background: #222; font-family: sans-serif; color: #ccc; }
+    #root { position: relative; width: 768px; height: 576px; overflow: hidden; background: #3a4a2a; margin: 12px; }
+    body.bw #root { filter: grayscale(1); }
+    #bar { margin: 12px; }
+  </style>
+</head>
+<body>
+  <div id="bar">?case=list|loading|moving|empty · ?bw=1</div>
+  <div id="root"></div>
+  <script type="module">
+    import { GamesMenu } from "./games-menu.js";
+    import { loadUi } from "./index.js";
+    const q = new URLSearchParams(location.search);
+    document.body.classList.toggle("bw", q.get("bw") === "1");
+    const html = await (await fetch("../index.html")).text();
+    const css = html.match(/\/\* меню игр[\s\S]*?(?=\n  <\/style>)/);
+    const st = document.createElement("style");
+    st.textContent = css ? css[0] : "";
+    document.head.appendChild(st);
+    await loadUi();
+    const m = new GamesMenu(document.getElementById("root"), (p) => p);
+    m.games = [
+      { id: "deadeus", title: "Deadeus", system: "Game Boy" },
+      { id: "freedoom-phase-1", title: "Freedoom: Phase 1", system: "Doom" },
+      { id: "freedoom-phase-2", title: "Freedoom: Phase 2", system: "Doom" },
+    ];
+    m.open = true;
+    m.el.hidden = false;
+    m.sel = 1;
+    const c = q.get("case") || "list";
+    if (c === "list") m.render({});
+    if (c === "loading") m.render({ message: "LOADING FREEDOOM: PHASE 1…" });
+    if (c === "moving") m.render({ message: "STOP THE VEHICLE TO PLAY", warn: true });
+    if (c === "empty") { m.games = []; m.render({ message: "NO GAMES INSTALLED", warn: true }); }
+  </script>
+</body>
+</html>

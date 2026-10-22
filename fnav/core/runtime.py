@@ -17,6 +17,7 @@ from fnav.core.auth import AuthManager
 from fnav.core.bluetooth import create_bluetooth
 from fnav.core.camera import CAMERA_URL, WHEP_URL, CameraService, CameraUnavailable
 from fnav.core.config import SettingsStore
+from fnav.core.games import GamesService
 from fnav.core.navlogic import NavLogic
 from fnav.core.radio import MOCK_STATION, Player, create_radio
 from fnav.core.recordings import Recordings
@@ -128,6 +129,9 @@ class Core:
                                   self._save_radio_volume, transport=opts.radio_transport,
                                   player=opts.radio_player)
         self.bt.on_output(self.radio.set_output)
+        self.games = GamesService(lambda: self.hub.snapshot().gps.speed_mps, self._pause_radio_for_game,
+                                  self._resume_radio_after_game, lambda lvl, text: self.ws.toast(text, lvl),
+                                  mock=opts.mock)
         self.hub: SensorHub = self._make_hub(s)
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
         self._tasks: list[asyncio.Task] = []
@@ -186,13 +190,14 @@ class Core:
                 asyncio.create_task(self._slow_loop(), name="slow-status"),
             ]
             self.tracking.start(lambda: self.hub.snapshot().gps, lambda: self.store.get().tracking)
+            self.games.start()
         self.started = True
         log.info("fnav-core started (mock=%s)", self.mock)
 
     async def stop(self) -> None:
         await cancel_tasks(*self._tasks)
         self._tasks.clear()
-        for closer in (self.radio.stop, self.bt.stop, self.tracking.stop, self.hub.stop, self.camera.stop,
+        for closer in (self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop, self.hub.stop, self.camera.stop,
                        self.tiles.stop):
             try:
                 await closer()
@@ -218,6 +223,16 @@ class Core:
 
     async def _save_radio_volume(self, volume: int) -> None:
         await self.store.patch({"radio": {"volume": volume}})
+
+    # ── игры: радио на паузе, пока идёт игра ──
+    async def _pause_radio_for_game(self) -> bool:
+        if not getattr(self.radio, "want_play", False):
+            return False
+        await self.radio.stop_playback()
+        return True
+
+    async def _resume_radio_after_game(self) -> None:
+        await self.radio.resume()
 
     def settings_message(self) -> str:
         return json.dumps({"type": "settings", "settings": self.store.get().model_dump(mode="json")},
