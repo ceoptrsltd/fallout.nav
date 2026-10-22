@@ -28,6 +28,8 @@ Environment=XDG_RUNTIME_DIR=/run/fnav-games
 Environment=XDG_CONFIG_HOME=/var/lib/fnav/config
 Environment=LIBSEAT_BACKEND=seatd
 Environment=WLR_LIBINPUT_NO_DEVICES=1
+# Optional: FNAV_RETROARCH_EXTRA=--verbose (debugging)
+EnvironmentFile=-/etc/fnav/games.env
 ExecStart=/usr/bin/cage -d -- /bin/bash /opt/fnav/app/pi/bin/fnav-games-run
 # Back to the navigation screen however the game ended (quit combo, fnav-core stop, crash).
 ExecStopPost=+/usr/bin/systemctl start --no-block fnav-display.service

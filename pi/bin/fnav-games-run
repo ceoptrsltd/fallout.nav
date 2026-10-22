@@ -15,6 +15,8 @@ if python3 -I -c 'import json, sys; s = json.load(open("/var/lib/fnav/settings.j
 fi
 
 mkdir -p "$CFG_DIR" /var/lib/fnav/games/saves /var/lib/fnav/games/states
-[ -f "$CFG_DIR/retroarch.cfg" ] || : > "$CFG_DIR/retroarch.cfg"
-exec retroarch --config "$CFG_DIR/retroarch.cfg" --appendconfig /opt/fnav/app/pi/games/retroarch-fnav.cfg \
-    -L "$CORE" "$CONTENT"
+# Our settings as the whole config, written on every start (--appendconfig over an empty file is ignored by
+# RetroArch 1.20, and then the gamepad profile is not found); nothing is saved back on exit.
+cp /opt/fnav/app/pi/games/retroarch-fnav.cfg "$CFG_DIR/retroarch.cfg"
+# shellcheck disable=SC2086  # FNAV_RETROARCH_EXTRA: extra flags for debugging, e.g. --verbose
+exec retroarch --config "$CFG_DIR/retroarch.cfg" ${FNAV_RETROARCH_EXTRA:-} -L "$CORE" "$CONTENT"
