@@ -97,6 +97,7 @@ export class GamesMenu {
       const r = await fetch(this.url("api/games"), { cache: "no-store" });
       const d = await r.json();
       this.games = d.games || [];
+      this.audio = d.audio; // false — колонка не подключена: игра будет без звука
       this.sel = Math.min(this.sel, Math.max(0, this.games.length - 1));
       this.render(this.games.length ? {} : { message: "NO GAMES INSTALLED", warn: true });
     } catch {
@@ -144,6 +145,7 @@ export class GamesMenu {
     this.el.innerHTML =
       `<div class="gm-panel"><div class="gm-head"><span class="gm-title">GAMES</span><span class="gm-sub">HOLOTAPE LIBRARY</span></div>` +
       (message ? `<div class="gm-msg${warn ? " warn" : ""}">${esc(message)}</div>` : `<ul class="gm-list">${rows}</ul>`) +
+      (this.audio === false && !message ? `<div class="gm-note">NO SPEAKER — GAMES WILL BE SILENT</div>` : "") +
       `<div class="gm-foot"><span>✕ PLAY</span><span>○ BACK</span><span>SHARE + OPTIONS = EXIT GAME</span></div></div>`;
   }
 }

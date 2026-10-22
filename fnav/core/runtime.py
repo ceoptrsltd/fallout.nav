@@ -21,7 +21,7 @@ from fnav.core.games import GamesService
 from fnav.core.navlogic import NavLogic
 from fnav.core.radio import MOCK_STATION, Player, create_radio
 from fnav.core.recordings import Recordings
-from fnav.core.system import SystemService
+from fnav.core.system import SystemService, run
 from fnav.core.tiles import TileService
 from fnav.core.tracking import RelayConfig, TrackService
 from fnav.core.util import cancel_tasks, spawn
@@ -131,7 +131,8 @@ class Core:
         self.bt.on_output(self.radio.set_output)
         self.games = GamesService(lambda: self.hub.snapshot().gps.speed_mps, self._pause_radio_for_game,
                                   self._resume_radio_after_game, lambda lvl, text: self.ws.toast(text, lvl),
-                                  mock=opts.mock)
+                                  mock=opts.mock, prepare_audio=self._audio_for_game,
+                                  audio_ok=lambda: bool((o := self.bt.output()) and o.connected))
         self.hub: SensorHub = self._make_hub(s)
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
         self._tasks: list[asyncio.Task] = []
@@ -225,6 +226,23 @@ class Core:
         await self.store.patch({"radio": {"volume": volume}})
 
     # ── игры: радио на паузе, пока идёт игра ──
+    async def _audio_for_game(self) -> None:
+        """Перед игрой: колонка по умолчанию должна быть подключена — звук игра открывает только при старте."""
+        out = self.bt.output()
+        if out is None or self.mock:
+            return
+        if not out.connected:
+            try:
+                await asyncio.wait_for(self.bt.connect(out.address), timeout=10)
+            except Exception as e:  # noqa: BLE001 — нет колонки: играем без звука
+                log.info("games: speaker %s not connected (%s)", out.name, e)
+                return
+        for _ in range(10):  # PCM у bluealsa появляется чуть позже подключения
+            _rc, pcms, _ = await run("bluealsa-cli", "list-pcms", timeout=3)
+            if "a2dpsrc" in pcms:
+                return
+            await asyncio.sleep(0.5)
+
     async def _pause_radio_for_game(self) -> bool:
         if not getattr(self.radio, "want_play", False):
             return False

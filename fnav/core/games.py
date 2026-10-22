@@ -128,7 +128,10 @@ class GamesError(Exception):
 class GamesService:
     def __init__(self, get_speed: Callable[[], float | None], pause_radio: Callable[[], Awaitable[bool]],
                  resume_radio: Callable[[], Awaitable[None]], notify: Callable[[str, str], None],
-                 mock: bool = False) -> None:
+                 mock: bool = False, prepare_audio: Callable[[], Awaitable[None]] | None = None,
+                 audio_ok: Callable[[], bool] | None = None) -> None:
+        self.prepare_audio = prepare_audio  # подключить колонку до старта игры
+        self.audio_ok = audio_ok  # колонка подключена → в игре будет звук
         self.get_speed = get_speed
         self.pause_radio = pause_radio  # → True, если радио играло и его поставили на паузу
         self.resume_radio = resume_radio
@@ -146,6 +149,7 @@ class GamesService:
 
     def state(self) -> dict:
         return {"running": self.running, "current": self.current.public() if self.current else None,
+                "audio": bool(self.audio_ok()) if self.audio_ok else None,
                 "games": [g.public() for g in self.games()]}
 
     async def _systemctl(self, action: str) -> tuple[int, str]:
@@ -175,6 +179,8 @@ class GamesService:
             tmp.write_text("\n".join((game.kind, *game.argv)) + "\n", encoding="utf-8")
             os.replace(tmp, ARGS_FILE)
             self._radio_paused = await self.pause_radio()
+            if self.prepare_audio:
+                await self.prepare_audio()
             rc, msg = await self._systemctl("start")
             if rc != 0:
                 if self._radio_paused:
