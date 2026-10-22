@@ -57,6 +57,7 @@ class DisplaySettings(_Model):
     show_trail: bool = True
     trail_seconds: int = Field(60, ge=0, le=600)
     force_mode: Literal["auto", "map", "camera"] = "auto"
+    radio_panel: bool = True  # плашка радио (станция, трек) на экране, пока играет радио
 
 
 class ZoomStep(_Model):
@@ -141,7 +142,7 @@ class TileSettings(_Model):
 
 
 class GpsSettings(_Model):
-    device: str = "/dev/ttyAMA0"
+    device: str = "/dev/gps0"  # PL011 UART5 на GPIO12/13 (pi/udev/90-fnav.rules)
     baud: int = 115200
     rate_hz: int = Field(10, ge=1, le=18)
     constellations: list[Literal["gps", "glonass", "galileo", "beidou"]] = ["gps", "glonass", "galileo"]
@@ -220,6 +221,18 @@ class TrackingSettings(_Model):
     max_hdop: float = Field(5.0, gt=0)  # точки с худшим HDOP не пишем
 
 
+class RadioSettings(_Model):
+    """Интернет-радио (docs/contracts/radio.md)."""
+
+    volume: int = Field(60, ge=0, le=100)
+    resume_on_boot: bool = True  # после перезагрузки продолжить станцию, если радио играло
+
+
+class BluetoothSettings(_Model):
+    enabled: bool = True  # включать адаптер при старте
+    auto_connect: bool = True  # переподключать колонку по умолчанию каждые 30 с
+
+
 class Settings(_Model):
     version: int = 1
     display: DisplaySettings = DisplaySettings()
@@ -232,6 +245,8 @@ class Settings(_Model):
     compass: CompassSettings = CompassSettings()
     gpio: GpioSettings = GpioSettings()
     tracking: TrackingSettings = TrackingSettings()
+    radio: RadioSettings = RadioSettings()
+    bluetooth: BluetoothSettings = BluetoothSettings()
 
 
 # ───────────────────────────── Датчики ─────────────────────────────
@@ -346,6 +361,80 @@ class SystemStatus(_Model):
     time_synced: bool | None = None
 
 
+# ───────────────────────────── Радио и Bluetooth ─────────────────────────────
+
+
+class RadioStation(_Model):
+    """Станция каталога radio-browser.info."""
+
+    uuid: str = ""
+    name: str = "Radio"
+    url: str = Field(..., pattern=r"^https?://", max_length=2048)  # только http(s): mpv не открывает файлы
+    homepage: str = ""
+    favicon: str = ""
+    tags: str = ""
+    country: str = ""
+    countrycode: str = ""
+    language: str = ""
+    codec: str = ""
+    bitrate: int = 0
+    votes: int = 0
+    clickcount: int = 0
+    hls: bool = False
+
+
+class RadioOutput(_Model):
+    address: str
+    name: str = ""
+    connected: bool = False
+
+
+RadioPhase = Literal["stopped", "connecting", "playing", "waiting_output", "error"]
+
+
+class RadioState(_Model):
+    state: RadioPhase = "stopped"
+    station: RadioStation | None = None
+    genre: str | None = None  # тег плитки, из которой выбрана станция
+    track: str | None = None  # ICY StreamTitle («Artist - Title»); None — поток не сообщает
+    volume: int = 60
+    output: RadioOutput | None = None
+    error: str | None = None
+    recent: list[RadioStation] = []
+
+
+class RadioStatus(_Model):
+    """Компактное состояние радио в телеметрии (для экрана)."""
+
+    state: RadioPhase = "stopped"
+    station: str | None = None
+    track: str | None = None
+    genre: str | None = None  # подпись плитки или первый тег станции
+    volume: int = 60
+    output: str | None = None
+    output_connected: bool = False
+
+
+class BtDevice(_Model):
+    address: str
+    name: str = ""
+    icon: str = ""
+    paired: bool = False
+    trusted: bool = False
+    connected: bool = False
+    rssi: int | None = None
+    audio: bool = False
+
+
+class BtState(_Model):
+    available: bool = False
+    powered: bool = False
+    discovering: bool = False
+    audio_device: str | None = None
+    devices: list[BtDevice] = []
+    error: str | None = None
+
+
 class Telemetry(_Model):
     type: Literal["telemetry"] = "telemetry"
     t: float  # unix-время сервера, с
@@ -357,4 +446,5 @@ class Telemetry(_Model):
     camera: CameraStatus
     disk: DiskStatus = DiskStatus()
     system: SystemStatus = SystemStatus()
+    radio: RadioStatus | None = None
     errors: list[str] = []

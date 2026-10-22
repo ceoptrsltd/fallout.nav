@@ -4,4 +4,7 @@
 KERNEL=="i2c-[0-9]*", GROUP="i2c", MODE="0660"
 SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"
 SUBSYSTEM=="dma_heap", GROUP="video", MODE="0660"
-# GPS UART: ttyAMA0 belongs to dialout (the default) and fnav is a member of dialout.
+# GPS UART: the full PL011 UART5 on GPIO12/13 (pins 32/33; dtoverlay=uart5) gets a stable name /dev/gps0,
+# whatever ttyAMA number the kernel gives it. UART0 stays with the on-board Bluetooth.
+# The tty belongs to dialout (the default) and fnav is a member of dialout.
+SUBSYSTEM=="tty", KERNELS=="fe201a00.serial", SYMLINK+="gps0", GROUP="dialout", MODE="0660"

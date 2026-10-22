@@ -340,6 +340,7 @@ function frame(tms) {
       connected,
       internet: tel.system?.internet ?? null,
       recording: !!tel.camera?.recording,
+      attribution: DIRECT_TILES && mode === "map", // подпись Esri внизу по центру — радио над ней
     },
     canvas: {
       w: W,

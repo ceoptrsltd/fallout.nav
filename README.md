@@ -19,6 +19,10 @@ fallout.nav turns a Raspberry Pi CM4 into an in‑car computer for an old van:
 - **Remote access over the internet** — the device keeps an outgoing ssh tunnel to a public server (it sits behind
   a phone hotspot), so the same web UI opens at `https://<server>/fnadmin/`; live video there is a low‑bitrate
   H.264 stream that is only encoded while someone watches.
+- **Internet radio on a Bluetooth speaker** — stations from the radio-browser.info directory by mood, genre and era
+  (or by name), played by mpv through BlueZ + bluez-alsa (A2DP) on the CM4's on-board Bluetooth; the speaker is
+  paired from the web UI and reconnects by itself; the station resumes after a reboot. The car screen shows a
+  tuner panel with the station and the scrolling track title.
 - **Position log (Tracking)** — a GPS point every minute, queued on the device while offline, merged on the server
   into places and visits (the same spot within 50 m is not recorded twice); a hybrid Esri map with parking and
   transit points, the visit history of each place, and the live vehicle position.
@@ -31,7 +35,7 @@ Project page with a live demo: **https://ptrs.ltd/apps/fallout.nav/**
 |---|---|
 | Raspberry Pi CM4 (eMMC, Wi‑Fi, 4 GB) on Waveshare **CM4‑NANO‑B** | Raspberry Pi OS (Debian 13 trixie) |
 | OV5647 camera | CSI0, `dtoverlay=ov5647,cam0` |
-| Holybro M8N GPS + IST8310 compass (10‑pin JST‑GH) | UART `/dev/ttyAMA0` + I2C‑1 |
+| Holybro M8N GPS + IST8310 compass (10‑pin JST‑GH) | UART5 `/dev/gps0` + I2C‑1 |
 | WAECO Mobitronic RV‑50 monitor | composite input, B/W CRT |
 
 ### GPS module → 40‑pin header
@@ -39,14 +43,17 @@ Project page with a live demo: **https://ptrs.ltd/apps/fallout.nav/**
 | GH pin | Signal | → | 40‑pin | Pi signal |
 |---|---|---|---|---|
 | 1 | VCC 5V | → | 2 | 5V |
-| 2 | RX (GPS input) | → | 8 | GPIO14 TXD |
-| 3 | TX (GPS output) | → | 10 | GPIO15 RXD |
+| 2 | RX (GPS input) | → | 32 | GPIO12 TXD5 |
+| 3 | TX (GPS output) | → | 33 | GPIO13 RXD5 |
 | 4 | SCL | → | 5 | GPIO3 SCL |
 | 5 | SDA | → | 3 | GPIO2 SDA |
 | 6 | SAFETY_SWITCH | → | 16 | GPIO23 — short press: video output on/off, long press: protect recording |
 | 7 | SAFETY_SWITCH_LED | → | 18 | GPIO24 — blinks while recording |
 | 8 | VDD_3V3 | → | 1 | 3.3V |
 | 10 | GND | → | 6 | GND |
+
+The GPS uses the PL011 UART5 (`dtoverlay=uart5`) so that the primary UART0 stays with the on‑board Bluetooth,
+which plays the internet radio on a Bluetooth speaker.
 
 ### Composite video
 
@@ -69,7 +76,7 @@ site/         the project page
 ```
 
 Services on the device: `fnav-core` (port 80; 127.0.0.1:8090 for the tunnel), `fnav-camera`, `mediamtx`,
-`fnav-display` (cage + Chromium kiosk), `fnav-tunnel`, `gpsd`, `chrony`.
+`fnav-display` (cage + Chromium kiosk), `fnav-radio` (mpv), `bluetooth` + `bluealsa`, `fnav-tunnel`, `gpsd`, `chrony`.
 
 ### Install on the device
 

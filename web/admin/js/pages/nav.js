@@ -205,6 +205,10 @@ export async function mount(root) {
     f({ path: "display.show_trail", label: "Show trail", type: "switch" }),
     f({ path: "display.mirror_x", label: "Mirror screen left-right", hint: "For monitors that mirror the picture themselves (rear-view CRTs like the WAECO RV-50). Affects only the physical screen, not this preview", type: "switch" }),
     f({ path: "display.trail_seconds", label: "Trail length", type: "number", min: 0, max: 600, step: 10, unit: "s" }),
+    // until the device software has the radio (docs/contracts/radio.md) the setting does not exist: no switch
+    store.settings?.display?.radio_panel !== undefined
+      ? f({ path: "display.radio_panel", label: "Radio on screen", hint: "While the radio plays, the station and track are shown on the car screen", type: "switch" })
+      : null,
   );
 
   root.append(

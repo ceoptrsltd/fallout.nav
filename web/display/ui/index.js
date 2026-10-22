@@ -2,13 +2,14 @@
 // Контракт: docs/contracts/display.md («API компонентов C»).
 
 import { compassStyles, drawCompass } from "./compass.js";
+import { drawRadio } from "./radio.js";
 import { SPEED_BOX, drawSpeed } from "./speed.js";
 import { drawIndicators, drawWarnings } from "./status.js";
 import { clearSprites, safeRect, setting } from "./theme.js";
 import { drawTrail } from "./trail.js";
 import { drawVehicle } from "./vehicle.js";
 
-export { compassStyles, drawTrail, drawVehicle };
+export { compassStyles, drawRadio, drawTrail, drawVehicle };
 
 const FONTS = [
   { family: "FnavRusso", file: "RussoOne-Regular.ttf", descriptors: { weight: "400" } },
@@ -53,10 +54,12 @@ export function loadUi() {
 }
 
 /**
- * Весь HUD поверх карты/видео: компас, скорость, индикаторы, предупреждения.
+ * Весь HUD поверх карты/видео: компас, скорость, индикаторы, предупреждения, радио.
  * Раскладка (768×576, heading_up — машина в нижней трети по центру):
  *   компас — вверху (v1/v3 справа, v2 по центру); предупреждения — колонкой слева;
- *   скорость — слева внизу; индикаторы — справа внизу. Центральная полоса над машиной свободна.
+ *   скорость — слева внизу; индикаторы — справа внизу; радио (когда играет) — внизу между ними, под машиной.
+ *   Центральная полоса над машиной (дорога впереди) свободна.
+ * view.attribution — внизу по центру подпись источников карты (демо/удалённо): радио поднимается над ней.
  */
 export function drawHud(ctx, state) {
   const safe = safeRect(state);
@@ -75,5 +78,6 @@ export function drawHud(ctx, state) {
 
   drawSpeed(ctx, state, Math.round(safe.x), Math.round(safe.y + safe.h - SPEED_BOX.h));
   drawIndicators(ctx, state, safe);
+  drawRadio(ctx, state, safe, state?.view?.attribution ? 17 : 0);
   ctx.restore();
 }

@@ -364,7 +364,7 @@ class M8NConfigurator:
 
 
 def configure_receiver(
-    device: str = "/dev/ttyAMA0",
+    device: str = "/dev/gps0",
     baud: int = 115200,
     rate_hz: int = 10,
     constellations: list[str] | None = None,

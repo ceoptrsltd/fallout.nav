@@ -178,11 +178,11 @@ class GpsState:
 
     def problem(self) -> str | None:
         if self.devices is not None and len(self.devices) == 0:
-            return "GPS: receiver not connected (gpsd sees no device; check /dev/ttyAMA0 and wiring)"
+            return "GPS: receiver not connected (gpsd sees no device; check /dev/gps0 and wiring)"
         now = self.clock()
         if self.last_tpv is None or self.last_tpv < self.since:
             if now - self.since > self.NO_DATA_S:
-                return "GPS: receiver not connected (no data from gpsd; check wiring and /dev/ttyAMA0)"
+                return "GPS: receiver not connected (no data from gpsd; check wiring and /dev/gps0)"
             return None
         if now - self.last_tpv > self.STALE_S:
             return f"GPS: no data from receiver for {now - self.last_tpv:.0f} s"

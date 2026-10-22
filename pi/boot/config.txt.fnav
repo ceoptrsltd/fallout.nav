@@ -5,12 +5,12 @@
 # The original file is kept as /boot/firmware/config.txt.fnav-orig.
 [all]
 
-# --- UART for the GPS (Holybro M8N on GPIO14/15, pins 8/10) ----------------------------
-# Enable the UART on GPIO14/15.
-enable_uart=1
-# Give the full PL011 UART (/dev/ttyAMA0) to GPIO14/15 and disable Bluetooth.
-# Without it GPIO14/15 get the mini-UART whose baud rate depends on the core clock.
-dtoverlay=disable-bt
+# --- UART for the GPS (Holybro M8N on GPIO12/13, pins 32/33) ----------------------------
+# The primary PL011 UART0 stays with the on-board Bluetooth (A2DP speaker for the radio). The GPS gets
+# the full PL011 UART5 on GPIO12 (TXD5, pin 32) / GPIO13 (RXD5, pin 33); udev names it /dev/gps0.
+# No UART on GPIO14/15 (no serial console, and the mini-UART would pin the core clock).
+enable_uart=0
+dtoverlay=uart5
 
 # --- I2C for the IST8310 compass (address 0x0E, GPIO2/3) -------------------------------
 # Enable I2C-1 (/dev/i2c-1). The i2c-dev module is loaded via /etc/modules-load.d/fnav.conf.

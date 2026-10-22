@@ -119,6 +119,11 @@ export function clearSprites() {
   spriteEpoch++;
 }
 
+/** Номер «поколения» спрайтов: меняется при clearSprites() — для собственных кэшей модулей. */
+export function spriteGeneration() {
+  return spriteEpoch;
+}
+
 /** Нарисовать спрайт с центром в (x,y), повернув на rad. */
 export function blitCentered(ctx, s, x, y, rad = 0, alpha = 1) {
   if (!s) return;

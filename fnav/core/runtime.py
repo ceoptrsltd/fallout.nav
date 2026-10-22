@@ -14,9 +14,11 @@ import httpx
 
 from fnav import paths
 from fnav.core.auth import AuthManager
+from fnav.core.bluetooth import create_bluetooth
 from fnav.core.camera import CAMERA_URL, WHEP_URL, CameraService, CameraUnavailable
 from fnav.core.config import SettingsStore
 from fnav.core.navlogic import NavLogic
+from fnav.core.radio import MOCK_STATION, Player, create_radio
 from fnav.core.recordings import Recordings
 from fnav.core.system import SystemService
 from fnav.core.tiles import TileService
@@ -55,6 +57,8 @@ class CoreOptions:
     remote_port: int | None = None  # вход ssh-туннеля с сервера (без доверия к localhost)
     relay: RelayConfig | None = None  # None — из окружения (/etc/fnav/remote.env)
     relay_transport: httpx.AsyncBaseTransport | None = None  # для fnav-relay (тесты)
+    radio_transport: httpx.AsyncBaseTransport | None = None  # для каталога radio-browser (тесты)
+    radio_player: Player | None = None  # подмена плеера (тесты); None — mpv или FakePlayer в --mock
 
 
 class NullSensorHub:
@@ -119,6 +123,11 @@ class Core:
         self.tracking = TrackService(paths.data_dir() / "track_outbox.db", opts.relay or RelayConfig.from_env(),
                                      lambda: (self.auth.password_hash, self.auth.session_secret),
                                      transport=opts.relay_transport)
+        self.bt = create_bluetooth(opts.mock, paths.data_dir(), lambda: self.store.get().bluetooth)
+        self.radio = create_radio(opts.mock, paths.data_dir(), lambda: self.store.get().radio,
+                                  self._save_radio_volume, transport=opts.radio_transport,
+                                  player=opts.radio_player)
+        self.bt.on_output(self.radio.set_output)
         self.hub: SensorHub = self._make_hub(s)
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
         self._tasks: list[asyncio.Task] = []
@@ -165,6 +174,11 @@ class Core:
         await self.tiles.start(background=bg)
         await self.camera.start(background=bg)
         self._on_camera_status(self.camera.status)
+        try:
+            await self.bt.start(background=bg)
+            await self.radio.start(demo=MOCK_STATION if self.mock else None)
+        except Exception:
+            log.exception("radio/bluetooth start")
         await self._refresh_slow()
         if bg:
             self._tasks += [
@@ -178,7 +192,8 @@ class Core:
     async def stop(self) -> None:
         await cancel_tasks(*self._tasks)
         self._tasks.clear()
-        for closer in (self.tracking.stop, self.hub.stop, self.camera.stop, self.tiles.stop):
+        for closer in (self.radio.stop, self.bt.stop, self.tracking.stop, self.hub.stop, self.camera.stop,
+                       self.tiles.stop):
             try:
                 await closer()
             except Exception:
@@ -195,6 +210,14 @@ class Core:
         except Exception:
             log.exception("hub.apply_settings()")
         spawn(self.camera.reload(), name="camera-reload")
+        try:
+            self.bt.apply_settings(s.bluetooth)
+            self.radio.apply_settings(s.radio)
+        except Exception:
+            log.exception("radio/bluetooth apply_settings")
+
+    async def _save_radio_volume(self, volume: int) -> None:
+        await self.store.patch({"radio": {"volume": volume}})
 
     def settings_message(self) -> str:
         return json.dumps({"type": "settings", "settings": self.store.get().model_dump(mode="json")},
@@ -218,6 +241,7 @@ class Core:
             camera=cam,
             disk=self.system.disk,
             system=self.system.status,
+            radio=self.radio.status(),
             errors=errors,
         )
 

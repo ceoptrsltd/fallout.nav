@@ -313,6 +313,7 @@ function makeState(cfg, now) {
       display: { mode: cfg.mode ?? "map", reason: "speed", target_zoom: 18, orientation },
       camera: { state: "recording", recording: o.recording ?? true },
       system: { internet: o.internet ?? true },
+      radio: typeof cfg.radio === "function" ? cfg.radio(now) : cfg.radio ?? null,
       errors: [],
     },
     settings: {
@@ -325,6 +326,7 @@ function makeState(cfg, now) {
         show_trail: true,
         trail_seconds: 60,
         screen: { w_mm: 92, h_mm: 69 },
+        radio_panel: true,
       },
     },
     view: {
@@ -345,6 +347,25 @@ function makeState(cfg, now) {
     canvas: { w: W, h: H, safe: SAFE, pxPerMm: W / 92 },
   };
 }
+
+// ── радио (docs/contracts/radio.md, §5) ─────────────────────────────────
+
+const RADIO = { state: "playing", station: "Wasteland FM", track: "Sally Chrome - Atomic Sunset", genre: "Oldies", volume: 60, output: "Boombox", output_connected: true };
+const LONG = "The Neon Mirage Orchestra - Strip Lights at Midnight (Extended Wasteland Mix)";
+const cycle = (list, period) => (now) => list[Math.floor(now / period) % list.length];
+const RADIO_VIEWS = [
+  [{ radio: RADIO }, "<b>Playing</b> — station and track"],
+  [{ radio: { ...RADIO, track: LONG } }, "<b>Long title</b> — slow marquee after a pause, seamless loop"],
+  [{ radio: cycle([RADIO, { ...RADIO, track: "Dusty Ray & The Fallouts - Six Feet of Sand" }], 4) }, "<b>Track change</b> every 4 s — a scan sweep wipes in the new title, the needle kicks"],
+  [{ radio: cycle([RADIO, { ...RADIO, station: "Mojave Wave 101", track: "Iron Coyote - Highway of Dust", genre: "Rock" }], 5) }, "<b>Station change</b> every 5 s — the needle tunes across the dial"],
+  [{ radio: { ...RADIO, state: "connecting", track: null } }, "<b>Connecting</b> — TUNING…, the needle searches"],
+  [{ radio: { ...RADIO, state: "waiting_output", track: null, output_connected: false } }, "<b>No speaker</b> — waiting for the Bluetooth speaker (no data is streamed)"],
+  [{ radio: { ...RADIO, station: "Rust Belt Radio", track: null, genre: "Jazz" } }, "<b>No track titles</b> from the stream — the genre is shown"],
+  [{ radio: cycle([RADIO, { ...RADIO, volume: 85 }, { ...RADIO, volume: 30 }], 3.5) }, "<b>Volume</b> changes — shown for 2.5 s"],
+  [{ radio: { ...RADIO, station: "Radio Paradise - Main Mix (EU) 320k AAC", track: LONG }, cond: "all" }, "<b>Everything down</b> + long station name (fits, then ellipsis)"],
+  [{ radio: RADIO, bg: "cam", mode: "camera" }, "<b>Camera mode</b> with the radio"],
+  [{ radio: RADIO, style: "v2", orient: "north_up" }, "<b>v2 compass, north up</b>"],
+];
 
 // ── холсты ───────────────────────────────────────────────────────────────
 
@@ -516,6 +537,9 @@ async function main() {
   addView(sh, { style: "v2", orient: "north_up", cond: "all" }, "<b>Everything down</b>: no link, GPS, heading, internet, recording");
   addView(sh, { style: "v3", orient: "heading_up", cond: "nohead", units: "mps" }, "<b>Heading unknown</b>, speed in m/s");
   addView(sh, { style: "v1", orient: "heading_up", cond: "ok", bg: "cam", mode: "camera" }, "<b>Camera mode</b> — HUD over video");
+
+  const rh = document.getElementById("radio");
+  for (const [cfg, cap] of RADIO_VIEWS) addView(rh, { style: "v1", orient: "heading_up", cond: "ok", ...cfg }, cap);
 
   sizeViews();
   renderCalibrator(document.getElementById("calibrator"), { onChange: sizeViews });

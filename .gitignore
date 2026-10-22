@@ -14,3 +14,4 @@ site/display/
 site/_shots/
 tools/.publish.env
 tools/.remote.env
+.claude/

@@ -4,6 +4,7 @@
 import { DemoSim } from "./sim.js";
 import { NavLogic } from "./navlogic.js";
 import { installBridge, settingsPatch } from "./bridge.js";
+import { demoRadioStatus } from "./radio.js";
 
 // the demo has no /tiles proxy: Esri tiles directly (shared with remote access)
 export { ESRI_ATTRIBUTION, esriTileUrl } from "../map/esri.js";
@@ -20,6 +21,7 @@ export function startDemo({ onMessage, getSettings, applyPatch, getState, now })
   const sim = new DemoSim();
   const s0 = getSettings();
   const nav = new NavLogic(s0.nav, s0.display, { startTime: now() });
+  const radioT0 = now();
   let playing = true;
   let lastTick = now();
   let display = null;
@@ -52,6 +54,7 @@ export function startDemo({ onMessage, getSettings, applyPatch, getState, now })
     if (playing || !display) display = nav.update(t, tel.gps);
     else display = { ...display, mode: s.display.force_mode !== "auto" ? s.display.force_mode : display.mode, orientation: s.display.orientation };
     tel.display = display;
+    tel.radio = demoRadioStatus(t - radioT0); // on-screen radio panel: a made-up station schedule
     onMessage(tel);
     if (!readySent) {
       readySent = true;

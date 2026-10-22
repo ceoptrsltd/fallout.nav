@@ -1,8 +1,8 @@
 # fallout.nav: /etc/default/gpsd (installed by install.sh; the original is kept as gpsd.fnav-orig).
 START_DAEMON="true"
-# Holybro M8N on GPIO14/15 (PL011 UART, see dtoverlay=disable-bt). gpsd detects the baud rate itself
-# (factory 38400, 115200 after tools/ubx_config.py).
-DEVICES="/dev/ttyAMA0"
+# Holybro M8N on GPIO12/13 (PL011 UART5, dtoverlay=uart5; /dev/gps0 from pi/udev/90-fnav.rules).
+# gpsd detects the baud rate itself (factory 38400, 115200 after tools/ubx_config.py).
+DEVICES="/dev/gps0"
 # -n: read the GPS right away without waiting for a client - otherwise chrony gets no time
 # (SHM) until the first client connects.
 GPSD_OPTIONS="-n -b"

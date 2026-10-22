@@ -16,13 +16,15 @@ from starlette.staticfiles import StaticFiles
 from fnav import __version__, paths
 from fnav.core import secretsfile as sf
 from fnav.core.auth import COOKIE_NAME, SESSION_TTL_S, AuthMiddleware
+from fnav.core.bluetooth import BluetoothError
 from fnav.core.camera import CameraUnavailable, ClosingStreamingResponse, rewrite_whep_location
 from fnav.core.config import SettingsError
+from fnav.core.radio import GENRES, RadioError
 from fnav.core.recordings import RecordingError, iter_file, parse_range
 from fnav.core.runtime import REMOTE_TELEMETRY_EVERY, Core, CoreOptions
 from fnav.core.system import SystemError_
 from fnav.core.tiles import TileError
-from fnav.models import Settings
+from fnav.models import RadioStation, Settings
 
 log = logging.getLogger("fnav.core.app")
 
@@ -137,6 +139,8 @@ def create_app(opts: CoreOptions | None = None) -> FastAPI:
     _register_sensors(app, core)
     _register_system(app, core)
     _register_tracking(app, core)
+    _register_radio(app, core)
+    _register_bluetooth(app, core)
     _register_static(app)
     return app
 
@@ -493,6 +497,105 @@ def _register_tracking(app: FastAPI, core: Core) -> None:
             return _err(400, "Invalid path")
         status, body, ctype = await core.tracking.proxy_get(path, request.url.query)
         return Response(body, status_code=status, media_type=ctype, headers={"Cache-Control": "no-store"})
+
+
+# ───────────────────────── радио ─────────────────────────
+
+
+class PlayBody(BaseModel):
+    station: RadioStation
+    genre: str | None = Field(None, max_length=40)
+
+
+class VolumeBody(BaseModel):
+    volume: int = Field(..., ge=0, le=100)
+
+
+def _register_radio(app: FastAPI, core: Core) -> None:
+    @app.exception_handler(RadioError)
+    async def _radio_err(_r: Request, e: RadioError):
+        return _err(e.status, e.detail)
+
+    @app.get("/api/radio/genres")
+    async def radio_genres():
+        return {"genres": GENRES}
+
+    @app.get("/api/radio/stations")
+    async def radio_stations(tag: str | None = None, q: str | None = None, top: str | None = None):
+        given = [x for x in (tag, q, top) if x]
+        if len(given) != 1 or len(given[0]) > 100:
+            return _err(400, "Give exactly one of: tag, q, top")
+        d = core.radio.directory
+        if tag:
+            res = await d.by_tag(tag.strip().lower())
+        elif q:
+            res = await d.by_name(q.strip())
+        else:
+            res = await d.top(None if top.strip().lower() == "world" else top)
+        if res is None:
+            return _err(503, "Radio directory is unreachable")
+        return {"stations": [st.model_dump() for st in res]}
+
+    @app.get("/api/radio/state")
+    async def radio_state():
+        return core.radio.state().model_dump()
+
+    @app.post("/api/radio/play")
+    async def radio_play(body: PlayBody):
+        return (await core.radio.play(body.station, body.genre)).model_dump()
+
+    @app.post("/api/radio/stop")
+    async def radio_stop():
+        return (await core.radio.stop_playback()).model_dump()
+
+    @app.post("/api/radio/resume")
+    async def radio_resume():
+        return (await core.radio.resume()).model_dump()
+
+    @app.post("/api/radio/volume")
+    async def radio_volume(body: VolumeBody):
+        return (await core.radio.set_volume(body.volume)).model_dump()
+
+
+# ───────────────────────── Bluetooth ─────────────────────────
+
+
+class PowerBody(BaseModel):
+    on: bool
+
+
+class ScanBody(BaseModel):
+    seconds: int = Field(15, ge=1, le=60)
+
+
+def _register_bluetooth(app: FastAPI, core: Core) -> None:
+    @app.exception_handler(BluetoothError)
+    async def _bt_err(_r: Request, e: BluetoothError):
+        return _err(e.status, e.detail)
+
+    @app.get("/api/bluetooth/state")
+    async def bt_state():
+        return core.bt.state().model_dump()
+
+    @app.post("/api/bluetooth/power")
+    async def bt_power(body: PowerBody):
+        return (await core.bt.set_power(body.on)).model_dump()
+
+    @app.post("/api/bluetooth/scan")
+    async def bt_scan(body: ScanBody | None = None):
+        return (await core.bt.scan(body.seconds if body else 15)).model_dump()
+
+    @app.post("/api/bluetooth/devices/{mac}/connect")
+    async def bt_connect(mac: str):
+        return (await core.bt.connect(mac)).model_dump()
+
+    @app.post("/api/bluetooth/devices/{mac}/disconnect")
+    async def bt_disconnect(mac: str):
+        return (await core.bt.disconnect(mac)).model_dump()
+
+    @app.delete("/api/bluetooth/devices/{mac}")
+    async def bt_remove(mac: str):
+        return (await core.bt.remove(mac)).model_dump()
 
 
 # ───────────────────────── статика ─────────────────────────

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>fallout.nav — radio panel states</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #16170f; color: #e7ecd6; font: 14px/1.4 system-ui, sans-serif; }
+  figure { margin: 0 0 18px; }
+  figcaption { padding: 4px 6px; color: #a6ab96; }
+  canvas { display: block; width: 768px; height: 576px; }
+  body.bw canvas { filter: grayscale(1); }
+  body.ntsc canvas { height: 480px; width: 720px; }  /* as the CRT gets it: 768x576 squeezed into 720x480 */
+</style>
+</head>
+<body>
+<!--
+  Deterministic stills of the radio panel (docs/contracts/radio.md §5) for design review and screenshots:
+  every case is rendered once at fixed times, no animation loop (works in a background tab).
+  ?case=<id> — only one case; ?bw=1 — grayscale (monochrome CRT); ?ntsc=1 — 720x480 squeeze as on the device;
+  ?bg=cam — "camera" background for all cases.
+-->
+<div id="out"></div>
+<script type="module">
+import { drawHud, drawVehicle, loadUi } from "./index.js";
+import { DEFAULT_SETTINGS } from "../map/defaults.js";
+import { esriTileUrl } from "../map/esri.js";
+
+const W = 768, H = 576;
+const q = new URLSearchParams(location.search);
+document.body.classList.toggle("bw", q.get("bw") === "1");
+document.body.classList.toggle("ntsc", q.get("ntsc") === "1");
+
+const R = { state: "playing", station: "Wasteland FM", track: "Sally Chrome - Atomic Sunset", genre: "Oldies",
+            volume: 60, output: "Boombox", output_connected: true };
+const LONG = "The Neon Mirage Orchestra - Strip Lights at Midnight (Extended Wasteland Mix)";
+// steps: [[time, radio], …] drawn in order on the same canvas; the last one is shown
+const CASES = [
+  ["playing", "Playing: station and track", [[0, R], [2, R]]],
+  ["long", "Long track title: marquee, 3.5 s after it appeared", [[0, { ...R, track: LONG }], [3.5, { ...R, track: LONG }]]],
+  ["change", "Track change: scan sweep 0.3 s into the wipe (new title left of the bar)",
+    [[0, R], [5, R], [5.01, { ...R, track: "Dusty Ray & The Fallouts - Six Feet of Sand" }], [5.31, { ...R, track: "Dusty Ray & The Fallouts - Six Feet of Sand" }]]],
+  ["tune", "Station change: the needle tunes across the dial (0.35 s)",
+    [[0, R], [5, R], [5.01, { ...R, station: "Mojave Wave 101", genre: "Rock", track: "Iron Coyote - Highway of Dust" }],
+     [5.36, { ...R, station: "Mojave Wave 101", genre: "Rock", track: "Iron Coyote - Highway of Dust" }]]],
+  ["connecting", "Connecting: TUNING, the needle searches", [[0, { ...R, state: "connecting", track: null }], [1.3, { ...R, state: "connecting", track: null }]]],
+  ["nospeaker", "Waiting for the Bluetooth speaker", [[0, { ...R, state: "waiting_output", track: null, output_connected: false }]]],
+  ["notrack", "Stream sends no titles: the genre", [[0, { ...R, station: "Rust Belt Radio", genre: "Jazz", track: null }]]],
+  ["volume", "Volume changed (shown 2.5 s)", [[0, R], [3, R], [3.01, { ...R, volume: 85 }], [3.6, { ...R, volume: 85 }]]],
+  ["longname", "Long station name + everything down", [[0, { ...R, station: "Radio Paradise - Main Mix (EU) 320k AAC", track: LONG }]], { down: true }],
+  ["camera", "Camera mode", [[0, R]], { camera: true }],
+  ["appear", "Appearing (0.12 s after start)", [[0, R], [0.12, R]]],
+];
+
+function state(now, radio, o = {}) {
+  const down = !!o.down;
+  return {
+    now,
+    telemetry: { gps: { fix: down ? "none" : "3d", sats_used: down ? 0 : 11 }, heading: { deg: down ? null : 40, source: down ? "none" : "gps" },
+                 display: { mode: o.camera ? "camera" : "map", orientation: "heading_up" }, camera: { recording: !down },
+                 system: { internet: !down }, radio, errors: [] },
+    settings: { display: { ...DEFAULT_SETTINGS.display, compass_style: "v1" } },
+    view: { mode: o.camera ? "camera" : "map", orientation: "heading_up", bearingDeg: 40, headingDeg: down ? null : 40,
+            compassHeadingDeg: down ? null : 40, vehicleHeadingDeg: down ? null : 40, headingSource: down ? "none" : "gps",
+            speedMps: down ? null : 13.4, zoom: 18, hasFix: !down, connected: !down, internet: !down, recording: !down },
+    canvas: { w: W, h: H, safe: { x: W * 0.05, y: H * 0.05, w: W * 0.9, h: H * 0.9 }, pxPerMm: W / 92 },
+  };
+}
+
+// background: real Esri imagery around the Las Vegas Strip (z17), or a "camera" gradient
+function lonLatTile(lat, lon, z) {
+  const n = 2 ** z, x = ((lon + 180) / 360) * n;
+  const r = (lat * Math.PI) / 180, y = ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n;
+  return { x, y };
+}
+async function satBackground() {
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d"); g.fillStyle = "#2a3020"; g.fillRect(0, 0, W, H);
+  const z = 17, t = lonLatTile(36.1147, -115.1728, z);
+  const x0 = Math.floor(t.x) - 2, y0 = Math.floor(t.y) - 2, ox = (t.x - Math.floor(t.x)) * 256, oy = (t.y - Math.floor(t.y)) * 256;
+  const jobs = [];
+  for (let i = 0; i < 5; i++) for (let j = 0; j < 4; j++) {
+    for (const layer of ["imagery", "transport"]) {
+      const url = esriTileUrl(DEFAULT_SETTINGS, layer, z, x0 + i, y0 + j);
+      if (!url) continue;
+      jobs.push(new Promise((res) => { const im = new Image(); im.crossOrigin = "anonymous"; im.onload = () => res({ im, i, j, layer }); im.onerror = () => res(null); im.src = url; }));
+    }
+  }
+  const got = (await Promise.all(jobs)).filter(Boolean).sort((a, b) => (a.layer === "imagery" ? -1 : 1));
+  for (const { im, i, j } of got) g.drawImage(im, i * 256 - ox + W / 2 - 256 * 2 + 30, j * 256 - oy + H * 0.67 - 256 * 2, 256, 256);
+  return c;
+}
+function camBackground() {
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const sky = g.createLinearGradient(0, 0, 0, H * 0.45); sky.addColorStop(0, "#9aa7b4"); sky.addColorStop(1, "#d8d2c4");
+  g.fillStyle = sky; g.fillRect(0, 0, W, H * 0.45);
+  g.fillStyle = "#8a7a5e"; g.fillRect(0, H * 0.45, W, H);
+  g.fillStyle = "#3d3d3d"; g.beginPath(); g.moveTo(W * 0.46, H * 0.45); g.lineTo(W * 0.54, H * 0.45); g.lineTo(W * 0.95, H); g.lineTo(W * 0.05, H); g.fill();
+  g.fillStyle = "#eee"; for (let k = 0; k < 6; k++) g.fillRect(W / 2 - 2 - k, H * 0.5 + k * 45, 4 + 2 * k, 22 + k * 4);
+  return c;
+}
+
+await loadUi();
+const sat = q.get("bg") === "cam" ? null : await satBackground();
+const cam = camBackground();
+const only = q.get("case");
+for (const [id, caption, steps, opts = {}] of CASES) {
+  if (only && only !== id) continue;
+  const fig = document.createElement("figure");
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H; cv.dataset.case = id;
+  const g = cv.getContext("2d");
+  // one step only: also draw it a second later (the panel fades in over 0.25 s after it appears)
+  const all = steps.length === 1 ? [...steps, [steps[0][0] + 1, steps[0][1]]] : steps;
+  for (const [t, radio] of all) {
+    const st = state(t, radio, opts);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.drawImage(opts.camera || !sat ? cam : sat, 0, 0);
+    if (!opts.camera && sat) drawVehicle(g, W / 2, H * 0.67, 0, st);
+    drawHud(g, st);
+  }
+  const cap = document.createElement("figcaption"); cap.textContent = `${id}: ${caption}`;
+  fig.append(cv, cap);
+  document.getElementById("out").append(fig);
+}
+document.title += " — ready";
+</script>
+</body>
+</html>

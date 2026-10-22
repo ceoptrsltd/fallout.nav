@@ -165,6 +165,7 @@ else
         python3-lgpio python3-gpiozero python3-gps
         gpsd gpsd-clients chrony ffmpeg i2c-tools
         cage seatd fonts-dejavu-core avahi-daemon rsync curl ca-certificates sudo network-manager
+        mpv bluez bluez-alsa-utils libasound2-plugin-bluez rfkill
     )
     "${APT[@]}" install "${REQUIRED[@]}"
     # Packages whose name differs between releases/repos: first one that installs wins.
@@ -176,6 +177,7 @@ else
     dpkg -s python3-av >/dev/null 2>&1 || install_any python3-av || warn "python3-av not installed - RTSP relay will use ffmpeg only"
     dpkg -s python3-simplejpeg >/dev/null 2>&1 || install_any python3-simplejpeg         || warn "python3-simplejpeg not installed - MJPEG encoding will fall back to Pillow"
     dpkg -s polkitd >/dev/null 2>&1 || install_any polkitd policykit-1 || warn "polkit not installed - nmcli from fnav may be denied"
+    dpkg -s pi-bluetooth >/dev/null 2>&1 || install_any pi-bluetooth || warn "pi-bluetooth not installed (Raspberry Pi Bluetooth helpers)"
 fi
 # On trixie the package is "chromium"; make sure the unit's "chromium" resolves either way.
 if ! command -v chromium >/dev/null && command -v chromium-browser >/dev/null; then
@@ -193,7 +195,8 @@ if ! id fnav >/dev/null 2>&1; then
     log "user fnav created"
 fi
 passwd -l fnav >/dev/null 2>&1 || true   # no password login
-for g in video render i2c gpio dialout systemd-journal netdev input tty; do
+# audio: ALSA bluealsa device and the org.bluealsa D-Bus service (mpv of fnav-radio); bluetooth: BlueZ tools
+for g in video render i2c gpio dialout systemd-journal netdev input tty audio bluetooth; do
     if ! getent group "$g" >/dev/null; then
         case "$g" in i2c|gpio|netdev) groupadd --system "$g"; log "group $g created" ;; *) continue ;; esac
     fi
@@ -341,7 +344,8 @@ fi
 # 2) config.txt: replace the block between the markers, comment out conflicting lines elsewhere
 backup_once "$CFG"
 TMP="$(mktemp)"
-sed -E '/^# >>> fnav[[:space:]]*$/,/^# <<< fnav[[:space:]]*$/d' "$CFG" > "$TMP"
+# every fnav block, including ones with text after the marker (the stage-0 check block)
+sed -E '/^# >>> fnav/,/^# <<< fnav/d' "$CFG" > "$TMP"
 KEYS='enable_uart|camera_auto_detect|display_auto_detect|disable_fw_kms_setup|gpu_mem|hdmi_force_hotplug|hdmi_group|hdmi_mode|enable_tvout'
 sed -E -i \
     -e "s/^[[:space:]]*((${KEYS})(:[0-9])?[[:space:]]*=.*)$/# fnav-disabled: \1/" \
@@ -387,8 +391,15 @@ for u in serial-getty@ttyAMA0.service serial-getty@serial0.service; do
     systemctl mask "$u" 2>/dev/null || true
 done
 systemctl disable --now serial-getty@ttyS0.service 2>/dev/null || true
-for u in hciuart.service bluetooth.service ModemManager.service triggerhappy.service; do
+for u in ModemManager.service triggerhappy.service; do
     if unit_exists "$u"; then systemctl disable --now "$u" 2>/dev/null || true; log "disabled $u"; fi
+done
+# Bluetooth speaker for the radio (built-in Bluetooth on UART0; the GPS uses UART3): BlueZ + bluealsa as an
+# A2DP source only (drop-in pi/systemd/bluealsa.service.d). bluealsa-aplay would play what phones stream in.
+rfkill unblock bluetooth 2>/dev/null || true
+if unit_exists bluealsa-aplay.service; then systemctl disable --now bluealsa-aplay.service 2>/dev/null || true; fi
+for u in bluetooth.service bluealsa.service; do
+    if unit_exists "$u"; then systemctl enable "$u" 2>/dev/null || warn "could not enable $u"; fi
 done
 
 if [ -n "${FNAV_WIFI_SSID:-}" ] && [ -n "${FNAV_WIFI_PSK:-}" ]; then
@@ -408,7 +419,7 @@ step "Enabling and starting services"
 systemctl daemon-reload
 systemctl enable avahi-daemon.service chrony.service seatd.service 2>/dev/null || warn "could not enable avahi/chrony/seatd"
 systemctl enable gpsd.socket gpsd.service 2>/dev/null || warn "could not enable gpsd"
-systemctl enable mediamtx.service fnav-core.service fnav-camera.service fnav-display.service
+systemctl enable mediamtx.service fnav-core.service fnav-camera.service fnav-display.service fnav-radio.service
 # Remote access (optional): the unit only runs once tools/remote.sh setup has written /etc/fnav/remote.env.
 systemctl enable fnav-tunnel.service 2>/dev/null || warn "could not enable fnav-tunnel"
 [ "$CHRONY_CHANGED" = 1 ] && systemctl restart chrony.service 2>/dev/null || true

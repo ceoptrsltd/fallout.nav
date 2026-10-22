@@ -61,11 +61,25 @@ function iconAntennaOff(ctx, x, y) {
   ctx.restore();
 }
 
+function rowWidth(ctx, text, iconW) {
+  return 14 + iconW + (iconW ? 8 : 0) + Math.ceil(textWidth(ctx, FONT(), text)) + 14;
+}
+
+/**
+ * Ширина двух нижних строк индикаторов (GPS, REC) с запасом на самые широкие значения — постоянная,
+ * чтобы соседние элементы (плашка радио) не «дышали» при смене числа спутников.
+ */
+export function indicatorsWidth(ctx) {
+  return Math.max(rowWidth(ctx, "3D 88", 26), rowWidth(ctx, "— 88", 26), rowWidth(ctx, "REC", 22));
+}
+
+/** Высота строк индикаторов и зазор между ними. */
+export const INDICATOR_ROW = { h: ROW_H, gap: 6 };
+
 /** Строка-индикатор справа: (xr — правый край, y — верх). Возвращает ширину. */
 function row(ctx, xr, y, text, iconW, drawIcon, { dim = false } = {}) {
   const font = FONT();
-  const tw = Math.ceil(textWidth(ctx, font, text));
-  const w = 14 + iconW + (iconW ? 8 : 0) + tw + 14;
+  const w = rowWidth(ctx, text, iconW);
   const x = Math.round(xr - w);
   blit(ctx, plateSprite(w, ROW_H, { chamfer: 6, rivets: false }), x, y);
   if (drawIcon) drawIcon(x + 14 + iconW / 2, y + ROW_H / 2);

@@ -112,7 +112,7 @@ def check_gps(rep: Report, s: Settings, host: str, port: int, timeout: float) ->
     tpv = r["tpv"]
     if not tpv:
         rep.line(FAIL, "GPS receiver NOT CONNECTED: gpsd is running but gets no data "
-                       "(check wiring TX->RX, power, /dev/ttyAMA0, gpsd DEVICES)")
+                       "(check wiring TX->RX, power, /dev/gps0, gpsd DEVICES)")
         return
     if len(tpv) >= 3:
         span = tpv[-1][0] - tpv[0][0]

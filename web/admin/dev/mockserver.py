@@ -23,6 +23,7 @@ import io
 import itertools
 import json
 import queue
+import random
 import re
 import secrets
 import sys
@@ -59,6 +60,7 @@ STRICT_AUTH = False  # --strict-auth: do not exempt loopback clients from auth
 REMOTE_PREFIX = "/fnadmin"  # remote access through the server (docs/contracts/remote.md)
 OFFLINE = False  # --offline: under /fnadmin/ the device is "not connected"
 TRACK_DOWN = False  # api/tracking/* → 503 (tracking server unreachable)
+RADIO_DIR_DOWN = False  # api/radio/stations → 503 (radio-browser unreachable)
 # what the server answers itself when the device is offline
 SERVER_PATHS = ("/api/tracking/", "/api/login", "/api/logout", "/api/session", "/api/_mock/")
 
@@ -438,7 +440,9 @@ def build_telemetry() -> dict:
         ),
         errors=snap.errors,
     )
-    return tel.model_dump(mode="json")
+    out = tel.model_dump(mode="json")
+    out["radio"] = radio.compact()  # radio.md §5 (added as a dict: the model may not have the field yet)
+    return out
 
 
 # ───────────────────────── MJPEG stub ─────────────────────────
@@ -568,7 +572,7 @@ async def session(request: Request):
 # ── settings ──
 @app.get("/api/settings")
 async def get_settings():
-    return settings.model_dump(mode="json")
+    return settings_json()
 
 
 @app.get("/api/settings/defaults")
@@ -586,6 +590,8 @@ async def patch_settings(request: Request):
     patch = await request.json()
     if not isinstance(patch, dict):
         return err(422, "Body must be a JSON object")
+    if (r := split_extra(patch)) is not None:
+        return r
     data = settings.model_dump(mode="json")
     deep_merge(data, patch)
     try:
@@ -595,7 +601,7 @@ async def patch_settings(request: Request):
     if " " in new.tiles.esri_api_key:  # extra server-side rule, to exercise 422 handling in the UI
         return err(422, [{"loc": ["body", "tiles", "esri_api_key"], "msg": "Key must not contain spaces", "type": "value_error"}])
     apply_settings(new)
-    return new.model_dump(mode="json")
+    return settings_json(new)
 
 
 @app.put("/api/settings")
@@ -605,13 +611,15 @@ async def put_settings(request: Request):
     except ValidationError as e:
         return _validation_response(e)
     apply_settings(new)
-    return new.model_dump(mode="json")
+    return settings_json(new)
 
 
 @app.post("/api/settings/reset")
 async def reset_settings():
+    extra_settings.clear()
+    extra_settings.update(json.loads(json.dumps(EXTRA_DEFAULTS)))
     apply_settings(Settings())
-    return settings.model_dump(mode="json")
+    return settings_json()
 
 
 @app.post("/api/display/force")
@@ -842,6 +850,379 @@ async def mock_tracking_down(request: Request):
     b = await request.json() if (await request.body()) else {}
     TRACK_DOWN = bool(b.get("down", not TRACK_DOWN))
     return {"ok": True, "down": TRACK_DOWN}
+
+
+# ── radio and Bluetooth (docs/contracts/radio.md): fake directory, fake player, fake BlueZ ──
+GENRES = [
+    ("relax", "🌊", "Calm", "mood"), ("sleep", "🌙", "Sleep", "mood"), ("lofi", "📚", "Study", "mood"),
+    ("workout", "💪", "Workout", "mood"), ("party", "🎉", "Upbeat", "mood"), ("romantic", "💞", "Romantic", "mood"),
+    ("meditation", "🧘", "Meditation", "mood"),
+    ("pop", "🎤", "Pop", "genre"), ("rock", "🎸", "Rock", "genre"), ("jazz", "🎷", "Jazz", "genre"),
+    ("classical", "🎻", "Classical", "genre"), ("electronic", "🎛️", "Electronic", "genre"),
+    ("hip hop", "🎧", "Hip-hop", "genre"), ("chanson", "🪗", "Chanson", "genre"), ("lounge", "🍸", "Lounge", "genre"),
+    ("dance", "💃", "Dance", "genre"), ("blues", "🎺", "Blues", "genre"), ("folk", "🪕", "Folk", "genre"),
+    ("kids", "🧸", "Kids", "genre"),
+    ("hits", "🔥", "Hits", "era"), ("oldies", "📻", "Oldies", "era"), ("80s", "📼", "80s", "era"),
+    ("90s", "💿", "90s", "era"), ("news", "📰", "News", "era"),
+]
+GENRE_LABEL = {t: lab for t, _, lab, _ in GENRES}
+_COUNTRIES = [("Poland", "PL", "polish"), ("Germany", "DE", "german"), ("United States", "US", "english"),
+              ("United Kingdom", "GB", "english"), ("France", "FR", "french"), ("Netherlands", "NL", "dutch"),
+              ("Ukraine", "UA", "ukrainian"), ("Italy", "IT", "italian")]
+_NAME_PARTS = ["Wasteland", "Vault", "Desert", "Neon", "Atomic", "Radio", "Groove", "Night", "Highway", "Sunset",
+               "Rust", "Echo", "Signal", "Mojave", "Midnight", "Coast"]
+# made-up artists and titles for the fake ICY StreamTitle
+_ARTISTS = ["The Rad Roaches", "Mojave Sisters", "Vault 13 Orchestra", "Dust Devils", "Neon Coyote",
+            "Lola & the Geigers", "Brahmin Boys", "Static Kings"]
+_TITLES = ["Highway to Nowhere", "Glowing in the Dark", "Last Gas Station", "Atomic Sunrise", "Rusty Heart",
+           "Radio Silence", "Long Road Home", "Chrome & Sand", "Fallout Shelter Blues", "Midnight Convoy"]
+
+
+def _station(tag: str, i: int) -> dict:
+    rnd = random.Random(f"{tag}-{i}")
+    country, cc, lang = rnd.choice(_COUNTRIES)
+    label = GENRE_LABEL.get(tag, tag.title())
+    name = f"{rnd.choice(_NAME_PARTS)} {label} {rnd.choice(['FM', 'Radio', '24/7', 'One', 'Live'])}"
+    codec = rnd.choice(["MP3", "MP3", "AAC", "AAC+", "OGG"])
+    tags = ",".join([tag, *rnd.sample(["music", "hits", "chill", "live", "classic", "indie", "talk", "local"], 2)])
+    slug = tag.replace(" ", "")
+    return {"uuid": f"{rnd.randrange(10**8):08d}-mock-{slug}-{i}", "name": name,
+            "url": f"https://stream.example.invalid/{slug}/{i}" + ("/broken" if i == 11 else ""),
+            "homepage": "", "favicon": "", "tags": tags, "country": country, "countrycode": cc, "language": lang,
+            "codec": codec, "bitrate": rnd.choice([0, 64, 96, 128, 128, 192, 320]), "votes": rnd.randint(5, 9000),
+            "clickcount": rnd.randint(50, 30000) // (i + 1), "hls": codec == "AAC+" and i % 5 == 0}
+
+
+STATIONS = {t: [_station(t, i) for i in range(12)] for t, *_ in GENRES}
+
+
+class FakeRadio:
+    """Player state per the contract: stopped / connecting / playing / waiting_output / error."""
+
+    def __init__(self) -> None:
+        self.want = False  # a station is chosen and should be playing
+        self.station: dict | None = None
+        self.genre: str | None = None
+        self.started = 0.0
+        self.error: str | None = None
+        self.recent: list[dict] = [STATIONS["jazz"][0], STATIONS["rock"][2], STATIONS["lofi"][1]]
+
+    def volume(self) -> int:
+        return int(extra_get("radio", "volume", 60))
+
+    def state(self) -> str:
+        if self.error:
+            return "error"
+        if not self.want or not self.station:
+            return "stopped"
+        if not bt.output_connected():
+            return "waiting_output"
+        return "connecting" if time.time() - self.started < 1.8 else "playing"
+
+    def track(self) -> str | None:
+        if self.state() != "playing" or not self.station:
+            return None
+        seed = int(self.station["uuid"][:8])
+        if "news" in self.station["tags"] or seed % 4 == 0:
+            return None  # this station sends no StreamTitle
+        n = int((time.time() - self.started) // 25) + seed
+        return f"{_ARTISTS[n % len(_ARTISTS)]} - {_TITLES[(n * 7) % len(_TITLES)]}"
+
+    def play(self, st: dict, genre: str | None) -> None:
+        self.station, self.genre, self.want, self.error = st, genre, True, None
+        self.started = time.time()
+        self.recent = [st] + [r for r in self.recent if r.get("uuid") != st.get("uuid")][:11]
+        if str(st.get("url", "")).endswith("/broken"):
+            self.error = "Stream could not be opened: HTTP 404"
+
+    def full(self) -> dict:
+        state = self.state()
+        return {"state": state, "station": self.station, "genre": self.genre, "track": self.track(),
+                "volume": self.volume(), "output": bt.output(), "error": self.error if state == "error" else None,
+                "recent": self.recent}
+
+    def compact(self) -> dict:
+        out = bt.output()
+        first_tag = ((self.station or {}).get("tags") or "").split(",")[0] or None
+        return {"state": self.state(), "station": self.station["name"] if self.station else None,
+                "track": self.track(), "genre": GENRE_LABEL.get(self.genre or "") or first_tag,
+                "volume": self.volume(), "output": out["name"] if out else None,
+                "output_connected": bool(out and out["connected"])}
+
+
+class FakeBt:
+    def __init__(self) -> None:
+        self.available = True
+        self.powered = True
+        self.scan_until = 0.0
+        self.audio_device: str | None = "41:42:1A:2B:3C:4D"
+        self.devices: dict[str, dict] = {}
+        self._add("41:42:1A:2B:3C:4D", "JBL Go 3", "audio-card", paired=True, trusted=True, rssi=-58)
+        self.devices["41:42:1A:2B:3C:4D"]["connected"] = True
+        self._add("C8:7B:23:AA:10:02", "Pixel 7", "phone", paired=True, trusted=True, rssi=-71)
+        # these appear during a scan
+        self._hidden = [("00:1A:7D:DA:71:13", "Car Kit BT", "audio-headset", -66),
+                        ("F4:4E:FD:00:12:9A", "Soundcore Mini", "audio-card", -49),
+                        ("7C:2E:0D:55:44:01", None, None, -88),
+                        ("D0:03:4B:22:9F:10", "Living room TV", "video-display", -80),
+                        ("E8:EC:A3:12:34:56", "Old speaker (fails)", "audio-card", -75),
+                        ("5A:11:22:33:44:55", None, None, -93)]
+        self.busy: dict[str, str] = {}
+
+    def _add(self, mac, name, icon, paired=False, trusted=False, rssi=None) -> None:
+        self.devices[mac] = {"address": mac, "name": name, "icon": icon, "paired": paired, "trusted": trusted,
+                             "connected": False, "rssi": rssi, "audio": bool(icon and icon.startswith("audio"))}
+
+    def discovering(self) -> bool:
+        return self.available and self.powered and time.time() < self.scan_until
+
+    def tick(self) -> None:
+        if self.discovering() and self._hidden:
+            left = self.scan_until - time.time()
+            while self._hidden and len(self._hidden) > left / 2.5:
+                mac, name, icon, rssi = self._hidden.pop(0)
+                self._add(mac, name, icon, rssi=rssi)
+
+    def output(self) -> dict | None:
+        d = self.devices.get(self.audio_device or "")
+        if not d:
+            return None
+        return {"address": d["address"], "name": d["name"] or d["address"],
+                "connected": bool(d["connected"] and self.powered)}
+
+    def output_connected(self) -> bool:
+        o = self.output()
+        return bool(o and o["connected"])
+
+    def state(self) -> dict:
+        self.tick()
+        if not self.available:
+            return {"available": False, "powered": False, "discovering": False, "audio_device": None, "devices": []}
+        return {"available": True, "powered": self.powered, "discovering": self.discovering(),
+                "audio_device": self.audio_device, "devices": list(self.devices.values())}
+
+
+radio = FakeRadio()
+bt = FakeBt()
+BT_MAC = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
+
+# fields the backend models may not have yet (radio.md §4): kept here until fnav.models grows them
+EXTRA_DEFAULTS = {"radio": {"volume": 60, "resume_on_boot": True},
+                  "bluetooth": {"enabled": True, "auto_connect": True},
+                  "display": {"radio_panel": True}}
+extra_settings: dict[str, dict] = json.loads(json.dumps(EXTRA_DEFAULTS))
+
+
+def _model_has(section: str, key: str) -> bool:
+    f = Settings.model_fields.get(section)
+    sub = getattr(f.annotation, "model_fields", None) if f else None
+    return bool(sub and key in sub)
+
+
+def extra_get(section: str, key: str, default=None):
+    if _model_has(section, key):
+        return getattr(getattr(settings, section), key)
+    return extra_settings.get(section, {}).get(key, default)
+
+
+def settings_json(s: Settings | None = None) -> dict:
+    d = (s or settings).model_dump(mode="json")
+    for sec, vals in extra_settings.items():
+        tgt = d.setdefault(sec, {})
+        for k, v in vals.items():
+            if not _model_has(sec, k):
+                tgt[k] = v
+    return d
+
+
+def split_extra(patch: dict) -> JSONResponse | None:
+    """Pull keys the model does not know out of a settings patch into extra_settings (validated here)."""
+    for sec, vals in EXTRA_DEFAULTS.items():
+        p = patch.get(sec)
+        if not isinstance(p, dict):
+            continue
+        for k, dflt in vals.items():
+            if k not in p or _model_has(sec, k):
+                continue
+            v = p.pop(k)
+            if isinstance(dflt, bool):
+                if not isinstance(v, bool):
+                    return err(422, [{"loc": ["body", sec, k], "msg": "Input should be a valid boolean", "type": "bool_type"}])
+            elif not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 100:
+                return err(422, [{"loc": ["body", sec, k], "msg": "Input should be between 0 and 100", "type": "int_range"}])
+            extra_settings[sec][k] = v
+        if not p and sec not in Settings.model_fields:
+            patch.pop(sec)
+    return None
+
+
+@app.get("/api/radio/genres")
+async def radio_genres():
+    return {"genres": [{"tag": t, "emoji": e, "label": lab, "kind": k} for t, e, lab, k in GENRES]}
+
+
+@app.get("/api/radio/stations")
+async def radio_stations(tag: str | None = None, q: str | None = None, top: str | None = None):
+    await asyncio.sleep(0.35)  # the directory is on the internet
+    if RADIO_DIR_DOWN:
+        return err(503, "Radio directory is unreachable")
+    if tag:
+        return {"stations": STATIONS.get(tag, [])}
+    allst = [s for lst in STATIONS.values() for s in lst]
+    if q:
+        ql = q.strip().lower()
+        return {"stations": [s for s in allst if ql in s["name"].lower()][:100]}
+    pool = allst if not top or top == "world" else [s for s in allst if s["countrycode"] == top.upper()]
+    return {"stations": sorted(pool, key=lambda s: -s["clickcount"])[:30]}
+
+
+@app.get("/api/radio/state")
+async def radio_state():
+    return radio.full()
+
+
+@app.post("/api/radio/play")
+async def radio_play(request: Request):
+    b = await request.json()
+    st = b.get("station") if isinstance(b, dict) else None
+    if not isinstance(st, dict) or not st.get("url") or not st.get("name"):
+        return err(422, "station with name and url is required")
+    radio.play(st, b.get("genre"))
+    return radio.full()
+
+
+@app.post("/api/radio/stop")
+async def radio_stop():
+    radio.want, radio.error = False, None
+    return radio.full()
+
+
+@app.post("/api/radio/resume")
+async def radio_resume():
+    if not radio.station:
+        return err(409, "No station has been played yet")
+    radio.play(radio.station, radio.genre)
+    return radio.full()
+
+
+@app.post("/api/radio/volume")
+async def radio_volume(request: Request):
+    v = (await request.json()).get("volume")
+    if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 100:
+        return err(422, "volume must be an integer 0..100")
+    if _model_has("radio", "volume"):
+        data = settings.model_dump(mode="json")
+        data["radio"]["volume"] = v
+        apply_settings(Settings.model_validate(data))
+    else:
+        extra_settings["radio"]["volume"] = v
+    return radio.full()
+
+
+def _bt_guard(mac: str | None = None):
+    if not bt.available:
+        return err(503, "Bluetooth adapter not available")
+    if mac is not None:
+        if not BT_MAC.match(mac):
+            return err(422, "Invalid Bluetooth address")
+        if mac not in bt.devices:
+            return err(404, "Device not found")
+    return None
+
+
+@app.get("/api/bluetooth/state")
+async def bt_state():
+    return bt.state()
+
+
+@app.post("/api/bluetooth/power")
+async def bt_power(request: Request):
+    if (r := _bt_guard()) is not None:
+        return r
+    bt.powered = bool((await request.json()).get("on"))
+    if not bt.powered:
+        bt.scan_until = 0.0
+        for d in bt.devices.values():
+            d["connected"] = False
+    return bt.state()
+
+
+@app.post("/api/bluetooth/scan")
+async def bt_scan(request: Request):
+    if (r := _bt_guard()) is not None:
+        return r
+    if not bt.powered:
+        return err(409, "Bluetooth is off")
+    secs = (await request.json()).get("seconds", 15)
+    if not isinstance(secs, (int, float)) or not 1 <= secs <= 60:
+        return err(422, "seconds must be 1..60")
+    bt.scan_until = time.time() + float(secs)
+    return bt.state()
+
+
+@app.post("/api/bluetooth/devices/{mac}/connect")
+async def bt_connect(mac: str):
+    mac = mac.upper()
+    if (r := _bt_guard(mac)) is not None:
+        return r
+    if not bt.powered:
+        return err(409, "Bluetooth is off")
+    if mac in bt.busy:
+        return err(409, "Already in progress")
+    d = bt.devices[mac]
+    try:
+        if not d["paired"]:
+            bt.busy[mac] = "pairing"
+            await asyncio.sleep(4.0)
+            if "fails" in (d["name"] or ""):
+                return err(502, "Pairing failed: Authentication Rejected (is the speaker in pairing mode?)")
+            d["paired"] = d["trusted"] = True
+        bt.busy[mac] = "connecting"
+        await asyncio.sleep(2.0)
+        d["connected"] = True
+        if d["audio"]:
+            old = bt.devices.get(bt.audio_device or "")
+            if old is not None and old is not d:
+                old["connected"] = False  # one speaker at a time
+            bt.audio_device = mac
+            if radio.want:
+                radio.started = time.time()
+    finally:
+        bt.busy.pop(mac, None)
+    return bt.state()
+
+
+@app.post("/api/bluetooth/devices/{mac}/disconnect")
+async def bt_disconnect(mac: str):
+    mac = mac.upper()
+    if (r := _bt_guard(mac)) is not None:
+        return r
+    await asyncio.sleep(0.6)
+    bt.devices[mac]["connected"] = False
+    return bt.state()
+
+
+@app.delete("/api/bluetooth/devices/{mac}")
+async def bt_forget(mac: str):
+    mac = mac.upper()
+    if (r := _bt_guard(mac)) is not None:
+        return r
+    bt.devices.pop(mac)
+    if bt.audio_device == mac:
+        bt.audio_device = None
+    return bt.state()
+
+
+@app.post("/api/_mock/bt")
+async def mock_bt(request: Request):
+    """{"available": false} — no adapter; {"dir_down": true} — the radio directory answers 503."""
+    global RADIO_DIR_DOWN
+    b = await request.json() if (await request.body()) else {}
+    if "available" in b:
+        bt.available = bool(b["available"])
+    if "dir_down" in b:
+        RADIO_DIR_DOWN = bool(b["dir_down"])
+    return {"ok": True, "available": bt.available, "dir_down": RADIO_DIR_DOWN}
 
 
 # ── live MPEG-TS (fnav-camera /live.ts: a separate low-bitrate encode, only while someone watches) ──
@@ -1080,7 +1461,7 @@ async def ws_endpoint(ws: WebSocket):
         while not rtask.done():
             if settings_version != ver:
                 ver = settings_version
-                await ws.send_text(json.dumps({"type": "settings", "settings": settings.model_dump(mode="json")}))
+                await ws.send_text(json.dumps({"type": "settings", "settings": settings_json()}))
             await ws.send_text(json.dumps(build_telemetry()))
             for ev in [e for e in events if e["id"] > last_ev]:
                 last_ev = ev["id"]

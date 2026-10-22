@@ -1,0 +1,50 @@
+[Unit]
+Description=fallout.nav radio player (mpv, controlled by fnav-core over JSON IPC)
+Documentation=file:///opt/fnav/app/docs/contracts/radio.md
+# Sound goes to the Bluetooth speaker through bluealsa (ALSA device alsa/bluealsa:DEV=<mac>,PROFILE=a2dp,
+# set by fnav-core when the speaker connects). mpv idles until fnav-core loads a station.
+After=bluealsa.service bluetooth.service network-online.target
+Wants=bluealsa.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fnav
+Group=fnav
+SupplementaryGroups=audio
+# /run/fnav-radio/mpv.sock (0600, owner fnav): fnav-core runs as fnav as well
+RuntimeDirectory=fnav-radio
+RuntimeDirectoryMode=0750
+Environment=HOME=/run/fnav-radio
+# FNAV_RADIO_AO=null in /etc/fnav/radio.env: test without a speaker (no sound device needed)
+Environment=FNAV_RADIO_AO=alsa
+EnvironmentFile=-/etc/fnav/radio.env
+ExecStart=/usr/bin/mpv --idle=yes --no-config --no-video --no-terminal --msg-level=all=warn \
+    --load-scripts=no --ytdl=no --osc=no --input-default-bindings=no --audio-display=no --gapless-audio=no \
+    --input-ipc-server=/run/fnav-radio/mpv.sock --ao=${FNAV_RADIO_AO} \
+    --cache=yes --demuxer-max-bytes=4MiB --demuxer-readahead-secs=10 --network-timeout=15 \
+    --stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5 \
+    --user-agent="fallout.nav/1.0 (car radio)" --volume=60 --volume-max=100
+Restart=always
+RestartSec=3
+
+# Audio decoding is light; recording and the screen matter more.
+Nice=5
+CPUWeight=50
+IOWeight=50
+MemoryHigh=96M
+MemoryMax=160M
+TasksMax=64
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
