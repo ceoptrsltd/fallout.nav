@@ -4,8 +4,8 @@ import { C, blinkOn, blit, chamferPath, fontLabel, fontNum, fontStencil, hazardS
 
 const ROW_H = 36;
 const FONT = () => fontLabel(25);
-const SATS_FONT = () => fontNum(27, 600); // «3D 39/20» — узкие цифры, как на спидометре: строка не шире прежней
-const SATS_WIDEST = "3D 88/88";
+const SATS_FONT = () => fontNum(27, 600); // «39/20» — узкие цифры, как на спидометре
+const SATS_WIDEST = "88/88";
 
 // ── пиктограммы (рисуются линиями ≥ 2 px, со светлой заливкой) ──────────
 
@@ -67,12 +67,11 @@ function rowWidth(ctx, text, iconW, font = FONT()) {
   return 14 + iconW + (iconW ? 8 : 0) + Math.ceil(textWidth(ctx, font, text)) + 14;
 }
 
-/** Строка GPS: тип фикса, спутники видимые / используемые («3D 39/20»). */
+/** Строка GPS: спутники видимые / используемые («39/20»); есть ли фикс — по значку (залит / тусклый). */
 export function satsText(gps) {
   const g = gps ?? {};
-  const fix = g.fix === "3d" ? "3D" : g.fix === "2d" ? "2D" : "—";
   const n = (v) => (Number.isFinite(v) ? v : 0);
-  return `${fix} ${n(g.sats_visible)}/${n(g.sats_used)}`;
+  return `${n(g.sats_visible)}/${n(g.sats_used)}`;
 }
 
 /**

@@ -81,10 +81,9 @@ test("demo radio: tracks change, stations switch via connecting, one station wit
   for (const k of ["state", "station", "track", "genre", "volume", "output", "output_connected"]) assert.ok(k in a, k);
 });
 
-test("satsText: fix, visible / used satellites", async () => {
+test("satsText: visible / used satellites, no fix label", async () => {
   const { satsText } = await import("../../web/display/ui/status.js");
-  assert.equal(satsText({ fix: "3d", sats_visible: 39, sats_used: 20 }), "3D 39/20");
-  assert.equal(satsText({ fix: "2d", sats_visible: 7, sats_used: 4 }), "2D 7/4");
-  assert.equal(satsText({ fix: "none", sats_visible: 3 }), "— 3/0");
-  assert.equal(satsText(null), "— 0/0");
+  assert.equal(satsText({ fix: "3d", sats_visible: 39, sats_used: 20 }), "39/20");
+  assert.equal(satsText({ fix: "none", sats_visible: 3 }), "3/0");
+  assert.equal(satsText(null), "0/0");
 });
