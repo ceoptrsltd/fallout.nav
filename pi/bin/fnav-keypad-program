@@ -2,6 +2,8 @@
 # Program the 6-key macro pad with a knob (USB 1189:8890) with pi/keypad/fnav-keypad.yaml (F13-F21 + Enter,
 # see fnav/core/keypad.py). Builds ch57x-keyboard-tool 1.7.0 once (1.8.0 needs a newer Rust than Debian's
 # 1.85) into /opt/fnav/tools. Run as root with the pad plugged in.
+# LEDs: the stock firmware has only modes 0 off, 1 light on press then flicker, 2 running lights
+# (3+ just light one key); no per-key or host-driven colours. FNAV_KEYPAD_LED (default 0) picks one.
 set -euo pipefail
 TOOL=/opt/fnav/tools/ch57x-keyboard-tool
 CFG="${1:-/opt/fnav/app/pi/keypad/fnav-keypad.yaml}"
@@ -16,4 +18,5 @@ fi
 lsusb -d 1189:8890 >/dev/null || { echo "the macro pad (1189:8890) is not plugged in" >&2; exit 1; }
 "$TOOL" validate "$CFG"
 "$TOOL" upload "$CFG"
-echo "macro pad programmed from $CFG"
+"$TOOL" led "${FNAV_KEYPAD_LED:-0}"
+echo "macro pad programmed from $CFG, LED mode ${FNAV_KEYPAD_LED:-0}"
