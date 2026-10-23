@@ -70,7 +70,8 @@ def test_state_sequence_and_staleness() -> None:
     for m in msgs():
         st.handle(m)
     f = st.current()
-    assert f.fix == "3d" and f.hdop == 0.91 and f.sats_used == 9 and f.sats_visible == 12
+    # counts come from the SKY with the satellite list; the short SKY right after it only updates hdop
+    assert f.fix == "3d" and f.hdop == 0.91 and f.sats_used == 4 and f.sats_visible == 6
     assert len(st.satellites) == 6  # SKY без satellites не стирает список
     assert st.device_bps == 115200 and st.version == "3.25"
     assert st.problem() is None
@@ -163,3 +164,47 @@ async def test_client_no_server_then_server_appears() -> None:
         await srv.stop()
     finally:
         task.cancel()
+
+
+def _sky_list(used: int, unused: int, t: str | None = None) -> dict:
+    sats = [{"PRN": i + 1, "gnssid": 0, "used": i < used, "ss": 30} for i in range(used + unused)]
+    m = {"class": "SKY", "nSat": used + unused, "uSat": used, "satellites": sats}
+    if t:
+        m["time"] = t
+    return m
+
+
+def test_sat_counts_from_the_full_gsv_cycle() -> None:
+    """Live gpsd 3.25 + NEO-M8N (NMEA 4.10), as captured: every SKY is preceded by a TPV of the same epoch;
+    short SKY (GSA) say uSat=12 at most; the list comes per constellation (25, then 38 20 ms later) once in 2 s.
+    The screen must not flicker 12 / 19 / 25 / 38."""
+    clk = Clock()
+    st = GpsState(clock=clk)
+
+    def tpv(t):
+        return {"class": "TPV", "mode": 3, "lat": 1.0, "lon": 2.0, "time": t}
+
+    st.handle(tpv("T0"))
+    st.handle({"class": "SKY", "uSat": 12, "hdop": 0.8})  # no list yet: take what there is
+    assert st.current().sats_used == 12
+    for m in (tpv("T1"), {"class": "SKY", "uSat": 12}, tpv("T1"), _sky_list(13, 12, "T1"),
+              tpv("T1"), _sky_list(19, 19, "T1")):
+        st.handle(m)
+        assert st.current().sats_used == 12  # the cycle is not over yet
+    st.handle(tpv("T2"))  # next epoch: the last list of the cycle is the whole sky
+    f = st.current()
+    assert (f.sats_used, f.sats_visible, len(st.satellites)) == (19, 38, 38)
+    for k in range(3, 12):
+        clk.t += 0.2
+        st.handle(tpv(f"T{k}"))
+        st.handle({"class": "SKY", "uSat": 12, "hdop": 0.7})
+        assert st.current().sats_used == 19
+    assert st.current().hdop == 0.7
+    # without epoch times the list is applied 0.5 s after it came
+    st.handle(_sky_list(5, 5))
+    assert st.current().sats_used == 19
+    clk.t += 0.6
+    assert st.current().sats_used == 5
+    clk.t += 6  # no lists any more (GSV off): the short SKY count is used again
+    st.handle({"class": "SKY", "uSat": 11})
+    assert st.current().sats_used == 11

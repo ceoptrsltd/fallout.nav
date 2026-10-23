@@ -115,6 +115,13 @@ class GpsState:
 
     STALE_S = 3.0
     NO_DATA_S = 5.0
+    # Число спутников — только из SKY со списком (цикл GSV, у нас раз в 2 с): в коротких SKY (по GSA) gpsd даёт
+    # uSat не больше 12 — столько помещается в одну GSA, а с NMEA 4.10 их несколько, по созвездиям. Короткие
+    # берём, только если списка давно не было (GSV выключены).
+    SKY_LIST_FRESH_S = 5.0
+    # SKY со списком gpsd шлёт после каждого созвездия (25 спутников, через 20 мс — все 38), и перед каждым
+    # повторяет TPV той же эпохи: применяем последний список, когда пришёл TPV новой эпохи (или через 0.5 с)
+    SKY_CYCLE_S = 0.5
 
     def __init__(self, clock: Callable[[], float] = time.monotonic):
         self.clock = clock
@@ -126,28 +133,52 @@ class GpsState:
         self.version: str | None = None
         self.tpv_count = 0
         self.since = clock()  # момент (пере)подключения к gpsd
+        self._sky_pending: dict | None = None  # SKY со списком, возможно ещё не последний в этом цикле GSV
+        self._sky_epoch: str | None = None  # время эпохи (TPV.time), к которой он относится
+        self._sky_list_at: float | None = None
+        self._tpv_time: str | None = None
 
     def on_connect(self) -> None:
         self.since = self.clock()
         self.devices = None
 
+    def _commit_sky(self, *, new_epoch: str | None = None, tpv: bool = False) -> None:
+        sky = self._sky_pending
+        if sky is None:
+            return
+        done = (tpv and (new_epoch is None or new_epoch != self._sky_epoch)) or (
+            self._sky_list_at is not None and self.clock() - self._sky_list_at > self.SKY_CYCLE_S)
+        if not done:
+            return
+        self._sky_pending = None
+        self.satellites = sky["satellites"]
+        upd = {k: sky[src] for k, src in (("sats_used", "used"), ("sats_visible", "visible")) if sky[src] is not None}
+        if upd:
+            self.fix = self.fix.model_copy(update=upd)
+
     def handle(self, msg: dict) -> None:
         cls = msg.get("class")
         if cls == "TPV":
+            t = msg.get("time") if isinstance(msg.get("time"), str) else None
+            self._commit_sky(new_epoch=t, tpv=True)
+            self._tpv_time = t
             self.fix = parse_tpv(msg, self.fix)
             self.last_tpv = self.clock()
             self.tpv_count += 1
         elif cls == "SKY":
             sky = parse_sky(msg)
-            if sky["satellites"] is not None:
-                self.satellites = sky["satellites"]
             upd: dict[str, Any] = {}
             if sky["hdop"] is not None:
                 upd["hdop"] = sky["hdop"]
-            if sky["used"] is not None:
-                upd["sats_used"] = sky["used"]
-            if sky["visible"] is not None:
-                upd["sats_visible"] = sky["visible"]
+            if sky["satellites"] is not None:
+                self._sky_pending = sky
+                self._sky_epoch = msg.get("time") if isinstance(msg.get("time"), str) else self._tpv_time
+                self._sky_list_at = self.clock()
+            elif self._sky_list_at is None or self.clock() - self._sky_list_at > self.SKY_LIST_FRESH_S:
+                if sky["used"] is not None:
+                    upd["sats_used"] = sky["used"]
+                if sky["visible"] is not None:
+                    upd["sats_visible"] = sky["visible"]
             if upd:
                 self.fix = self.fix.model_copy(update=upd)
         elif cls == "DEVICES":
@@ -168,6 +199,7 @@ class GpsState:
 
     def current(self) -> GpsFix:
         """Фикс с актуальным age_s; если TPV давно не было — fix='none'."""
+        self._commit_sky()
         if self.last_tpv is None:
             return self.fix.model_copy(update={"age_s": None})
         age = self.clock() - self.last_tpv

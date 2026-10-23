@@ -60,7 +60,7 @@ function state(now, radio, o = {}) {
   const down = !!o.down;
   return {
     now,
-    telemetry: { gps: { fix: down ? "none" : "3d", sats_used: down ? 0 : 11 }, heading: { deg: down ? null : 40, source: down ? "none" : "gps" },
+    telemetry: { gps: { fix: down ? "none" : "3d", sats_used: down ? 0 : 11, sats_visible: down ? 3 : 19 }, heading: { deg: down ? null : 40, source: down ? "none" : "gps" },
                  display: { mode: o.camera ? "camera" : "map", orientation: "heading_up" }, camera: { recording: !down },
                  system: { internet: !down }, radio, errors: [] },
     settings: { display: { ...DEFAULT_SETTINGS.display, compass_style: "v1" } },

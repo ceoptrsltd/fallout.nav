@@ -1,9 +1,11 @@
 // Индикаторы (GPS, REC, сеть) и крупные предупреждения (NO GPS, NO LINK).
 
-import { C, blinkOn, blit, chamferPath, fontLabel, fontStencil, hazardSprite, outlinedText, plateSprite, textWidth } from "./theme.js";
+import { C, blinkOn, blit, chamferPath, fontLabel, fontNum, fontStencil, hazardSprite, outlinedText, plateSprite, textWidth } from "./theme.js";
 
 const ROW_H = 36;
 const FONT = () => fontLabel(25);
+const SATS_FONT = () => fontNum(27, 600); // «3D 39/20» — узкие цифры, как на спидометре: строка не шире прежней
+const SATS_WIDEST = "3D 88/88";
 
 // ── пиктограммы (рисуются линиями ≥ 2 px, со светлой заливкой) ──────────
 
@@ -61,8 +63,16 @@ function iconAntennaOff(ctx, x, y) {
   ctx.restore();
 }
 
-function rowWidth(ctx, text, iconW) {
-  return 14 + iconW + (iconW ? 8 : 0) + Math.ceil(textWidth(ctx, FONT(), text)) + 14;
+function rowWidth(ctx, text, iconW, font = FONT()) {
+  return 14 + iconW + (iconW ? 8 : 0) + Math.ceil(textWidth(ctx, font, text)) + 14;
+}
+
+/** Строка GPS: тип фикса, спутники видимые / используемые («3D 39/20»). */
+export function satsText(gps) {
+  const g = gps ?? {};
+  const fix = g.fix === "3d" ? "3D" : g.fix === "2d" ? "2D" : "—";
+  const n = (v) => (Number.isFinite(v) ? v : 0);
+  return `${fix} ${n(g.sats_visible)}/${n(g.sats_used)}`;
 }
 
 /**
@@ -70,16 +80,15 @@ function rowWidth(ctx, text, iconW) {
  * чтобы соседние элементы (плашка радио) не «дышали» при смене числа спутников.
  */
 export function indicatorsWidth(ctx) {
-  return Math.max(rowWidth(ctx, "3D 88", 26), rowWidth(ctx, "— 88", 26), rowWidth(ctx, "REC", 22));
+  return Math.max(rowWidth(ctx, SATS_WIDEST, 26, SATS_FONT()), rowWidth(ctx, "REC", 22));
 }
 
 /** Высота строк индикаторов и зазор между ними. */
 export const INDICATOR_ROW = { h: ROW_H, gap: 6 };
 
 /** Строка-индикатор справа: (xr — правый край, y — верх). Возвращает ширину. */
-function row(ctx, xr, y, text, iconW, drawIcon, { dim = false } = {}) {
-  const font = FONT();
-  const w = rowWidth(ctx, text, iconW);
+function row(ctx, xr, y, text, iconW, drawIcon, { dim = false, font = FONT(), minW = 0 } = {}) {
+  const w = Math.max(minW, rowWidth(ctx, text, iconW, font));
   const x = Math.round(xr - w);
   blit(ctx, plateSprite(w, ROW_H, { chamfer: 6, rivets: false }), x, y);
   if (drawIcon) drawIcon(x + 14 + iconW / 2, y + ROW_H / 2);
@@ -99,13 +108,11 @@ export function drawIndicators(ctx, state, safe) {
   const xr = safe.x + safe.w;
   let y = safe.y + safe.h - ROW_H;
 
-  // GPS: тип фикса + число спутников
+  // GPS: тип фикса, видимые / используемые спутники; ширина постоянная — не «дышит» от числа спутников
   const gps = t.gps ?? {};
-  const fix = gps.fix === "3d" ? "3D" : gps.fix === "2d" ? "2D" : "—";
-  const sats = Number.isFinite(gps.sats_used) ? gps.sats_used : 0;
   const hasFix = v.hasFix !== false && gps.fix !== "none";
-  row(ctx, xr, y, `${fix} ${String(sats).padStart(2, " ")}`, 26, (x, yy) => iconSat(ctx, x, yy, hasFix), {
-    dim: !hasFix,
+  row(ctx, xr, y, satsText(gps), 26, (x, yy) => iconSat(ctx, x, yy, hasFix), {
+    dim: !hasFix, font: SATS_FONT(), minW: rowWidth(ctx, SATS_WIDEST, 26, SATS_FONT()),
   });
   y -= ROW_H + 6;
 
