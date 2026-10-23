@@ -360,7 +360,7 @@ backup_once "$CFG"
 TMP="$(mktemp)"
 # every fnav block, including ones with text after the marker (the stage-0 check block)
 sed -E '/^# >>> fnav/,/^# <<< fnav/d' "$CFG" > "$TMP"
-KEYS='enable_uart|camera_auto_detect|display_auto_detect|disable_fw_kms_setup|gpu_mem|hdmi_force_hotplug|hdmi_group|hdmi_mode|enable_tvout'
+KEYS='enable_uart|camera_auto_detect|display_auto_detect|disable_fw_kms_setup|gpu_mem|hdmi_force_hotplug|hdmi_group|hdmi_mode|enable_tvout|otg_mode'
 sed -E -i \
     -e "s/^[[:space:]]*((${KEYS})(:[0-9])?[[:space:]]*=.*)$/# fnav-disabled: \1/" \
     -e "s/^[[:space:]]*(dtparam=(i2c_arm|audio)([=,[:space:]].*)?)$/# fnav-disabled: \1/" \

@@ -51,9 +51,9 @@ dtparam=audio=off
 # from cmdline.txt.fnav.
 
 # --- USB ---------------------------------------------------------------------------------
-# On CM4 the USB host is already enabled by "[cm4] otg_mode=1" from the stock Raspberry Pi OS
-# config.txt (xHCI controller), so the USB-A ports of the CM4-NANO-B work without extra lines.
-# The Waveshare wiki suggests dwc2 in host mode instead. It is MUTUALLY EXCLUSIVE with otg_mode=1:
-# enable it only if USB-A does not work, and comment out "otg_mode=1" in the [cm4] section at the same time.
-#dtoverlay=dwc2,dr_mode=host
+# The DWC2 controller in host mode (as the Waveshare wiki suggests for the CM4-NANO-B), not the internal
+# xHCI of "[cm4] otg_mode=1" from the stock config.txt: with some HID devices (a 6-key macro pad with a knob,
+# USB 1189:8890) that xHCI dies ~10 s after enumeration ("HC died") and all USB is gone until a reboot.
+# The two are MUTUALLY EXCLUSIVE: install.sh comments out otg_mode=1 ("# fnav-disabled: ").
+dtoverlay=dwc2,dr_mode=host
 # <<< fnav
