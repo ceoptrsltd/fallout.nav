@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import re
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -463,6 +464,7 @@ class RadioService:
         self._watchdog: asyncio.Task | None = None
         self._vol_save: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        self._ring: tuple[str | None, float, list[RadioStation]] | None = None  # (жанр, когда, станции) для step()
         player.on_event(self._on_player)
 
     # ── жизненный цикл ──
@@ -538,6 +540,29 @@ class RadioService:
         if self.station is None:
             raise RadioError(409, "No station to resume")
         return await self.play(self.station, self.genre)
+
+    async def step(self, delta: int) -> RadioState:
+        """Соседняя станция (клавиши мини-клавиатуры): по списку жанра, из которого выбрана текущая,
+        иначе — по недавним. Список запоминается на 10 минут: порядок не скачет от нажатия к нажатию."""
+        def key(s: RadioStation) -> str:
+            return s.uuid or s.url
+
+        cur = self.station
+        ring = self._ring
+        if ring is None or ring[0] != self.genre or time.monotonic() - ring[1] > 600 or (
+                cur and all(key(s) != key(cur) for s in ring[2])):
+            lst: list[RadioStation] = []
+            if self.genre:
+                lst = (await self.directory.by_tag(self.genre)) or []
+            if not lst:
+                lst = list(self.recent)
+            ring = self._ring = (self.genre, time.monotonic(), lst)
+        lst = ring[2]
+        if not lst:
+            raise RadioError(409, "No stations to switch to")
+        idx = next((i for i, s in enumerate(lst) if cur is not None and key(s) == key(cur)), -1)
+        nxt = lst[(idx + delta) % len(lst)] if idx >= 0 else lst[0]
+        return await self.play(nxt, self.genre)
 
     async def stop_playback(self) -> RadioState:
         self.want_play = False

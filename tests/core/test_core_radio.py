@@ -392,3 +392,25 @@ async def test_bluez_without_adapter_does_not_touch_dbus(tmp_path, monkeypatch):
     await bt.start(background=False)
     st = bt.state()
     assert st.available is False and st.error == "No Bluetooth adapter"
+
+
+async def test_step_through_genre_and_recent(tmp_path):
+    svc = _svc(tmp_path, CtlPlayer())
+    await svc.start()
+    a, b, c = (RadioStation(uuid=u, name=u.upper(), url=f"http://x/{u}") for u in ("a", "b", "c"))
+
+    async def by_tag(tag):
+        return [a, b, c] if tag == "jazz" else None
+
+    svc.directory.by_tag = by_tag
+    await svc.play(a, "jazz")
+    assert (await svc.step(1)).station.uuid == "b"
+    assert (await svc.step(1)).station.uuid == "c"
+    assert (await svc.step(1)).station.uuid == "a"  # по кругу
+    assert (await svc.step(-1)).station.uuid == "c"
+    # станция не из жанра (поиск, популярное) — шаги по недавним, порядок не скачет от нажатия к нажатию
+    svc.genre = None
+    svc._ring = None
+    st = await svc.step(1)
+    assert st.station.uuid == "a"  # недавние: c, a, b — следом за c идёт a
+    assert (await svc.step(1)).station.uuid == "b"

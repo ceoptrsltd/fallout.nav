@@ -1,0 +1,19 @@
+#!/bin/bash
+# Program the 6-key macro pad with a knob (USB 1189:8890) with pi/keypad/fnav-keypad.yaml (F13-F21 + Enter,
+# see fnav/core/keypad.py). Builds ch57x-keyboard-tool 1.7.0 once (1.8.0 needs a newer Rust than Debian's
+# 1.85) into /opt/fnav/tools. Run as root with the pad plugged in.
+set -euo pipefail
+TOOL=/opt/fnav/tools/ch57x-keyboard-tool
+CFG="${1:-/opt/fnav/app/pi/keypad/fnav-keypad.yaml}"
+if [ ! -x "$TOOL" ]; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends cargo rustc libusb-1.0-0-dev pkg-config >/dev/null
+    ROOT="$(mktemp -d /var/tmp/ch57x.XXXXXX)"
+    trap 'rm -rf "$ROOT"' EXIT
+    nice -n 10 cargo install --quiet --root "$ROOT" ch57x-keyboard-tool@1.7.0 -j 3
+    install -d -m 0755 /opt/fnav/tools
+    install -m 0755 "$ROOT/bin/ch57x-keyboard-tool" "$TOOL"
+fi
+lsusb -d 1189:8890 >/dev/null || { echo "the macro pad (1189:8890) is not plugged in" >&2; exit 1; }
+"$TOOL" validate "$CFG"
+"$TOOL" upload "$CFG"
+echo "macro pad programmed from $CFG"

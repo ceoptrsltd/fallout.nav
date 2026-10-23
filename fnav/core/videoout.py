@@ -20,6 +20,7 @@ log = logging.getLogger("fnav.core.videoout")
 IS_LINUX = sys.platform.startswith("linux")
 WAYLAND_DIR = os.environ.get("FNAV_WAYLAND_DIR", "/run/fnav-display")
 WAYLAND_DISPLAY = os.environ.get("FNAV_WAYLAND_DISPLAY", "wayland-0")
+GAMES_WAYLAND_DIR = os.environ.get("FNAV_GAMES_WAYLAND_DIR", "/run/fnav-games")
 
 
 class VideoOutputError(RuntimeError):
@@ -33,7 +34,10 @@ class VideoOutput:
         self._lock = asyncio.Lock()
 
     async def _randr(self, *args: str) -> str:
-        env_args = [f"XDG_RUNTIME_DIR={WAYLAND_DIR}", f"WAYLAND_DISPLAY={WAYLAND_DISPLAY}"]
+        # экран навигации или, пока идёт игра, её оболочка (fnav-games): у остановленной службы каталога нет
+        wdir = next((d for d in (WAYLAND_DIR, GAMES_WAYLAND_DIR)
+                     if os.path.exists(os.path.join(d, WAYLAND_DISPLAY))), WAYLAND_DIR)
+        env_args = [f"XDG_RUNTIME_DIR={wdir}", f"WAYLAND_DISPLAY={WAYLAND_DISPLAY}"]
         rc, out, err = await run("env", *env_args, "wlr-randr", *args, timeout=8)
         if rc != 0:
             raise VideoOutputError(f"wlr-randr: {(err or out).strip()[:200] or rc}")

@@ -49,7 +49,9 @@ for (const c of [mapCanvas, hudCanvas]) {
 }
 const mapCtx = mapCanvas.getContext("2d", { alpha: false });
 // меню игр (геймпад) — только на самом устройстве
-const gamesMenu = !DEMO && !REMOTE && !PREVIEW ? new GamesMenu(root, appUrl) : null;
+const gamesMenu = !DEMO && !REMOTE && !PREVIEW
+  ? new GamesMenu(root, appUrl, (open) => { if (link) link.send({ type: "ui", games_menu: open }); })
+  : null;
 const hudCtx = hudCanvas.getContext("2d");
 
 let mirrorX = false;   // settings.display.mirror_x (set in applySettings)

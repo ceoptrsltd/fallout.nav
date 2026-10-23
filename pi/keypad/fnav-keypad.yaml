@@ -1,0 +1,20 @@
+# fallout.nav: the 6-key macro pad with a knob (USB 1189:8890, CH57x), programmed with
+# ch57x-keyboard-tool (https://github.com/kriomant/ch57x-keyboard-tool):
+#   sudo ch57x-keyboard-tool upload pi/keypad/fnav-keypad.yaml
+# F13-F21 are keys nothing else uses; fnav-core maps them to actions (fnav/core/keypad.py).
+# Keys are numbered with the knob on the right:  [1 2 3]
+#                                                [4 5 6]  (knob)
+model: ch57x-2
+orientation: normal
+rows: 2
+columns: 3
+knobs: 1
+layers:
+  - buttons:
+      - ["f13", "f14", "f15"]
+      - ["f16", "f17", "f18"]
+    knobs:
+      # turn: volume; press: confirm (Enter - in the games menu, RetroArch and the games themselves)
+      - ccw: "f19"
+        press: "enter"
+        cw: "f21"

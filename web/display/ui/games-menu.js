@@ -1,6 +1,8 @@
 // Меню игр на экране машины: геймпад (Gamepad API Chromium), долгое нажатие PS — открыть,
 // крестовина/стик — выбрать, ✕ — играть, ○ / PS — закрыть. Запуск — POST api/games/launch: fnav-core
 // останавливает этот экран и запускает RetroArch (служба fnav-games); после выхода из игры экран вернётся сам.
+// Мини-клавиатура (fnav/core/keypad.py): клавиша 6 (F18) — открыть/закрыть, крутилка (F19/F21) — листать,
+// нажатие крутилки (Enter) — играть. Пока меню открыто, экран сообщает это ядру — крутилка не крутит громкость.
 // Только на самом устройстве: не в демо и не в превью через сервер.
 
 const HOLD_OPEN_S = 0.8; // столько держать PS, чтобы открыть меню
@@ -31,8 +33,10 @@ export class GamesMenu {
    * @param {HTMLElement} root — #root экрана (768×576, с PAL-сжатием и зеркалом)
    * @param {(path: string) => string} url — адрес от корня приложения
    */
-  constructor(root, url) {
+  constructor(root, url, onState = null) {
     this.url = url;
+    this.onState = onState; // (open) => …  — сообщить ядру, открыто ли меню
+    this.lastSpeed = null;
     this.open = false;
     this.games = [];
     this.sel = 0;
@@ -44,10 +48,27 @@ export class GamesMenu {
     this.el.id = "games-menu";
     this.el.hidden = true;
     root.appendChild(this.el);
+    addEventListener("keydown", (e) => { if (this.key(e.key)) e.preventDefault(); });
+  }
+
+  /** Клавиши мини-клавиатуры → true, если обработано. */
+  key(k) {
+    if (k === "F18") {
+      if (this.open) this.hide();
+      else this.show(this.lastSpeed);
+      return true;
+    }
+    if (!this.open || this.busy) return false;
+    if (k === "F19") this.move(-1);
+    else if (k === "F21") this.move(1);
+    else if (k === "Enter") this.launch();
+    else return false;
+    return true;
   }
 
   /** Каждый кадр: опрос геймпадов. t — секунды, speed — м/с из телеметрии. */
   poll(t, speed) {
+    this.lastSpeed = speed;
     const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
     if (!pads.length) { this.holdSince = null; return; }
     const s = pads.map(readPad).reduce((a, c) => {
@@ -86,6 +107,7 @@ export class GamesMenu {
     this.open = true;
     this.busy = false;
     this.el.hidden = false;
+    if (this.onState) this.onState(true);
     if (Number.isFinite(speed) && speed > MAX_SPEED_MPS) {
       this.render({ message: "STOP THE VEHICLE TO PLAY", warn: true });
       setTimeout(() => this.hide(), 2500);
@@ -109,6 +131,7 @@ export class GamesMenu {
     this.open = false;
     this.busy = false;
     this.el.hidden = true;
+    if (this.onState) this.onState(false);
   }
 
   move(dir) {
@@ -146,6 +169,6 @@ export class GamesMenu {
       `<div class="gm-panel"><div class="gm-head"><span class="gm-title">GAMES</span><span class="gm-sub">HOLOTAPE LIBRARY</span></div>` +
       (message ? `<div class="gm-msg${warn ? " warn" : ""}">${esc(message)}</div>` : `<ul class="gm-list">${rows}</ul>`) +
       (this.audio === false && !message ? `<div class="gm-note">NO SPEAKER — GAMES WILL BE SILENT</div>` : "") +
-      `<div class="gm-foot"><span>✕ PLAY</span><span>○ BACK</span><span>SHARE + OPTIONS = EXIT GAME</span></div></div>`;
+      `<div class="gm-foot"><span>✕ PLAY</span><span>○ BACK</span><span>EXIT: SHARE+OPTIONS / KEY 6</span></div></div>`;
   }
 }

@@ -224,6 +224,8 @@ class GamesService:
     async def _watch(self) -> None:
         last_check = 0.0
         pads = PadWatcher()
+        if await self._is_active():  # fnav-core перезапустили посреди игры — игра идёт дальше
+            self.running = True
         try:
             while True:
                 await asyncio.sleep(0.25)

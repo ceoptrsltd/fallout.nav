@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from fnav.core.bluetooth import create_bluetooth
 from fnav.core.camera import CAMERA_URL, WHEP_URL, CameraService, CameraUnavailable
 from fnav.core.config import SettingsStore
 from fnav.core.games import GamesService
+from fnav.core.keypad import KeypadService
 from fnav.core.navlogic import NavLogic
 from fnav.core.radio import MOCK_STATION, Player, create_radio
 from fnav.core.recordings import Recordings
@@ -133,6 +135,17 @@ class Core:
                                   self._resume_radio_after_game, lambda lvl, text: self.ws.toast(text, lvl),
                                   mock=opts.mock, prepare_audio=self._audio_for_game,
                                   audio_ok=lambda: bool((o := self.bt.output()) and o.connected))
+        self.keypad = KeypadService({
+            "station_prev": lambda: self.radio.step(-1),
+            "station_next": lambda: self.radio.step(1),
+            "view_toggle": self.toggle_view,
+            "video_toggle": self.toggle_video_output,
+            "protect": self.protect_with_feedback,
+            "games": self._keypad_games,
+            "volume_down": lambda: self._keypad_volume(-1),
+            "volume_up": lambda: self._keypad_volume(1),
+        }, game_running=lambda: self.games.running)
+        self.ws.on_ui(lambda msg: self.keypad.set_games_menu(bool(msg.get("games_menu"))))
         self.hub: SensorHub = self._make_hub(s)
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
         self._tasks: list[asyncio.Task] = []
@@ -192,13 +205,14 @@ class Core:
             ]
             self.tracking.start(lambda: self.hub.snapshot().gps, lambda: self.store.get().tracking)
             self.games.start()
+            self.keypad.start()
         self.started = True
         log.info("fnav-core started (mock=%s)", self.mock)
 
     async def stop(self) -> None:
         await cancel_tasks(*self._tasks)
         self._tasks.clear()
-        for closer in (self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop, self.hub.stop, self.camera.stop,
+        for closer in (self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop, self.hub.stop, self.camera.stop,
                        self.tiles.stop):
             try:
                 await closer()
@@ -431,6 +445,10 @@ class Core:
             return await self.toggle_video_output()
         if event != "long_press":
             return None
+        return await self.protect_with_feedback()
+
+    async def protect_with_feedback(self) -> dict | None:
+        """Защитить текущую запись + звук/светодиод (кнопка на GPS-модуле, клавиша 5 мини-клавиатуры)."""
         try:
             res = await self.protect_current()
             self._beep("short")
@@ -441,6 +459,34 @@ class Core:
             self._flash_led("blink_fast")
             self.ws.toast(f"Failed to protect recording: {e}", "error")
             return None
+
+    # ── мини-клавиатура ──
+    async def toggle_view(self) -> None:
+        """Карта ↔ камера: из авто — в противоположный текущему режим; из ручного — обратно в авто."""
+        ds = self.store.get().display
+        if ds.force_mode != "auto":
+            mode = "auto"
+        else:
+            mode = "map" if self.display_state.mode == "camera" else "camera"
+        await self.store.patch({"display": {"force_mode": mode}})
+
+    async def _keypad_games(self) -> None:
+        if self.games.running:  # клавиша 6 в игре — выход; вне игры меню открывает сам экран
+            await self.games.stop("keypad")
+
+    async def _keypad_volume(self, direction: int) -> None:
+        if not self.games.running:
+            await self.radio.set_volume(self.radio.volume + 5 * direction)
+            return
+        # в игре — громкость самой колонки (A2DP, 0…127): игры свою громкость наружу не дают
+        _rc, pcms, _ = await run("bluealsa-cli", "list-pcms", timeout=3)
+        pcm = next((ln.strip() for ln in pcms.splitlines() if "a2dpsrc" in ln), None)
+        if not pcm:
+            return
+        _rc, out, _ = await run("bluealsa-cli", "volume", pcm, timeout=3)
+        nums = [int(x) for x in re.findall(r"(\d{1,3})", out)]
+        cur = nums[0] if nums else 100
+        await run("bluealsa-cli", "volume", pcm, str(max(0, min(127, cur + 10 * direction))), timeout=3)
 
     async def toggle_video_output(self, on: bool | None = None) -> dict | None:
         try:
