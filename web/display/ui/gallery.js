@@ -284,7 +284,7 @@ const COND = {
   nohead: { headingDeg: null, headingSource: "none" },
   offline: { internet: false },
   norec: { recording: false },
-  all: { hasFix: false, fix: "none", sats: 0, connected: false, internet: false, recording: false, headingDeg: null, headingSource: "none", speedMps: null },
+  all: { hasFix: false, fix: "none", sats: 0, connected: false, internet: false, recording: false, headingDeg: null, headingSource: "none", speedMps: null, timeSynced: false },
 };
 
 const ui = { units: "kmh", cond: "ok", bg: "sat", paused: false, motion: "turns" };
@@ -312,7 +312,7 @@ function makeState(cfg, now) {
       heading: { deg: headingDeg, source: headingSource },
       display: { mode: cfg.mode ?? "map", reason: "speed", target_zoom: 18, orientation },
       camera: { state: "recording", recording: o.recording ?? true },
-      system: { internet: o.internet ?? true },
+      system: { internet: o.internet ?? true, time_synced: o.timeSynced ?? true },
       radio: typeof cfg.radio === "function" ? cfg.radio(now) : cfg.radio ?? null,
       errors: [],
     },
@@ -534,7 +534,7 @@ async function main() {
 
   const sh = document.getElementById("states");
   addView(sh, { style: "v1", orient: "heading_up", cond: "nofix" }, "<b>NO GPS</b> — car blinks, heading from magnetometer (MAG)");
-  addView(sh, { style: "v2", orient: "north_up", cond: "all" }, "<b>Everything down</b>: no link, GPS, heading, internet, recording");
+  addView(sh, { style: "v2", orient: "north_up", cond: "all" }, "<b>Everything down</b>: no link, GPS, heading, internet, recording; clock not synced (dim)");
   addView(sh, { style: "v3", orient: "heading_up", cond: "nohead", units: "mps" }, "<b>Heading unknown</b>, speed in m/s");
   addView(sh, { style: "v1", orient: "heading_up", cond: "ok", bg: "cam", mode: "camera" }, "<b>Camera mode</b> — HUD over video");
 

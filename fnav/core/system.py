@@ -185,6 +185,7 @@ class SystemService:
             st.setdefault("wifi_signal_pct", 72)
             st.setdefault("time_synced", True)
         st["internet"] = internet
+        st["utc_offset_min"] = round((time.localtime().tm_gmtoff or 0) / 60)
         self.status = SystemStatus(**st)
         return self.status
 

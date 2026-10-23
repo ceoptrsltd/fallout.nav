@@ -45,6 +45,7 @@ state = {
     connected: true,              // есть ли связь с fnav-core
     internet: true | null,
     recording: true,
+    wallMs: 1729440000123,        // Date.now() — для часов (ui/clock.js); время машины = UTC + telemetry.system.utc_offset_min
   },
   canvas: { w: 768, h: 576, safe: { x: 38.4, y: 28.8, w: 691.2, h: 518.4 }, pxPerMm: 8.35 },
 }

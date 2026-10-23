@@ -1,6 +1,7 @@
 // HUD fallout.nav — единая точка входа для рендера экрана (агент B).
 // Контракт: docs/contracts/display.md («API компонентов C»).
 
+import { drawClock } from "./clock.js";
 import { compassStyles, drawCompass } from "./compass.js";
 import { drawRadio } from "./radio.js";
 import { SPEED_BOX, drawSpeed } from "./speed.js";
@@ -54,9 +55,10 @@ export function loadUi() {
 }
 
 /**
- * Весь HUD поверх карты/видео: компас, скорость, индикаторы, предупреждения, радио.
+ * Весь HUD поверх карты/видео: часы, компас, скорость, индикаторы, предупреждения, радио.
  * Раскладка (768×576, heading_up — машина в нижней трети по центру):
- *   компас — вверху (v1/v3 справа, v2 по центру); предупреждения — колонкой слева;
+ *   часы — слева вверху (display.show_clock); компас — вверху (v1/v3 справа, v2 по центру);
+ *   предупреждения — колонкой слева под часами;
  *   скорость — слева внизу; индикаторы — справа внизу; радио (когда играет) — внизу между ними, под машиной.
  *   Центральная полоса над машиной (дорога впереди) свободна.
  * view.attribution — внизу по центру подпись источников карты (демо/удалённо): радио поднимается над ней.
@@ -70,10 +72,14 @@ export function drawHud(ctx, state) {
 
   const style = setting(state, "display.compass_style", "v1");
   const cr = drawCompass(ctx, state, safe, style);
+  const clock = setting(state, "display.show_clock", true) ? drawClock(ctx, state, safe, cr) : null;
 
-  // предупреждения слева; если компас занимает левый верх — ниже него
+  // предупреждения слева; если часы или компас занимают левый верх — ниже них
   const colRight = safe.x + 230;
-  const yTop = cr && cr.x < colRight && cr.y < safe.y + 200 ? cr.y + cr.h + 14 : safe.y + 3;
+  let yTop = safe.y + 3;
+  for (const r of [cr, clock]) {
+    if (r && r.x < colRight && r.y < safe.y + 200) yTop = Math.max(yTop, r.y + r.h + 10);
+  }
   drawWarnings(ctx, state, safe, yTop);
 
   drawSpeed(ctx, state, Math.round(safe.x), Math.round(safe.y + safe.h - SPEED_BOX.h));

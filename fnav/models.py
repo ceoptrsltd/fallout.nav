@@ -58,6 +58,7 @@ class DisplaySettings(_Model):
     trail_seconds: int = Field(60, ge=0, le=600)
     force_mode: Literal["auto", "map", "camera"] = "auto"
     radio_panel: bool = True  # плашка радио (станция, трек) на экране, пока играет радио
+    show_clock: bool = True  # часы, день недели и дата в левом верхнем углу экрана
 
 
 class ZoomStep(_Model):
@@ -359,6 +360,7 @@ class SystemStatus(_Model):
     wifi_signal_pct: int | None = None
     internet: bool | None = None  # доступны ли тайлы Esri
     time_synced: bool | None = None
+    utc_offset_min: int | None = None  # часовой пояс устройства: часы на экране показывают его время
 
 
 # ───────────────────────────── Радио и Bluetooth ─────────────────────────────

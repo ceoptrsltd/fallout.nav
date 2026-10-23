@@ -346,6 +346,7 @@ function frame(tms) {
       connected,
       internet: tel.system?.internet ?? null,
       recording: !!tel.camera?.recording,
+      wallMs: Date.now(), // часы на экране (ui/clock.js)
       attribution: DIRECT_TILES && mode === "map", // подпись Esri внизу по центру — радио над ней
     },
     canvas: {
