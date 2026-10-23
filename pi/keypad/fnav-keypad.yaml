@@ -14,7 +14,7 @@ layers:
       - ["f13", "f14", "f15"]
       - ["f16", "f17", "f18"]
     knobs:
-      # turn: volume; press: confirm (Enter - in RetroArch and the games themselves)
+      # turn: volume; press (Enter): radio start / stop - in a game it is just Enter for the game
       - ccw: "f19"
         press: "enter"
         cw: "f21"

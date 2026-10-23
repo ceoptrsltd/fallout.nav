@@ -142,6 +142,7 @@ class Core:
             "video_toggle": self.toggle_video_output,
             "protect": self.protect_with_feedback,
             "shuffle": self._keypad_shuffle,
+            "radio_toggle": self._keypad_radio_toggle,
             "volume_down": lambda: self._keypad_volume(-1),
             "volume_up": lambda: self._keypad_volume(1),
         })
@@ -475,6 +476,15 @@ class Core:
             await self.games.stop("keypad")
             return
         await self.store.patch({"radio": {"shuffle": not self.store.get().radio.shuffle}})
+
+    async def _keypad_radio_toggle(self) -> None:
+        """Нажатие крутилки: радио играет (или ждёт колонку / ищет сигнал) — стоп, иначе — последняя станция."""
+        if self.games.running:  # в игре Enter нужен самой игре, радио и так на паузе
+            return
+        if self.radio.want_play:
+            await self.radio.stop_playback()
+        else:
+            await self.radio.resume()
 
     async def _keypad_volume(self, direction: int) -> None:
         if not self.games.running:

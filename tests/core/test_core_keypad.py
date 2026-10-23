@@ -5,6 +5,7 @@ from __future__ import annotations
 from core_helpers import running_app
 
 from fnav.core import keypad as kp
+from fnav.models import RadioStation
 
 
 def ev(code: int, value: int) -> bytes:
@@ -29,8 +30,8 @@ async def test_dispatch():
     for code in sorted(kp.ACTIONS):
         for act in svc.decode(ev(code, 1)):
             await svc.dispatch(act)
-    assert calls == ["station_prev", "station_next", "view_toggle", "video_toggle", "protect", "shuffle",
-                     "volume_down", "volume_up"]
+    assert calls == ["radio_toggle", "station_prev", "station_next", "view_toggle", "video_toggle", "protect",
+                     "shuffle", "volume_down", "volume_up"]
     await kp.KeypadService({}).dispatch("shuffle")  # no handler — nothing happens
 
 
@@ -49,3 +50,13 @@ async def test_key6_toggles_shuffle(data_dir):
         assert core.store.get().radio.shuffle is True and core.radio.status().shuffle is True
         await core.keypad.dispatch("shuffle")
         assert core.store.get().radio.shuffle is False
+
+
+async def test_knob_press_starts_and_stops_the_radio(data_dir):
+    async with running_app() as c:
+        core = c.app.state.core
+        await core.radio.play(RadioStation(uuid="a", name="A", url="http://x/a"))
+        await core.keypad.dispatch("radio_toggle")
+        assert core.radio.want_play is False and core.radio.state().state == "stopped"
+        await core.keypad.dispatch("radio_toggle")
+        assert core.radio.want_play is True and core.radio.station.uuid == "a"
