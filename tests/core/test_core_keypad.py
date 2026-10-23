@@ -1,6 +1,8 @@
-"""Мини-клавиатура: коды F13–F21 → действия; пока открыто меню игр, крутилку и клавишу 6 забирает экран."""
+"""Мини-клавиатура: коды F13–F21 → действия."""
 
 from __future__ import annotations
+
+from core_helpers import running_app
 
 from fnav.core import keypad as kp
 
@@ -15,7 +17,7 @@ def test_decode_presses_only():
     assert svc.decode(data) == ["station_prev", "volume_up"]  # автоповтор, отпускание и чужие клавиши — нет
 
 
-async def test_dispatch_and_menu_guard():
+async def test_dispatch():
     calls: list[str] = []
 
     def h(name):
@@ -24,22 +26,12 @@ async def test_dispatch_and_menu_guard():
         return fn
 
     svc = kp.KeypadService({a: h(a) for a in kp.ACTIONS.values()})
-    await svc.dispatch("volume_up")
-    await svc.dispatch("protect")
-    svc.set_games_menu(True)
-    for a in ("volume_down", "volume_up", "games", "video_toggle"):
-        await svc.dispatch(a)
-    svc.set_games_menu(False)
-    await svc.dispatch("games")
-    assert calls == ["volume_up", "protect", "video_toggle", "games"]
-    # из меню запустили игру: экран закрылся молча — меню больше не считается открытым
-    running = {"v": False}
-    svc2 = kp.KeypadService({"games": h("exit")}, game_running=lambda: running["v"])
-    svc2.set_games_menu(True)
-    await svc2.dispatch("games")
-    running["v"] = True
-    await svc2.dispatch("games")
-    assert calls[-1] == "exit" and calls.count("exit") == 1
+    for code in sorted(kp.ACTIONS):
+        for act in svc.decode(ev(code, 1)):
+            await svc.dispatch(act)
+    assert calls == ["station_prev", "station_next", "view_toggle", "video_toggle", "protect", "shuffle",
+                     "volume_down", "volume_up"]
+    await kp.KeypadService({}).dispatch("shuffle")  # no handler — nothing happens
 
 
 async def test_handler_error_does_not_raise():
@@ -47,3 +39,13 @@ async def test_handler_error_does_not_raise():
         raise RuntimeError("x")
 
     await kp.KeypadService({"protect": boom}).dispatch("protect")
+
+
+async def test_key6_toggles_shuffle(data_dir):
+    async with running_app() as c:
+        core = c.app.state.core
+        assert core.store.get().radio.shuffle is False
+        await core.keypad.dispatch("shuffle")
+        assert core.store.get().radio.shuffle is True and core.radio.status().shuffle is True
+        await core.keypad.dispatch("shuffle")
+        assert core.store.get().radio.shuffle is False

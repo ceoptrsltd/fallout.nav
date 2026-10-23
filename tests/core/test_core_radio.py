@@ -414,3 +414,31 @@ async def test_step_through_genre_and_recent(tmp_path):
     st = await svc.step(1)
     assert st.station.uuid == "a"  # недавние: c, a, b — следом за c идёт a
     assert (await svc.step(1)).station.uuid == "b"
+
+
+async def test_step_shuffle(tmp_path):
+    settings = RadioSettings(shuffle=True)
+    svc = _svc(tmp_path, CtlPlayer(), settings)
+    await svc.start()
+    stations = [RadioStation(uuid=str(i), name=f"S{i}", url=f"http://x/{i}") for i in range(8)]
+
+    async def by_tag(tag):
+        return list(stations)
+
+    svc.directory.by_tag = by_tag
+    await svc.play(stations[0], "jazz")
+    assert svc.status().shuffle is True
+    path = [svc.station.uuid]
+    for _ in range(4):
+        path.append((await svc.step(1)).station.uuid)
+    # forward: never the current one, and not one of the recently heard (half of the list)
+    assert len(set(path)) == len(path)
+    # back: retraces the shuffle path, then random again once the history is used up
+    for want in reversed(path[:-1]):
+        assert (await svc.step(-1)).station.uuid == want
+    assert (await svc.step(-1)).station.uuid != path[0]
+    # shuffle off: in list order again
+    settings.shuffle = False
+    cur = int(svc.station.uuid)
+    assert (await svc.step(1)).station.uuid == str((cur + 1) % 8)
+    assert svc.status().shuffle is False

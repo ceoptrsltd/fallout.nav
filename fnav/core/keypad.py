@@ -4,12 +4,11 @@
 Клавиши читаются из evdev без захвата: экран (Chromium) и игры получают те же нажатия, но F13–F21 никак не
 используют. Раскладка:
 
-    [1 F13 станция назад] [2 F14 станция вперёд] [3 F15 карта ↔ камера]
-    [4 F16 видеовыход]    [5 F17 защитить запись] [6 F18 меню игр / выход из игры]
-    крутилка: влево F19 / вправо F21 — громкость, нажатие — Enter (подтверждение: меню игр, RetroArch, игры)
+    [1 F13 станция назад] [2 F14 станция вперёд]  [3 F15 карта ↔ камера]
+    [4 F16 видеовыход]    [5 F17 защитить запись] [6 F18 следующая станция: по порядку ↔ случайная]
+    крутилка: влево F19 / вправо F21 — громкость, нажатие — Enter (подтверждение в RetroArch и играх)
 
-Меню игр открывает и листает сам экран (keydown в киоске); пока оно открыто, крутилка листает меню,
-а не громкость (экран сообщает об этом по WebSocket: {"type": "ui", "games_menu": true}).
+Меню игр — только с геймпада (он подключается вместо этой клавиатуры).
 """
 
 from __future__ import annotations
@@ -37,13 +36,11 @@ ACTIONS: dict[int, str] = {
     KEY_F13 + 2: "view_toggle",
     KEY_F13 + 3: "video_toggle",
     KEY_F13 + 4: "protect",
-    KEY_F13 + 5: "games",
+    KEY_F13 + 5: "shuffle",
     KEY_F13 + 6: "volume_down",
     KEY_F13 + 8: "volume_up",
-    # нажатие крутилки — Enter: подтверждение там, где оно есть (меню игр на экране, игры); ядру делать нечего
+    # нажатие крутилки — Enter: подтверждение там, где оно есть (RetroArch, игры); ядру делать нечего
 }
-MENU_KEYS = {"volume_down", "volume_up", "games"}  # их забирает открытое меню игр
-MENU_STALE_S = 120.0  # экран не сообщил, что меню закрыто (перезапуск киоска) — не ждать вечно
 
 
 def keypad_events(pattern: str = "/sys/class/input/event*") -> list[str]:
@@ -61,22 +58,11 @@ def keypad_events(pattern: str = "/sys/class/input/event*") -> list[str]:
 
 
 class KeypadService:
-    def __init__(self, handlers: dict[str, Callable[[], Awaitable[object]]],
-                 game_running: Callable[[], bool] = lambda: False) -> None:
+    def __init__(self, handlers: dict[str, Callable[[], Awaitable[object]]]) -> None:
         self.handlers = handlers
-        self.game_running = game_running  # из меню запустили игру — экран закрылся, не успев сказать «закрыто»
         self.fds: dict[str, int] = {}
-        self.menu_open_since: float | None = None
         self._task: asyncio.Task | None = None
         self._rescan_at = 0.0
-
-    def set_games_menu(self, open_: bool) -> None:
-        self.menu_open_since = time.monotonic() if open_ else None
-
-    def menu_open(self) -> bool:
-        if self.menu_open_since is not None and self.game_running():
-            self.menu_open_since = None
-        return self.menu_open_since is not None and time.monotonic() - self.menu_open_since < MENU_STALE_S
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop(), name="keypad")
@@ -114,8 +100,6 @@ class KeypadService:
         return acts
 
     async def dispatch(self, action: str) -> None:
-        if action in MENU_KEYS and self.menu_open():
-            return  # меню игр на экране: крутилкой листают его, клавишей 6 оно закрывается — это делает экран
         fn = self.handlers.get(action)
         if fn is None:
             return

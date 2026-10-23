@@ -45,11 +45,6 @@ class Client:
 class WsManager:
     def __init__(self) -> None:
         self.clients: set[Client] = set()
-        self._ui_listeners: list = []
-
-    def on_ui(self, cb) -> None:
-        """Сообщения {"type": "ui", …} от экрана (например, открыто ли меню игр)."""
-        self._ui_listeners.append(cb)
 
     def __len__(self) -> int:
         return len(self.clients)
@@ -131,12 +126,6 @@ class WsManager:
             client.topics -= topics
         elif t == "ping":
             client.send(json.dumps({"type": "pong"}))
-        elif t == "ui":
-            for cb in self._ui_listeners:
-                try:
-                    cb(msg)
-                except Exception:
-                    log.exception("ws ui listener")
 
 
 def new_nmea_lines(tail: list[str], last: str | None) -> list[str]:

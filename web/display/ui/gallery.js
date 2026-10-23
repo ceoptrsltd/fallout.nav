@@ -362,6 +362,7 @@ const RADIO_VIEWS = [
   [{ radio: { ...RADIO, state: "waiting_output", track: null, output_connected: false } }, "<b>No speaker</b> — waiting for the Bluetooth speaker (no data is streamed)"],
   [{ radio: { ...RADIO, station: "Rust Belt Radio", track: null, genre: "Jazz" } }, "<b>No track titles</b> from the stream — the genre is shown"],
   [{ radio: cycle([RADIO, { ...RADIO, volume: 85 }, { ...RADIO, volume: 30 }], 3.5) }, "<b>Volume</b> changes — shown for 2.5 s"],
+  [{ radio: cycle([{ ...RADIO, shuffle: true }, RADIO], 4) }, "<b>Key 6</b> toggles the next station: random (icon right of the station) / in order — shown for 2.5 s"],
   [{ radio: { ...RADIO, station: "Radio Paradise - Main Mix (EU) 320k AAC", track: LONG }, cond: "all" }, "<b>Everything down</b> + long station name (fits, then ellipsis)"],
   [{ radio: RADIO, bg: "cam", mode: "camera" }, "<b>Camera mode</b> with the radio"],
   [{ radio: RADIO, style: "v2", orient: "north_up" }, "<b>v2 compass, north up</b>"],

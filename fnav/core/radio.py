@@ -430,6 +430,10 @@ class FakePlayer:
 # ───────────────────────── сервис ─────────────────────────
 
 
+def _key(s: RadioStation) -> str:
+    return s.uuid or s.url
+
+
 def bluealsa_device(address: str) -> str:
     return f"alsa/bluealsa:DEV={address},PROFILE=a2dp"
 
@@ -465,6 +469,7 @@ class RadioService:
         self._vol_save: asyncio.Task | None = None
         self._lock = asyncio.Lock()
         self._ring: tuple[str | None, float, list[RadioStation]] | None = None  # (жанр, когда, станции) для step()
+        self._back: list[RadioStation] = []  # shuffle: откуда пришли — клавиша «назад» возвращает по очереди
         player.on_event(self._on_player)
 
     # ── жизненный цикл ──
@@ -523,7 +528,8 @@ class RadioService:
         return RadioStatus(state=self.phase, station=self.station.name if self.station else None,
                            track=self.track if self.phase == "playing" else None, genre=genre,
                            volume=self.volume, output=self.output.name if self.output else None,
-                           output_connected=bool(self.output and self.output.connected))
+                           output_connected=bool(self.output and self.output.connected),
+                           shuffle=self.get_settings().shuffle)
 
     # ── команды ──
     async def play(self, station: RadioStation, genre: str | None = None) -> RadioState:
@@ -543,26 +549,38 @@ class RadioService:
 
     async def step(self, delta: int) -> RadioState:
         """Соседняя станция (клавиши мини-клавиатуры): по списку жанра, из которого выбрана текущая,
-        иначе — по недавним. Список запоминается на 10 минут: порядок не скачет от нажатия к нажатию."""
-        def key(s: RadioStation) -> str:
-            return s.uuid or s.url
+        иначе — по недавним. Список запоминается на 10 минут: порядок не скачет от нажатия к нажатию.
+        settings.radio.shuffle: вперёд — случайная станция списка (не из недавно звучавших),
+        назад — та, что играла перед ней."""
+        cur = self.station
+        lst = await self._step_list()
+        if not lst:
+            raise RadioError(409, "No stations to switch to")
+        if self.get_settings().shuffle:
+            if delta < 0 and self._back:
+                return await self.play(self._back.pop(), self.genre)
+            others = [s for s in lst if cur is None or _key(s) != _key(cur)] or lst
+            heard = {_key(s) for s in self.recent[:len(lst) // 2]}
+            nxt = random.choice([s for s in others if _key(s) not in heard] or others)
+            if cur is not None:
+                self._back = (self._back + [cur])[-RECENT_MAX:]
+            return await self.play(nxt, self.genre)
+        idx = next((i for i, s in enumerate(lst) if cur is not None and _key(s) == _key(cur)), -1)
+        nxt = lst[(idx + delta) % len(lst)] if idx >= 0 else lst[0]
+        return await self.play(nxt, self.genre)
 
+    async def _step_list(self) -> list[RadioStation]:
         cur = self.station
         ring = self._ring
         if ring is None or ring[0] != self.genre or time.monotonic() - ring[1] > 600 or (
-                cur and all(key(s) != key(cur) for s in ring[2])):
+                cur and all(_key(s) != _key(cur) for s in ring[2])):
             lst: list[RadioStation] = []
             if self.genre:
                 lst = (await self.directory.by_tag(self.genre)) or []
             if not lst:
                 lst = list(self.recent)
             ring = self._ring = (self.genre, time.monotonic(), lst)
-        lst = ring[2]
-        if not lst:
-            raise RadioError(409, "No stations to switch to")
-        idx = next((i for i, s in enumerate(lst) if cur is not None and key(s) == key(cur)), -1)
-        nxt = lst[(idx + delta) % len(lst)] if idx >= 0 else lst[0]
-        return await self.play(nxt, self.genre)
+        return ring[2]
 
     async def stop_playback(self) -> RadioState:
         self.want_play = False

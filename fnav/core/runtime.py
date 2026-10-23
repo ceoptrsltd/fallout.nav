@@ -141,11 +141,10 @@ class Core:
             "view_toggle": self.toggle_view,
             "video_toggle": self.toggle_video_output,
             "protect": self.protect_with_feedback,
-            "games": self._keypad_games,
+            "shuffle": self._keypad_shuffle,
             "volume_down": lambda: self._keypad_volume(-1),
             "volume_up": lambda: self._keypad_volume(1),
-        }, game_running=lambda: self.games.running)
-        self.ws.on_ui(lambda msg: self.keypad.set_games_menu(bool(msg.get("games_menu"))))
+        })
         self.hub: SensorHub = self._make_hub(s)
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
         self._tasks: list[asyncio.Task] = []
@@ -470,9 +469,12 @@ class Core:
             mode = "map" if self.display_state.mode == "camera" else "camera"
         await self.store.patch({"display": {"force_mode": mode}})
 
-    async def _keypad_games(self) -> None:
-        if self.games.running:  # клавиша 6 в игре — выход; вне игры меню открывает сам экран
+    async def _keypad_shuffle(self) -> None:
+        """Клавиша 6: следующая станция — по порядку ↔ случайная (экран показывает режим на плашке радио)."""
+        if self.games.running:  # в игре радио на паузе; геймпад отключили вместо клавиатуры — выйти из игры
             await self.games.stop("keypad")
+            return
+        await self.store.patch({"radio": {"shuffle": not self.store.get().radio.shuffle}})
 
     async def _keypad_volume(self, direction: int) -> None:
         if not self.games.running:

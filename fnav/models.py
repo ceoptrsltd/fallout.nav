@@ -227,6 +227,7 @@ class RadioSettings(_Model):
 
     volume: int = Field(60, ge=0, le=100)
     resume_on_boot: bool = True  # после перезагрузки продолжить станцию, если радио играло
+    shuffle: bool = False  # следующая станция (клавиши 1/2): случайная, а не по порядку; клавиша 6 переключает
 
 
 class BluetoothSettings(_Model):
@@ -415,6 +416,7 @@ class RadioStatus(_Model):
     volume: int = 60
     output: str | None = None
     output_connected: bool = False
+    shuffle: bool = False  # режим «следующая станция — случайная» (settings.radio.shuffle)
 
 
 class BtDevice(_Model):

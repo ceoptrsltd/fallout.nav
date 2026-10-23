@@ -14,7 +14,7 @@ layers:
       - ["f13", "f14", "f15"]
       - ["f16", "f17", "f18"]
     knobs:
-      # turn: volume; press: confirm (Enter - in the games menu, RetroArch and the games themselves)
+      # turn: volume; press: confirm (Enter - in RetroArch and the games themselves)
       - ccw: "f19"
         press: "enter"
         cw: "f21"

@@ -5,6 +5,8 @@
 // По CPU дёшево: плашка, шкала и тексты пререндерены в спрайты (тексты — в маленьком LRU), кадр — несколько
 // drawImage. Анимации — только по событию (смена трека/станции, громкость, поиск сигнала) и медленная бегущая
 // строка, если трек не помещается.
+// radio.shuffle (клавиша 6: следующая станция случайная) — значок справа от станции; после переключения
+// режим на 2.5 с показывается в строке трека.
 
 import { SPEED_BOX } from "./speed.js";
 import { INDICATOR_ROW, indicatorsWidth } from "./status.js";
@@ -28,6 +30,8 @@ const DIAL_Y = 15; // линия шкалы
 const WIPE_S = 0.6; // смена трека: «развёртка» слева направо
 const TUNE_S = 0.9; // смена станции: стрелка переезжает
 const VOLUME_S = 2.5; // громкость показывается после изменения
+const MODE_S = 2.5; // режим «по порядку / случайно» — после переключения
+const SHUFFLE_W = 30; // место под значок shuffle справа от станции
 const APPEAR_S = 0.25;
 
 // ── чистые помощники (тестируются в tests/display/radio.test.mjs) ─────────
@@ -188,6 +192,37 @@ function dialSprite(w) {
   });
 }
 
+/** Значок shuffle: две скрещённые стрелки; straight — две параллельные («по порядку»). 26×20. */
+function modeSprite(straight) {
+  return sprite(straight ? "radio-inorder" : "radio-shuffle", 26, 20, (c) => {
+    const paths = straight
+      ? [[[2, 6], [20, 6]], [[2, 14], [20, 14]]]
+      : [[[2, 15], [8, 15], [14, 5], [20, 5]], [[2, 5], [8, 5], [14, 15], [20, 15]]];
+    const heads = (stroke) => {
+      for (const pts of paths) {
+        const [x, y] = pts[pts.length - 1];
+        c.beginPath();
+        c.moveTo(x - 5, y - 4.5);
+        c.lineTo(x + 1, y);
+        c.lineTo(x - 5, y + 4.5);
+        stroke();
+      }
+    };
+    c.lineCap = "round";
+    c.lineJoin = "round";
+    for (const [lw, col] of [[6, C.shadow], [2.6, C.ink]]) {
+      c.lineWidth = lw;
+      c.strokeStyle = col;
+      for (const pts of paths) {
+        c.beginPath();
+        pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y)));
+        c.stroke();
+      }
+      heads(() => c.stroke());
+    }
+  });
+}
+
 /** Ноты перед названием трека (две восьмые с ребром), с тёмной обводкой — читаются и на пёстрой карте. */
 function noteSprite() {
   return sprite("radio-note", 18, 24, (c) => {
@@ -221,7 +256,8 @@ function panelFor(ctx) {
   let p = panels.get(key);
   if (!p) {
     p = { station: null, track: null, trackT0: 0, prevTrack: null, wipeT0: -1, needleFrom: null, needle: 0.5,
-          tuneT0: -1, prevStation: null, volume: null, volumeT0: -1, appearT0: -1, visible: false };
+          tuneT0: -1, prevStation: null, volume: null, volumeT0: -1, shuffle: null, modeT0: -1, appearT0: -1,
+          visible: false };
     panels.set(key, p);
   }
   return p;
@@ -243,6 +279,7 @@ function update(p, radio, now) {
     p.prevTrack = null;
     p.prevStation = null;
     p.volume = radio.volume ?? null;
+    p.shuffle = !!radio.shuffle;
     return;
   }
   if (station !== p.station) {
@@ -266,6 +303,9 @@ function update(p, radio, now) {
   const v = radio.volume;
   if (typeof v === "number" && p.volume !== null && v !== p.volume) p.volumeT0 = now;
   if (typeof v === "number") p.volume = v;
+  const sh = !!radio.shuffle;
+  if (p.shuffle !== null && sh !== p.shuffle) p.modeT0 = now;
+  p.shuffle = sh;
 }
 
 function currentNeedle(p, now) {
@@ -358,6 +398,13 @@ function drawVolume(ctx, x, yc, w, vol) {
   ctx.restore();
 }
 
+/** «NEXT: RANDOM» / «NEXT: IN ORDER» — после переключения клавишей 6. */
+function drawMode(ctx, x, yc, shuffle) {
+  blit(ctx, modeSprite(!shuffle), x - 1, Math.round(yc - 10));
+  const s = textSprite(ctx, shuffle ? "NEXT: RANDOM" : "NEXT: IN ORDER", fontLabel(25), 30);
+  blit(ctx, s, x + 30, Math.round(yc - 15));
+}
+
 /** «NO SPEAKER» — светлая аварийная плашка (как NO GPS), не мигает: это не авария, а подсказка. */
 function drawNoSpeaker(ctx, x, yc) {
   const text = "NO SPEAKER";
@@ -428,19 +475,24 @@ export function drawRadio(ctx, state, safe, liftPx = 0) {
     p.prevTrack = null;
   }
   const barX = tx0 - 10 + wipe * (tx1 - tx0 + 20);
-  const st = stationSprite(ctx, p.station || "RADIO", tx1 - tx0);
+  const sx1 = p.shuffle ? tx1 - SHUFFLE_W : tx1; // справа от станции — значок shuffle
+  const st = stationSprite(ctx, p.station || "RADIO", sx1 - tx0);
   const sy = Math.round(y + STATION_Y - 17);
   if (wipe < 1 && p.prevStation != null) {
-    drawClipped(ctx, st, tx0, sy, 0, tx1 - tx0, tx0, barX);
-    drawClipped(ctx, stationSprite(ctx, p.prevStation || "RADIO", tx1 - tx0), tx0, sy, 0, tx1 - tx0, barX, tx1);
+    drawClipped(ctx, st, tx0, sy, 0, sx1 - tx0, tx0, Math.min(barX, sx1));
+    drawClipped(ctx, stationSprite(ctx, p.prevStation || "RADIO", sx1 - tx0), tx0, sy, 0, sx1 - tx0, barX, sx1);
   } else {
-    drawClipped(ctx, st, tx0, sy, 0, tx1 - tx0, tx0, tx1);
+    drawClipped(ctx, st, tx0, sy, 0, sx1 - tx0, tx0, sx1);
   }
+  if (p.shuffle) blit(ctx, modeSprite(false), tx1 - 24, Math.round(y + STATION_Y - 10));
 
-  // строка трека: громкость (после изменения) / NO SPEAKER / TUNING / трек
+  // строка трека: громкость или режим (после изменения, последнее из них) / NO SPEAKER / TUNING / трек
   const yc = y + TRACK_Y;
   const showVol = p.volumeT0 >= 0 && now - p.volumeT0 < VOLUME_S && typeof p.volume === "number";
-  if (showVol) {
+  const showMode = p.modeT0 >= 0 && now - p.modeT0 < MODE_S;
+  if (showMode && !(showVol && p.volumeT0 > p.modeT0)) {
+    drawMode(ctx, tx0, yc, p.shuffle);
+  } else if (showVol) {
     drawVolume(ctx, tx0, yc, tx1 - tx0, p.volume);
   } else if (radio.state === "waiting_output") {
     drawNoSpeaker(ctx, tx0 - 2, yc);

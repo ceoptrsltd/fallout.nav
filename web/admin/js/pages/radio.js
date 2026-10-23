@@ -315,6 +315,7 @@ export function mount(root) {
       } }));
     };
     add("radio", "resume_on_boot", "Resume after restart");
+    add("radio", "shuffle", "Next station at random (keypad keys 1 / 2; key 6 toggles)");
     add("display", "radio_panel", "Show the station on the car screen");
   }
   const offSet = on("settings", renderSettings);

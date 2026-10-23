@@ -88,7 +88,8 @@ BtState = {
 ## 4. Настройки (`fnav/models.py`)
 
 ```
-RadioSettings:     volume: int 0..100 = 60;  resume_on_boot: bool = True
+RadioSettings:     volume: int 0..100 = 60;  resume_on_boot: bool = True;
+                   shuffle: bool = False (следующая станция с клавиатуры — случайная; клавиша 6 переключает)
 BluetoothSettings: enabled: bool = True (адаптер включать при старте);  auto_connect: bool = True
 DisplaySettings:   radio_panel: bool = True  (плашка радио на экране)
 ```
@@ -97,10 +98,11 @@ DisplaySettings:   radio_panel: bool = True  (плашка радио на эк�
 
 `Telemetry.radio: RadioStatus | null` (каждый кадр, компактно):
 `{"state","station":"name"|null,"track":str|null,"genre":"Jazz"|null (подпись плитки или первый тег станции),
-"volume":int,"output":"JBL Go 3"|null,"output_connected":bool}`.
+"volume":int,"output":"JBL Go 3"|null,"output_connected":bool,"shuffle":bool}`.
 
 Экран (web/display) показывает плашку, когда `display.radio_panel` и `state` ∈ {playing, connecting, waiting_output}.
 Плашка — в стиле HUD (как компас и спидометр: те же шрифты, рамки, монохром, читаемо на 5″ ч/б CRT 720×480 с полями),
 название станции крупно, трек — бегущей строкой, если не помещается; смена трека — заметная, но короткая анимация;
-`connecting` / `waiting_output` — свои понятные состояния. Не перекрывает компас, спидометр, индикаторы и машину.
+`connecting` / `waiting_output` — свои понятные состояния; `shuffle` — значок справа от станции, после
+переключения режим на 2.5 с в строке трека. Не перекрывает компас, спидометр, индикаторы и машину.
 Демо-режим (`?demo=1`) показывает плашку с вымышленной станцией и сменой треков.
