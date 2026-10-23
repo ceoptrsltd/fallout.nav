@@ -230,6 +230,26 @@ class RadioSettings(_Model):
     shuffle: bool = False  # следующая станция (клавиши 1/2): случайная, а не по порядку; клавиша 6 переключает
 
 
+# действия клавиш мини-клавиатуры (fnav/core/keypad.py); "none" — клавиша ничего не делает
+KeypadAction = Literal["none", "station_prev", "station_next", "radio_toggle", "shuffle", "volume_down", "volume_up",
+                       "view_toggle", "video_toggle", "protect"]
+
+
+class KeypadSettings(_Model):
+    """Мини-клавиатура (6 клавиш + крутилка): какое действие у каждой. Сама клавиатура всегда шлёт F13–F21 и Enter —
+    раскладка меняется здесь, без перепрошивки. Клавиши — слева направо, сверху вниз; крутилка справа."""
+
+    key1: KeypadAction = "station_prev"
+    key2: KeypadAction = "station_next"
+    key3: KeypadAction = "view_toggle"
+    key4: KeypadAction = "video_toggle"
+    key5: KeypadAction = "protect"
+    key6: KeypadAction = "shuffle"
+    knob_left: KeypadAction = "volume_down"
+    knob_right: KeypadAction = "volume_up"
+    knob_press: KeypadAction = "radio_toggle"
+
+
 class BluetoothSettings(_Model):
     enabled: bool = True  # включать адаптер при старте
     auto_connect: bool = True  # переподключать колонку по умолчанию каждые 30 с
@@ -249,6 +269,7 @@ class Settings(_Model):
     tracking: TrackingSettings = TrackingSettings()
     radio: RadioSettings = RadioSettings()
     bluetooth: BluetoothSettings = BluetoothSettings()
+    keypad: KeypadSettings = KeypadSettings()
 
 
 # ───────────────────────────── Датчики ─────────────────────────────

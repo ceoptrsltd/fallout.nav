@@ -145,7 +145,7 @@ class Core:
             "radio_toggle": self._keypad_radio_toggle,
             "volume_down": lambda: self._keypad_volume(-1),
             "volume_up": lambda: self._keypad_volume(1),
-        })
+        }, get_bindings=lambda: self.store.get().keypad)
         self.hub: SensorHub = self._make_hub(s)
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
         self._tasks: list[asyncio.Task] = []

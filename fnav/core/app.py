@@ -20,6 +20,7 @@ from fnav.core.auth import COOKIE_NAME, SESSION_TTL_S, AuthMiddleware
 from fnav.core.bluetooth import BluetoothError
 from fnav.core.camera import CameraUnavailable, ClosingStreamingResponse, rewrite_whep_location
 from fnav.core.config import SettingsError
+from fnav.core.controls import controls_info
 from fnav.core.games import GamesError
 from fnav.core.radio import GENRES, RadioError
 from fnav.core.recordings import RecordingError, iter_file, parse_range
@@ -624,6 +625,10 @@ def _register_games(app: FastAPI, core: Core) -> None:
     @app.post("/api/games/stop")
     async def games_stop():
         return await core.games.stop("stopped from the web UI")
+
+    @app.get("/api/controls")
+    async def controls():
+        return controls_info(bool(core.keypad.fds), core.store.get().keypad)
 
 
 # ───────────────────────── статика ─────────────────────────
