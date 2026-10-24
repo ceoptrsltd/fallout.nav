@@ -36,6 +36,8 @@ Environment=XDG_CACHE_HOME=/run/fnav-display/cache
 Environment=LIBSEAT_BACKEND=seatd
 # cage starts without a keyboard/mouse (otherwise wlroots/libinput refuses to start).
 Environment=WLR_LIBINPUT_NO_DEVICES=1
+# no mouse pointer on the car screen: cage loads the cursor theme "default", here a transparent one (pi/cursor)
+Environment=XCURSOR_PATH=/opt/fnav/app/pi/cursor
 # Optional extra Chromium flags and overrides: /etc/fnav/display.env (FNAV_CHROMIUM_EXTRA=...)
 # Page to show; can be overridden in display.env (e.g. the service test pattern /display/test-pattern.html?mode=bw).
 Environment=FNAV_DISPLAY_URL=http://127.0.0.1/display/?pal=1
@@ -43,7 +45,7 @@ EnvironmentFile=-/etc/fnav/display.env
 
 # Wait for core (up to 120 s); clean up traces of an unclean shutdown in the Chromium profile.
 ExecStartPre=/bin/bash /opt/fnav/app/pi/bin/fnav-display-prestart
-# No mouse cursor: cage draws none without a pointer device, and the page also sets cursor:none.
+# No mouse cursor: the transparent cursor theme above (the macro pad has a mouse interface), and the page sets cursor:none.
 # Chromium: profile on eMMC (/var/lib/fnav/chromium), 100 MB disk cache in tmpfs to spare the eMMC.
 # --ozone-platform=wayland: we run under cage. The GPU flags are for 2D canvas / rasterization on V3D.
 ExecStart=/usr/bin/cage -d -- chromium \

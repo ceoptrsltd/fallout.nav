@@ -1,0 +1,6 @@
+# fallout.nav: a fully transparent 1x1 cursor for the kiosk compositors (cage), so no mouse pointer shows on
+# the car screen (the macro pad has a mouse interface, the gamepad a touchpad). cursors/default and left_ptr are
+# one-image Xcursor files (24 px nominal, 1x1 ARGB pixel 0); cage always loads the theme "default", XCURSOR_PATH in the units points only here.
+[Icon Theme]
+Name=default
+Comment=No visible mouse cursor on the car screen

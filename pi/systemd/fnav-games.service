@@ -28,6 +28,8 @@ Environment=XDG_RUNTIME_DIR=/run/fnav-games
 Environment=XDG_CONFIG_HOME=/var/lib/fnav/config
 Environment=LIBSEAT_BACKEND=seatd
 Environment=WLR_LIBINPUT_NO_DEVICES=1
+# no mouse pointer on the car screen: cage loads the cursor theme "default", here a transparent one (pi/cursor)
+Environment=XCURSOR_PATH=/opt/fnav/app/pi/cursor
 # Optional: FNAV_RETROARCH_EXTRA=--verbose (debugging)
 EnvironmentFile=-/etc/fnav/games.env
 ExecStart=/usr/bin/cage -d -- /bin/bash /opt/fnav/app/pi/bin/fnav-games-run
