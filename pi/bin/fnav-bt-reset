@@ -1,0 +1,22 @@
+#!/bin/bash
+# Restart the onboard Bluetooth chip (CYW43455 on the CM4's UART) after its firmware crashed: the kernel logs
+# "hci0: hardware error", every HCI command then times out and BlueZ cannot power the adapter on again.
+# Rebinding the hci_uart_bcm driver reloads the chip's firmware; bluetoothd and bluealsa pick the adapter up
+# by themselves and fnav-core reconnects the speaker. Run as root by fnav-bt-reset.service, which fnav-core
+# starts (sudo systemctl start fnav-bt-reset) when the adapter stays unpowered.
+set -euo pipefail
+dev=/sys/class/bluetooth/hci0/device
+if [ -e "$dev" ]; then
+    name="$(basename "$(readlink -f "$dev")")"
+    drv="$(readlink -f "$dev/driver")"
+else
+    name=serial0-0
+    drv=/sys/bus/serial/drivers/hci_uart_bcm
+fi
+[ -d "$drv" ] || { echo "fnav-bt-reset: no driver for $name" >&2; exit 1; }
+echo "fnav-bt-reset: rebinding $name ($(basename "$drv"))"
+if [ -e "$drv/$name" ]; then
+    echo "$name" > "$drv/unbind"
+    sleep 2
+fi
+echo "$name" > "$drv/bind"

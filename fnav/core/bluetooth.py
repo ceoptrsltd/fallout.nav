@@ -14,7 +14,8 @@ import logging
 import os
 import random
 import re
-from collections.abc import Callable
+import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,11 @@ PROPS_IF, OM_IF = "org.freedesktop.DBus.Properties", "org.freedesktop.DBus.Objec
 AGENT_PATH = "/fnav/agent"
 SYS_BT = Path("/sys/class/bluetooth")
 OPEN_TIMEOUT_S = 5.0  # первое подключение к BlueZ не задерживает старт fnav-core дольше этого
+# Встроенный чип (CYW43455) иногда «падает»: в ядре «hci0: hardware error», адаптер выключается и больше
+# не включается (HCI-команды без ответа). Две неудачные попытки включить подряд — перезапуск чипа
+# (pi/bin/fnav-bt-reset), не чаще раза в RESET_EVERY_S.
+RESET_AFTER_FAILURES = 2
+RESET_EVERY_S = 300.0
 
 OutputListener = Callable[[RadioOutput | None], None]
 
@@ -81,6 +87,10 @@ class BluetoothBase:
         self._scan_stop: asyncio.Task | None = None
         self._busy: set[str] = set()  # идёт pair/connect — автоподключение не мешает
         self._auto_failed: str | None = None
+        self.reset_controller: Callable[[], Awaitable[None]] | None = None  # перезапуск чипа (create_bluetooth)
+        self._user_off = False  # выключили из веб-интерфейса — сами не включаем
+        self._power_failures = 0
+        self._reset_at: float | None = None
 
     # ── колонка по умолчанию ──
     def _load_state(self) -> None:
@@ -160,9 +170,28 @@ class BluetoothBase:
         try:
             await self._power(on)
             self.powered = on
+            self._power_failures = 0
         except BluetoothError as e:
             self.error = e.detail
+            if on:
+                self._power_failures += 1
             log.warning("bluetooth: cannot switch the adapter %s: %s", "on" if on else "off", e.detail)
+
+    async def _recover_power(self) -> None:
+        """Адаптер выключился сам (не из веб-интерфейса): включить; не включается — перезапустить чип."""
+        await self._safe_power(True)
+        if self.powered or self._power_failures < RESET_AFTER_FAILURES or self.reset_controller is None:
+            return
+        now = time.monotonic()
+        if self._reset_at is not None and now - self._reset_at < RESET_EVERY_S:
+            return
+        self._reset_at = now
+        log.warning("bluetooth: the adapter does not power on (%s), restarting the Bluetooth chip", self.error)
+        try:
+            await self.reset_controller()
+            self._power_failures = 0
+        except Exception as e:  # noqa: BLE001 — восстановление не должно ронять обслуживание
+            log.warning("bluetooth: chip restart failed: %s", e)
 
     async def _maintain(self) -> None:
         while True:
@@ -180,6 +209,10 @@ class BluetoothBase:
             self._emit_output()
             return
         s = self.get_settings()
+        if s.enabled and not self.powered and not self._user_off:
+            await self._recover_power()
+            self._emit_output()
+            return
         mac = self.audio_device
         if not (s.auto_connect and self.powered and mac) or mac in self._busy:
             return
@@ -208,6 +241,7 @@ class BluetoothBase:
         self._need()
         await self._power(on)
         self.powered = on
+        self._user_off = not on
         if not on:
             self.discovering = False
         self._emit_output()
@@ -595,4 +629,17 @@ class FakeBluetooth(BluetoothBase):
 
 def create_bluetooth(mock: bool, data_dir: Path, get_settings: Callable[[], BluetoothSettings]) -> BluetoothBase:
     path = data_dir / "bluetooth_state.json"
-    return FakeBluetooth(path, get_settings) if mock else BlueZBluetooth(path, get_settings)
+    if mock:
+        return FakeBluetooth(path, get_settings)
+    bt = BlueZBluetooth(path, get_settings)
+    bt.reset_controller = reset_bt_chip
+    return bt
+
+
+async def reset_bt_chip() -> None:
+    """Перезапустить встроенный Bluetooth-чип (root: pi/systemd/fnav-bt-reset.service)."""
+    from fnav.core.system import run
+
+    rc, _out, err = await run("sudo", "-n", "/usr/bin/systemctl", "start", "fnav-bt-reset", timeout=30)
+    if rc != 0:
+        raise BluetoothError(502, (err or "").strip() or f"systemctl exit code {rc}")

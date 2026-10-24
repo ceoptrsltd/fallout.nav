@@ -1,0 +1,8 @@
+# fallout.nav: restart the onboard Bluetooth chip after a firmware crash (pi/bin/fnav-bt-reset).
+# Started by fnav-core on demand, never enabled.
+[Unit]
+Description=fallout.nav: reset the onboard Bluetooth controller
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/fnav/app/pi/bin/fnav-bt-reset

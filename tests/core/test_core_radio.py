@@ -18,6 +18,7 @@ from fnav.core.bluetooth import (
     PROPS_IF,
     BluetoothError,
     BlueZBluetooth,
+    FakeBluetooth,
     is_audio,
     norm_mac,
 )
@@ -442,3 +443,46 @@ async def test_step_shuffle(tmp_path):
     cur = int(svc.station.uuid)
     assert (await svc.step(1)).station.uuid == str((cur + 1) % 8)
     assert svc.status().shuffle is False
+
+
+async def test_bt_restarts_a_crashed_chip(tmp_path, monkeypatch):
+    """The CYW43455 firmware crashed ("hci0: hardware error"): the adapter powered off by itself and refuses to
+    power on. Maintenance retries, then restarts the chip; an adapter switched off from the web UI stays off."""
+    from fnav.core import bluetooth as btmod
+
+    class Crashed(FakeBluetooth):
+        dead = True
+
+        async def _power(self, on):
+            if on and self.dead:
+                raise BluetoothError(502, "Failed: Authentication Failed")
+            await super()._power(on)
+
+    bt = Crashed(tmp_path / "bt.json", lambda: BluetoothSettings(), delay_s=0)
+    resets = []
+
+    async def reset():
+        resets.append(1)
+        bt.dead = False
+
+    bt.reset_controller = reset
+    await bt.start(background=False)
+    assert bt.powered is False and bt._power_failures == 1  # start() tried once
+    await bt._tick()  # second failure in a row: restart the chip
+    assert resets == [1]
+    await bt._tick()
+    assert bt.powered is True and bt._power_failures == 0
+    # crashes again within 5 minutes: retries, but no second restart yet
+    bt.dead, bt.powered = True, False
+    for _ in range(3):
+        await bt._tick()
+    assert resets == [1]
+    monkeypatch.setattr(btmod.time, "monotonic", lambda: 10**9)
+    await bt._tick()
+    assert resets == [1, 1]
+    # switched off on purpose: maintenance leaves it off
+    await bt._tick()
+    assert bt.powered
+    await bt.set_power(False)
+    await bt._tick()
+    assert bt.powered is False

@@ -25,6 +25,7 @@ Cmnd_Alias FNAV_SERVICES = \
     /usr/bin/systemctl restart fnav-display, \
     /usr/bin/systemctl start fnav-games, \
     /usr/bin/systemctl stop fnav-games, \
+    /usr/bin/systemctl start fnav-bt-reset, \
     /usr/bin/systemctl stop mediamtx, \
     /usr/bin/systemctl start mediamtx, \
     /usr/bin/systemctl restart mediamtx
