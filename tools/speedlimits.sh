@@ -18,6 +18,7 @@ if [ "${1:-}" = "--copy" ]; then COPY_ONLY=1; shift; fi  # the server already ha
 EXTRACT="${1:-europe/poland}"
 CC="${2:-PL}"
 DEV="${CALLER_HOST:-${FNAV_HOST:-fnav}}"
+[[ "$DEV" == *@* ]] || DEV="${FNAV_USER:-falloutnav}@$DEV"  # same user as pi/deploy.sh
 read -r -a DEV_SSH <<< "${CALLER_OPTS:-${FNAV_SSH_OPTS:--o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15}}"
 SRV=(ssh -o BatchMode=yes -o ServerAliveInterval=30 -i "$REMOTE_SSH_KEY" "$REMOTE_SSH")
 WORK=/var/tmp/fnav-speedlimits
