@@ -34,6 +34,9 @@ document.body.classList.toggle("ntsc", q.get("ntsc") === "1");
 const R = { state: "playing", station: "Wasteland FM", track: "Sally Chrome - Atomic Sunset", genre: "Oldies",
             volume: 60, output: "Boombox", output_connected: true };
 const LONG = "The Neon Mirage Orchestra - Strip Lights at Midnight (Extended Wasteland Mix)";
+const WX = { type: "weather", temp_c: 12.6, feels_c: 9, code: 2, is_day: true, wind_ms: 6.3, gust_ms: 11, wind_from_deg: 225,
+             days: [{ weekday: "MON", code: 61, t_max: 10.1, t_min: 7.9 }, { weekday: "TUE", code: 0, t_max: 16.3, t_min: 5.2 }],
+             stale: false };
 // steps: [[time, radio], …] drawn in order on the same canvas; the last one is shown
 const CASES = [
   ["playing", "Playing: station and track", [[0, R], [2, R]]],
@@ -54,6 +57,14 @@ const CASES = [
   ["longname", "Long station name + everything down", [[0, { ...R, station: "Radio Paradise - Main Mix (EU) 320k AAC", track: LONG }]], { down: true }],
   ["camera", "Camera mode", [[0, R]], { camera: true }],
   ["appear", "Appearing (0.12 s after start)", [[0, R], [0.12, R]]],
+  // weather (radio off): now + the next two days in place of the radio panel, wind streaks around the vehicle
+  ["weather", "Radio off: weather now + 2 days; wind from SW", [[0, null], [2.4, null]], { weather: WX }],
+  ["weather-cold", "Frost, snow, headwind (strong)", [[0, null], [1.3, null]],
+    { weather: { ...WX, temp_c: -12.4, code: 73, is_day: false, wind_ms: 14, wind_from_deg: 40,
+                 days: [{ weekday: "MON", code: 71, t_max: -8, t_min: -17 }, { weekday: "TUE", code: 0, t_max: -3, t_min: -14 }] } }],
+  ["weather-stale", "No internet for hours: hourly forecast from the cache (dimmed)", [[0, null], [3.1, null]],
+    { weather: { ...WX, stale: true, code: 95 } }],
+  ["weather-radio", "Radio playing: the radio panel wins, the wind stays", [[0, R], [2, R]], { weather: WX }],
 ];
 
 function state(now, radio, o = {}) {
@@ -63,10 +74,12 @@ function state(now, radio, o = {}) {
     telemetry: { gps: { fix: down ? "none" : "3d", sats_used: down ? 0 : 11, sats_visible: down ? 3 : 19 }, heading: { deg: down ? null : 40, source: down ? "none" : "gps" },
                  display: { mode: o.camera ? "camera" : "map", orientation: "heading_up" }, camera: { recording: !down },
                  system: { internet: !down }, radio, errors: [] },
+    weather: o.weather ?? null,
     settings: { display: { ...DEFAULT_SETTINGS.display, compass_style: "v1" } },
     view: { mode: o.camera ? "camera" : "map", orientation: "heading_up", bearingDeg: 40, headingDeg: down ? null : 40,
             compassHeadingDeg: down ? null : 40, vehicleHeadingDeg: down ? null : 40, headingSource: down ? "none" : "gps",
-            speedMps: down ? null : 13.4, zoom: 18, hasFix: !down, connected: !down, internet: !down, recording: !down },
+            speedMps: down ? null : 13.4, zoom: 18, hasFix: !down, connected: !down, internet: !down, recording: !down,
+            vehicleX: W / 2, vehicleY: H * 0.67 },
     canvas: { w: W, h: H, safe: { x: W * 0.05, y: H * 0.05, w: W * 0.9, h: H * 0.9 }, pxPerMm: W / 92 },
   };
 }

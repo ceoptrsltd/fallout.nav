@@ -6,6 +6,11 @@ import { NavLogic } from "./navlogic.js";
 import { installBridge, settingsPatch } from "./bridge.js";
 import { demoRadioStatus } from "./radio.js";
 
+const DEMO_WEATHER = {
+  type: "weather", temp_c: 24.4, feels_c: 23, code: 1, is_day: true, wind_ms: 5.5, gust_ms: 9, wind_from_deg: 250,
+  days: [{ weekday: "MON", code: 0, t_max: 29, t_min: 17 }, { weekday: "TUE", code: 2, t_max: 27, t_min: 16 }], stale: false,
+};
+
 // the demo has no /tiles proxy: Esri tiles directly (shared with remote access)
 export { ESRI_ATTRIBUTION, esriTileUrl } from "../map/esri.js";
 
@@ -63,6 +68,7 @@ export function startDemo({ onMessage, getSettings, applyPatch, getState, now })
   }
   tick();
   setInterval(tick, 100);
+  onMessage(DEMO_WEATHER); // made-up weather: the wind streaks around the car (the panel shows when the radio is off)
 
   return {
     sim,

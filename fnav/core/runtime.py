@@ -28,6 +28,7 @@ from fnav.core.tiles import TileService
 from fnav.core.tracking import RelayConfig, TrackService
 from fnav.core.util import cancel_tasks, spawn
 from fnav.core.videoout import VideoOutput, VideoOutputError
+from fnav.core.weather import WeatherService
 from fnav.core.ws import WsManager, new_nmea_lines
 from fnav.interfaces import ButtonEvent, LedMode, SensorHub, create_sensor_hub
 from fnav.models import (
@@ -62,6 +63,7 @@ class CoreOptions:
     relay_transport: httpx.AsyncBaseTransport | None = None  # для fnav-relay (тесты)
     radio_transport: httpx.AsyncBaseTransport | None = None  # для каталога radio-browser (тесты)
     radio_player: Player | None = None  # подмена плеера (тесты); None — mpv или FakePlayer в --mock
+    weather_transport: httpx.AsyncBaseTransport | None = None  # для Open-Meteo (тесты)
 
 
 class NullSensorHub:
@@ -131,6 +133,9 @@ class Core:
                                   self._save_radio_volume, transport=opts.radio_transport,
                                   player=opts.radio_player)
         self.bt.on_output(self.radio.set_output)
+        self.weather = WeatherService(paths.data_dir() / "weather.json", lambda: self.hub.snapshot().gps,
+                                      lambda st: self.ws.broadcast(st.model_dump(mode="json")),
+                                      mock=opts.mock, transport=opts.weather_transport)
         self.games = GamesService(lambda: self.hub.snapshot().gps.speed_mps, self._pause_radio_for_game,
                                   self._resume_radio_after_game, lambda lvl, text: self.ws.toast(text, lvl),
                                   mock=opts.mock, prepare_audio=self._audio_for_game,
@@ -204,6 +209,7 @@ class Core:
                 asyncio.create_task(self._slow_loop(), name="slow-status"),
             ]
             self.tracking.start(lambda: self.hub.snapshot().gps, lambda: self.store.get().tracking)
+            self.weather.start()
             self.games.start()
             self.keypad.start()
         self.started = True
@@ -212,7 +218,7 @@ class Core:
     async def stop(self) -> None:
         await cancel_tasks(*self._tasks)
         self._tasks.clear()
-        for closer in (self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop, self.hub.stop, self.camera.stop,
+        for closer in (self.weather.stop, self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop, self.hub.stop, self.camera.stop,
                        self.tiles.stop):
             try:
                 await closer()

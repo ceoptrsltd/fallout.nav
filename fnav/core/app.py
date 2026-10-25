@@ -260,6 +260,8 @@ def _register_ws(app: FastAPI, core: Core) -> None:
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):
         hello = [core.settings_message(), core.build_telemetry().model_dump_json()]
+        if (weather := core.weather.status()) is not None:
+            hello.append(weather.model_dump_json())
         await core.ws.serve(ws, hello, REMOTE_TELEMETRY_EVERY if core.auth.is_remote(ws) else 1)
 
 
@@ -625,6 +627,11 @@ def _register_games(app: FastAPI, core: Core) -> None:
     @app.post("/api/games/stop")
     async def games_stop():
         return await core.games.stop("stopped from the web UI")
+
+    @app.get("/api/weather")
+    async def weather():
+        st = core.weather.status()
+        return {"weather": st.model_dump() if st else None, "error": core.weather.error}
 
     @app.get("/api/controls")
     async def controls():

@@ -81,6 +81,7 @@ let settings = DEFAULT_SETTINGS;
 let settingsFromWs = false;
 let layers = activeLayers(settings);
 let telemetry = null;
+let weather = null; // {"type":"weather"} от fnav-core (ui/weather.js)
 let lastInternet = null;
 let mapDirty = true;
 
@@ -158,6 +159,8 @@ function onMessage(msg) {
     const inet = msg.system ? msg.system.internet : null;
     if (inet === true && lastInternet === false) store.resetFailures(); // сеть вернулась — перезапросить
     lastInternet = inet;
+  } else if (msg.type === "weather") {
+    weather = msg;
   } else if (msg.type === "settings") {
     settingsFromWs = true;
     applySettings(msg.settings);
@@ -331,6 +334,7 @@ function frame(tms) {
   const state = {
     now: t,
     telemetry: tel,
+    weather,
     settings,
     view: {
       mode,
@@ -347,6 +351,8 @@ function frame(tms) {
       internet: tel.system?.internet ?? null,
       recording: !!tel.camera?.recording,
       wallMs: Date.now(), // часы на экране (ui/clock.js)
+      vehicleX: pose.ax, // где машина на экране (ветер вокруг неё, ui/weather.js)
+      vehicleY: pose.ay,
       attribution: DIRECT_TILES && mode === "map", // подпись Esri внизу по центру — радио над ней
     },
     canvas: {

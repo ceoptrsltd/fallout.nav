@@ -78,6 +78,10 @@ site/         the project page
 Services on the device: `fnav-core` (port 80; 127.0.0.1:8090 for the tunnel), `fnav-camera`, `mediamtx`,
 `fnav-display` (cage + Chromium kiosk), `fnav-radio` (mpv), `bluetooth` + `bluealsa`, `fnav-tunnel`, `gpsd`, `chrony`.
 
+Weather on the car screen (now + the next two days while the radio is off, wind streaks around the vehicle):
+[Open-Meteo](https://open-meteo.com/) for the GPS position, every 30 min or after 25 km, cached for offline use
+(`fnav/core/weather.py`). Weather data by Open-Meteo.com, CC BY 4.0.
+
 ### Install on the device
 
 ```bash

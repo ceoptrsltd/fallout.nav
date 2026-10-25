@@ -9,6 +9,7 @@ import { drawIndicators, drawWarnings } from "./status.js";
 import { clearSprites, safeRect, setting } from "./theme.js";
 import { drawTrail } from "./trail.js";
 import { drawVehicle } from "./vehicle.js";
+import { drawWeather, drawWind } from "./weather.js";
 
 export { compassStyles, drawRadio, drawTrail, drawVehicle };
 
@@ -59,7 +60,8 @@ export function loadUi() {
  * Раскладка (768×576, heading_up — машина в нижней трети по центру):
  *   часы — слева вверху (display.show_clock); компас — вверху (v1/v3 справа, v2 по центру);
  *   предупреждения — колонкой слева под часами;
- *   скорость — слева внизу; индикаторы — справа внизу; радио (когда играет) — внизу между ними, под машиной.
+ *   скорость — слева внизу; индикаторы — справа внизу; радио (когда играет, иначе погода) — внизу между ними;
+ *   ветер (state.weather) — струйки вокруг машины, под всеми плашками.
  *   Центральная полоса над машиной (дорога впереди) свободна.
  * view.attribution — внизу по центру подпись источников карты (демо/удалённо): радио поднимается над ней.
  */
@@ -70,6 +72,7 @@ export function drawHud(ctx, state) {
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
 
+  drawWind(ctx, state); // под всеми плашками
   const style = setting(state, "display.compass_style", "v1");
   const cr = drawCompass(ctx, state, safe, style);
   const clock = setting(state, "display.show_clock", true) ? drawClock(ctx, state, safe, cr) : null;
@@ -84,6 +87,7 @@ export function drawHud(ctx, state) {
 
   drawSpeed(ctx, state, Math.round(safe.x), Math.round(safe.y + safe.h - SPEED_BOX.h));
   drawIndicators(ctx, state, safe);
-  drawRadio(ctx, state, safe, state?.view?.attribution ? 17 : 0);
+  const lift = state?.view?.attribution ? 17 : 0;
+  if (!drawRadio(ctx, state, safe, lift)) drawWeather(ctx, state, safe, lift); // радио выключено — погода
   ctx.restore();
 }

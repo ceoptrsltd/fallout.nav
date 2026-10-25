@@ -28,7 +28,9 @@ export const DEFAULT_SETTINGS = {
     "trail_seconds": 60,
     "force_mode": "auto",
     "radio_panel": true,
-    "show_clock": true
+    "show_clock": true,
+    "weather_panel": true,
+    "wind_on_map": true
   },
   "nav": {
     "camera_below_mps": 2.0,

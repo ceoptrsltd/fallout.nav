@@ -30,6 +30,7 @@
 state = {
   now: 1729440000.12,            // performance-время в секундах (для анимаций)
   telemetry: { ...Telemetry },    // последнее сообщение как есть (fnav/models.py)
+  weather: { ...WeatherStatus } | null, // {"type":"weather"} от fnav-core (fnav/core/weather.py, Open-Meteo + кэш)
   settings:  { ...Settings },     // текущие настройки
   view: {
     mode: "map" | "camera",
@@ -46,6 +47,7 @@ state = {
     internet: true | null,
     recording: true,
     wallMs: 1729440000123,        // Date.now() — для часов (ui/clock.js); время машины = UTC + telemetry.system.utc_offset_min
+    vehicleX: 384, vehicleY: 386, // машина на экране (ветер вокруг неё, ui/weather.js)
   },
   canvas: { w: 768, h: 576, safe: { x: 38.4, y: 28.8, w: 691.2, h: 518.4 }, pxPerMm: 8.35 },
 }

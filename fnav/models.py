@@ -59,6 +59,8 @@ class DisplaySettings(_Model):
     force_mode: Literal["auto", "map", "camera"] = "auto"
     radio_panel: bool = True  # плашка радио (станция, трек) на экране, пока играет радио
     show_clock: bool = True  # часы, день недели и дата в левом верхнем углу экрана
+    weather_panel: bool = True  # погода (сейчас + 2 дня) на месте плашки радио, пока радио выключено
+    wind_on_map: bool = True  # ветер вокруг машины на карте (анимация)
 
 
 class ZoomStep(_Model):
@@ -425,6 +427,34 @@ class RadioState(_Model):
     output: RadioOutput | None = None
     error: str | None = None
     recent: list[RadioStation] = []
+
+
+class WeatherDay(_Model):
+    date: str  # YYYY-MM-DD, местная дата точки прогноза
+    weekday: str  # "MON"
+    code: int | None = None  # код погоды WMO
+    t_max: float | None = None
+    t_min: float | None = None
+    precip_prob: int | None = None  # вероятность осадков, %
+
+
+class WeatherStatus(_Model):
+    """Погода для экрана (fnav/core/weather.py): сообщение WebSocket {"type": "weather", …}."""
+
+    type: Literal["weather"] = "weather"
+    temp_c: float | None = None
+    feels_c: float | None = None
+    code: int | None = None
+    is_day: bool = True
+    wind_ms: float | None = None
+    gust_ms: float | None = None
+    wind_from_deg: float | None = None  # откуда дует, ° от севера
+    days: list[WeatherDay] = []  # завтра и послезавтра
+    updated: float | None = None  # когда получен прогноз, unix-время
+    stale: bool = False  # прогноз старше 3 ч (нет интернета): показан почасовой прогноз из кэша
+    lat: float | None = None
+    lon: float | None = None
+    source: str = "Open-Meteo"
 
 
 class RadioStatus(_Model):

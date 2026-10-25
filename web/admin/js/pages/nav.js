@@ -206,6 +206,12 @@ export async function mount(root) {
     store.settings?.display?.show_clock !== undefined
       ? f({ path: "display.show_clock", label: "Clock on screen", hint: "Time, weekday and date in the top-left corner", type: "switch" })
       : null,
+    store.settings?.display?.weather_panel !== undefined
+      ? f({ path: "display.weather_panel", label: "Weather on screen", hint: "Now and the next two days, in place of the radio panel while the radio is off. Weather data by Open-Meteo.com (CC BY 4.0)", type: "switch" })
+      : null,
+    store.settings?.display?.wind_on_map !== undefined
+      ? f({ path: "display.wind_on_map", label: "Wind around the vehicle", hint: "Animated streaks on the map show where the wind blows, relative to the vehicle", type: "switch" })
+      : null,
     f({ path: "display.mirror_x", label: "Mirror screen left-right", hint: "For monitors that mirror the picture themselves (rear-view CRTs like the WAECO RV-50). Affects only the physical screen, not this preview", type: "switch" }),
     f({ path: "display.trail_seconds", label: "Trail length", type: "number", min: 0, max: 600, step: 10, unit: "s" }),
     // until the device software has the radio (docs/contracts/radio.md) the setting does not exist: no switch
