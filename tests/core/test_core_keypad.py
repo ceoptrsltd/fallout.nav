@@ -62,6 +62,15 @@ def test_custom_layout():
     assert svc.decode(ev(kp.KEY_F13, 1) + ev(kp.KEY_F13 + 5, 1) + ev(kp.KEY_ENTER, 1)) == ["radio_toggle", "protect"]
 
 
+def test_favorite_hold_follows_the_mode_key():
+    assert KeypadSettings().key6_hold == "favorite"
+    # a layout saved before holds existed: the radio mode moved to key 3 -> holding key 3 saves the station
+    moved = KeypadSettings.model_validate({"key3": "shuffle", "key6": "view_toggle"})
+    assert moved.key3_hold == "favorite" and moved.key6_hold == "none"
+    # holds already chosen: left alone
+    assert KeypadSettings.model_validate({"key3": "shuffle", "key3_hold": "none"}).key3_hold == "none"
+
+
 async def test_handler_error_does_not_raise():
     async def boom():
         raise RuntimeError("x")

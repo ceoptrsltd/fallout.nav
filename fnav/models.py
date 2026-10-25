@@ -252,7 +252,8 @@ KeypadAction = Literal["none", "station_prev", "station_next", "radio_toggle", "
 class KeypadSettings(_Model):
     """Мини-клавиатура (6 клавиш + крутилка): какое действие у каждой. Сама клавиатура всегда шлёт F13–F21 и Enter —
     раскладка меняется здесь, без перепрошивки. Клавиши — слева направо, сверху вниз; крутилка справа.
-    *_hold — удержание (дольше 0.8 с) вместо нажатия; "none" — у клавиши только нажатие (срабатывает сразу)."""
+    *_hold — удержание (дольше 0.8 с) вместо нажатия; "none" — у клавиши только нажатие (срабатывает сразу).
+    Пока удержаний не задавали — «в избранное» на удержании той клавиши, что переключает режим радио (shuffle)."""
 
     key1: KeypadAction = "station_prev"
     key2: KeypadAction = "station_next"
@@ -268,8 +269,17 @@ class KeypadSettings(_Model):
     key3_hold: KeypadAction = "none"
     key4_hold: KeypadAction = "none"
     key5_hold: KeypadAction = "none"
-    key6_hold: KeypadAction = "favorite"
+    key6_hold: KeypadAction = "none"
     knob_press_hold: KeypadAction = "none"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _favorite_on_mode_key(cls, d):
+        if isinstance(d, dict) and not any(k.endswith("_hold") for k in d):
+            for place in ("key1", "key2", "key3", "key4", "key5", "key6", "knob_press"):
+                if d.get(place, cls.model_fields[place].default) == "shuffle":
+                    return {**d, place + "_hold": "favorite"}
+        return d
 
 
 class BluetoothSettings(_Model):

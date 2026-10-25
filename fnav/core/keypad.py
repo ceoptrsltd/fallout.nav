@@ -53,7 +53,7 @@ HOLD_S = 0.8
 ACTIONS: list[dict[str, str]] = [
     {"id": "station_prev", "title": "Previous station", "hint": "Random mode: back along the stations you heard"},
     {"id": "station_next", "title": "Next station",
-     "hint": "Through the current genre in order or at random, or through the favorites (the mode: key 6)"},
+     "hint": "Through the current genre in order or at random, or through the favorites (the radio mode key)"},
     {"id": "radio_toggle", "title": "Radio start / stop", "hint": "Starts the last station; does nothing in a game"},
     {"id": "shuffle", "title": "Next station: in order / random / favorites",
      "hint": "Shown on the radio panel; favorites are skipped while there are none; in a game: exit to the map"},

@@ -1,6 +1,6 @@
 // Radio: internet stations (radio-browser.info directory) played on the device through the Bluetooth speaker
 // (docs/contracts/radio.md). Live state from telemetry `radio`, the rest from api/radio/state.
-// Favorites: the star on a station (or holding key 6 of the macro pad) adds it, the star again removes it.
+// Favorites: the star on a station (or holding the radio mode key of the macro pad) adds it, the star again removes it.
 import { h, icon, clear } from "../dom.js";
 import { api, errText } from "../api.js";
 import { store, on, applySettings } from "../store.js";
@@ -334,7 +334,7 @@ export function mount(root) {
       listBody.append(h(".st-msg.dim", null, view.kind === "recent"
         ? "Nothing played yet — pick a genre on the left."
         : view.kind === "favorites"
-          ? "No favorites yet. Click ☆ next to a station, or hold key 6 of the macro pad while it plays."
+          ? "No favorites yet. Click ☆ next to a station, or hold the radio mode key of the macro pad while it plays (see Controls)."
           : "No stations found."));
       return;
     }
@@ -360,7 +360,7 @@ export function mount(root) {
   function renderSettings(s) {
     clear(setBox);
     if (s && s.radio && s.radio.mode) {
-      setBox.append(h(".np-mode", { title: "Keypad keys 1 / 2. Key 6 switches the mode; holding key 6 adds the playing station to favorites" },
+      setBox.append(h(".np-mode", { title: "Previous / next station keys of the macro pad. Its radio mode key switches the mode; holding it saves the playing station to favorites (see Controls)" },
         h("span", null, "Next station"),
         segmented({ name: "radio-mode", options: MODES, value: s.radio.mode, onchange: async (v) => {
           try { applySettings(await api.patch("/api/settings", { radio: { mode: v } })); toast("ok", "Saved"); }
