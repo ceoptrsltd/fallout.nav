@@ -1,8 +1,60 @@
 // Спидометр: крупные цифры (км/ч или м/с) + сегментная шкала, на металлической плашке.
 
-import { C, blit, fixedDigits, fontLabel, fontNum, outlinedText, plateSprite, setting, textWidth } from "./theme.js";
+import { C, blinkOn, blit, capHeight, fixedDigits, fontLabel, fontNum, outlinedText, plateSprite, setting, textWidth } from "./theme.js";
 
 export const SPEED_BOX = { w: 236, h: 116 };
+
+const LIMIT_D = 56; // знак разрешённой скорости (telemetry.speed_limit), диаметр
+const OVER_KMH = 3; // быстрее разрешённого больше чем на столько — знак мигает
+const SIGN_WHITE = "#f4f1e6";
+const SIGN_RED = "#d8261c";
+
+/** Разрешённая скорость для знака у спидометра (км/ч) или null. */
+export function speedLimitKmh(state) {
+  const l = state?.telemetry?.speed_limit;
+  if (!l || !Number.isFinite(l.kmh) || setting(state, "display.speed_limit", true) === false) return null;
+  return l.kmh;
+}
+
+/** Едем быстрее разрешённого (speedKmh — по спидометру, в км/ч). */
+export function overLimit(speedKmh, limitKmh) {
+  return Number.isFinite(speedKmh) && Number.isFinite(limitKmh) && speedKmh > limitKmh + OVER_KMH;
+}
+
+/**
+ * Знак как на дороге: белый круг, красный обод, чёрные цифры (на ч/б обод — серый, цифры читаются).
+ * Превышение — мигает «наоборот»: красный круг, белые цифры. Центр (cx, cy) — над правым углом спидометра.
+ */
+function drawLimitSign(ctx, state, cx, cy) {
+  const kmh = speedLimitKmh(state);
+  if (kmh === null) return;
+  const mps = state?.view?.speedMps;
+  const speedKmh = Number.isFinite(mps) ? mps * 3.6 : null;
+  const alert = overLimit(speedKmh, kmh) && blinkOn(state?.now ?? 0, 2, 0.5);
+  const r = LIMIT_D / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 1.5, 0, 2 * Math.PI);
+  ctx.fillStyle = C.dark;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 1, 0, 2 * Math.PI);
+  ctx.fillStyle = alert ? SIGN_RED : SIGN_WHITE;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 4.5, 0, 2 * Math.PI);
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = alert ? SIGN_WHITE : SIGN_RED;
+  ctx.stroke();
+  const txt = String(kmh);
+  const font = fontNum(txt.length > 2 ? 25 : 30, 700);
+  ctx.font = font;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = alert ? SIGN_WHITE : C.dark;
+  ctx.fillText(txt, cx, cy + capHeight(ctx, font) / 2);
+  ctx.restore();
+}
 
 const SEGMENTS = 14;
 
@@ -44,6 +96,8 @@ export function drawSpeed(ctx, state, x, y) {
   ctx.fillStyle = C.ink;
   ctx.fillRect(ux - 18, y + 47, 36, 3);
   outlinedText(ctx, kmh ? "h" : "s", ux, y + 66, fontLabel(25), { lw: 4 });
+
+  drawLimitSign(ctx, state, x + w - 34, y - 12);
 
   // сегментная шкала: светлые = зажжены, тёмные с рамкой = нет (различимо и в ч/б)
   const sx = x + 14;

@@ -60,6 +60,7 @@ export function startDemo({ onMessage, getSettings, applyPatch, getState, now })
     else display = { ...display, mode: s.display.force_mode !== "auto" ? s.display.force_mode : display.mode, orientation: s.display.orientation };
     tel.display = display;
     tel.radio = demoRadioStatus(t - radioT0); // on-screen radio panel: a made-up station schedule
+    tel.speed_limit = { kmh: 50, src: "osm" }; // the sign next to the speedometer (blinks above 53 km/h)
     onMessage(tel);
     if (!readySent) {
       readySent = true;

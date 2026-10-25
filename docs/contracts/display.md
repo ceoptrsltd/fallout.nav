@@ -30,6 +30,7 @@
 state = {
   now: 1729440000.12,            // performance-время в секундах (для анимаций)
   telemetry: { ...Telemetry },    // последнее сообщение как есть (fnav/models.py)
+  // telemetry.speed_limit: {kmh, src: "osm"|"zone"|"default"} | null — знак у спидометра (fnav/core/speedlimit.py)
   weather: { ...WeatherStatus } | null, // {"type":"weather"} от fnav-core (fnav/core/weather.py, Open-Meteo + кэш)
   settings:  { ...Settings },     // текущие настройки
   view: {

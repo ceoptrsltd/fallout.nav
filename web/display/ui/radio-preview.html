@@ -65,6 +65,10 @@ const CASES = [
   ["weather-stale", "No internet for hours: hourly forecast from the cache (dimmed)", [[0, null], [3.1, null]],
     { weather: { ...WX, stale: true, code: 95 } }],
   ["weather-radio", "Radio playing: the radio panel wins, the wind stays", [[0, R], [2, R]], { weather: WX }],
+  // speed limit sign next to the speedometer (OSM offline); the preview drives 48 km/h
+  ["limit", "Speed limit 50 (driving 48)", [[0, R]], { limit: { kmh: 50, src: "osm" } }],
+  ["limit-over", "Speed limit 30, driving 48: the sign blinks inverted", [[0, R], [0.1, R]], { limit: { kmh: 30, src: "osm" } }],
+  ["limit-140", "Motorway 140", [[0, null]], { limit: { kmh: 140, src: "default" }, weather: WX }],
 ];
 
 function state(now, radio, o = {}) {
@@ -73,7 +77,7 @@ function state(now, radio, o = {}) {
     now,
     telemetry: { gps: { fix: down ? "none" : "3d", sats_used: down ? 0 : 11, sats_visible: down ? 3 : 19 }, heading: { deg: down ? null : 40, source: down ? "none" : "gps" },
                  display: { mode: o.camera ? "camera" : "map", orientation: "heading_up" }, camera: { recording: !down },
-                 system: { internet: !down }, radio, errors: [] },
+                 system: { internet: !down }, radio, errors: [], speed_limit: o.limit ?? null },
     weather: o.weather ?? null,
     settings: { display: { ...DEFAULT_SETTINGS.display, compass_style: "v1" } },
     view: { mode: o.camera ? "camera" : "map", orientation: "heading_up", bearingDeg: 40, headingDeg: down ? null : 40,

@@ -1,0 +1,7 @@
+{
+    "attributes": {"type": false, "id": "@id"},
+    "linear_tags": true,
+    "area_tags": false,
+    "include_tags": ["highway", "maxspeed", "maxspeed:forward", "maxspeed:backward", "maxspeed:type",
+                     "source:maxspeed", "zone:maxspeed", "oneway", "junction", "area"]
+}

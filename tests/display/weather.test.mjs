@@ -38,3 +38,15 @@ test("windScreenAngle: where the wind blows, relative to the rotated map", () =>
   assert.equal(deg(st(270, 90)), 0); // heading east with a westerly: tailwind, up
   assert.equal(windScreenAngle({ weather: { wind_ms: 3 } }), null);
 });
+
+test("speed limit sign: shown from telemetry, blinks only clearly above the limit", async () => {
+  const { overLimit, speedLimitKmh } = await import("../../web/display/ui/speed.js");
+  const st = (speed_limit, display = {}) => ({ telemetry: { speed_limit }, settings: { display } });
+  assert.equal(speedLimitKmh(st({ kmh: 50, src: "osm" })), 50);
+  assert.equal(speedLimitKmh(st(null)), null);
+  assert.equal(speedLimitKmh(st({ kmh: 50 }, { speed_limit: false })), null);
+  assert.equal(overLimit(52.9, 50), false);
+  assert.equal(overLimit(53.5, 50), true);
+  assert.equal(overLimit(null, 50), false);
+  assert.equal(DEFAULT_SETTINGS.display.speed_limit, true);
+});

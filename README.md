@@ -82,6 +82,11 @@ Weather on the car screen (now + the next two days while the radio is off, wind 
 [Open-Meteo](https://open-meteo.com/) for the GPS position, every 30 min or after 25 km, cached for offline use
 (`fnav/core/weather.py`). Weather data by Open-Meteo.com, CC BY 4.0.
 
+Speed limit sign next to the speedometer: offline OpenStreetMap roads. `tools/speedlimits.sh` builds the database on
+the server from the Geofabrik extract (Poland by default; implicit limits such as `PL:urban` and defaults by road
+class) and copies it to `/var/lib/fnav/speedlimits.sqlite`; `fnav/core/speedlimit.py` matches the GPS position and
+course to the road once a second. Rerun the script now and then for fresh data. Data © OpenStreetMap contributors, ODbL.
+
 ### Install on the device
 
 ```bash

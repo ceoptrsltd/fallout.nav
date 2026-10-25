@@ -61,6 +61,7 @@ class DisplaySettings(_Model):
     show_clock: bool = True  # часы, день недели и дата в левом верхнем углу экрана
     weather_panel: bool = True  # погода (сейчас + 2 дня) на месте плашки радио, пока радио выключено
     wind_on_map: bool = True  # ветер вокруг машины на карте (анимация)
+    speed_limit: bool = True  # знак разрешённой скорости у спидометра (OSM, data_dir/speedlimits.sqlite)
 
 
 class ZoomStep(_Model):
@@ -429,6 +430,14 @@ class RadioState(_Model):
     recent: list[RadioStation] = []
 
 
+class SpeedLimit(_Model):
+    """Разрешённая скорость на дороге под колёсами (fnav/core/speedlimit.py, OpenStreetMap офлайн)."""
+
+    kmh: int
+    src: Literal["osm", "zone", "default"] = "osm"  # знак в OSM / зона (PL:urban…) / по типу дороги
+    way: int | None = None  # id дороги в OSM
+
+
 class WeatherDay(_Model):
     date: str  # YYYY-MM-DD, местная дата точки прогноза
     weekday: str  # "MON"
@@ -502,4 +511,5 @@ class Telemetry(_Model):
     disk: DiskStatus = DiskStatus()
     system: SystemStatus = SystemStatus()
     radio: RadioStatus | None = None
+    speed_limit: SpeedLimit | None = None
     errors: list[str] = []

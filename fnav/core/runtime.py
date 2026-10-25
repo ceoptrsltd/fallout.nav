@@ -23,6 +23,7 @@ from fnav.core.keypad import KeypadService
 from fnav.core.navlogic import NavLogic
 from fnav.core.radio import MOCK_STATION, Player, create_radio
 from fnav.core.recordings import Recordings
+from fnav.core.speedlimit import SpeedLimitService
 from fnav.core.system import SystemService, run
 from fnav.core.tiles import TileService
 from fnav.core.tracking import RelayConfig, TrackService
@@ -133,6 +134,7 @@ class Core:
                                   self._save_radio_volume, transport=opts.radio_transport,
                                   player=opts.radio_player)
         self.bt.on_output(self.radio.set_output)
+        self.speedlimits = SpeedLimitService(paths.data_dir() / "speedlimits.sqlite", lambda: self.hub.snapshot().gps)
         self.weather = WeatherService(paths.data_dir() / "weather.json", lambda: self.hub.snapshot().gps,
                                       lambda st: self.ws.broadcast(st.model_dump(mode="json")),
                                       mock=opts.mock, transport=opts.weather_transport)
@@ -210,6 +212,7 @@ class Core:
             ]
             self.tracking.start(lambda: self.hub.snapshot().gps, lambda: self.store.get().tracking)
             self.weather.start()
+            self.speedlimits.start()
             self.games.start()
             self.keypad.start()
         self.started = True
@@ -218,7 +221,7 @@ class Core:
     async def stop(self) -> None:
         await cancel_tasks(*self._tasks)
         self._tasks.clear()
-        for closer in (self.weather.stop, self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop, self.hub.stop, self.camera.stop,
+        for closer in (self.speedlimits.stop, self.weather.stop, self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop, self.hub.stop, self.camera.stop,
                        self.tiles.stop):
             try:
                 await closer()
@@ -295,6 +298,7 @@ class Core:
             disk=self.system.disk,
             system=self.system.status,
             radio=self.radio.status(),
+            speed_limit=self.speedlimits.status(),
             errors=errors,
         )
 

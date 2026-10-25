@@ -30,7 +30,8 @@ export const DEFAULT_SETTINGS = {
     "radio_panel": true,
     "show_clock": true,
     "weather_panel": true,
-    "wind_on_map": true
+    "wind_on_map": true,
+    "speed_limit": true
   },
   "nav": {
     "camera_below_mps": 2.0,
