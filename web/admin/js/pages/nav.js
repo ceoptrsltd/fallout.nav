@@ -166,7 +166,7 @@ export async function mount(root) {
     f({ path: "display.layers.transport", label: "Roads over imagery", type: "switch" }),
     f({ path: "display.layers.places", label: "Place labels", type: "switch" }),
     f({ path: "display.layers.street_map_instead", label: "Street map instead of satellite", hint: "Esri World Street Map", type: "switch" }),
-    f({ path: "tiles.max_zoom", label: "Maximum tile zoom", type: "number", min: 10, max: 23, step: 1 }),
+    f({ path: "tiles.max_zoom", label: "Maximum tile zoom", hint: "Most detailed satellite tiles (Esri has up to 21 in Warsaw; roads and labels stop at 19). The screen takes as much detail as its pixels need; where Esri has no imagery, the level above is stretched", type: "number", min: 10, max: 23, step: 1 }),
     f({ path: "tiles.esri_api_key", label: "Esri API key", hint: "Empty = legacy URLs without a key", type: "password", placeholder: "API key" }),
   );
 

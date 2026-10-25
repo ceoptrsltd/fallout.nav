@@ -4,7 +4,8 @@
 // поэтому смещения тайлов относительно машины считаются в JS (double), а в матрицу canvas
 // попадают только небольшие числа.
 
-import { TILE_SIZE, parentTile, tileKey, tileLevelFor, visibleTiles, worldSize } from "./mercator.js";
+import { TILE_SIZE, parentTile, tileKey, visibleTiles, worldSize } from "./mercator.js";
+import { layerLevel } from "./layers.js";
 
 const DEG = Math.PI / 180;
 export const BG_COLOR = "#141614";
@@ -41,17 +42,12 @@ export class MapRenderer {
   }
 
   /**
-   * Нарисовать слои. view — из makeView(); layers — activeLayers(); base — матрица холста
-   * (например, pixelRatio), к которой добавляется трансформация карты.
+   * Нарисовать слои. view — из makeView(); layers — activeLayers(); pixelRatio — пикселей холста на логический px:
+   * при pixelRatio > 1 (чёткий экран ноутбука) уровень тайлов подробнее (layerLevel), у каждого слоя — свой.
    */
   draw(ctx, view, layers, maxZoom, pixelRatio = 1) {
     if (!this.placeholder) this.placeholder = makePlaceholder();
-    const z = tileLevelFor(view.zoom, maxZoom);
-    const k = Math.pow(2, view.zoom - z); // масштаб: px тайла уровня z → px экрана
-    const ws = worldSize(z);
-    const ox = view.cx * ws;
-    const oy = view.cy * ws;
-    const tiles = visibleTiles(view, z, 2);
+    const detail = Math.log2(pixelRatio);
     const stats = { tiles: 0, fallbacks: 0, missing: 0 };
 
     ctx.save();
@@ -60,10 +56,21 @@ export class MapRenderer {
     ctx.fillRect(0, 0, view.w, view.h);
     ctx.translate(view.ax, view.ay);
     ctx.rotate(-view.bearing * DEG);
-    ctx.scale(k, k);
     ctx.imageSmoothingEnabled = true;
+    if (pixelRatio !== 1) ctx.imageSmoothingQuality = "high"; // на устройстве (1) — как было: дешевле для V3D
 
+    const levels = new Map(); // уровень → {k, ox, oy, tiles}
     for (const layer of layers) {
+      const z = layerLevel(layer, view.zoom, maxZoom, detail);
+      let lv = levels.get(z);
+      if (!lv) {
+        const ws = worldSize(z);
+        lv = { k: Math.pow(2, view.zoom - z), ox: view.cx * ws, oy: view.cy * ws, tiles: visibleTiles(view, z, 2) };
+        levels.set(z, lv);
+      }
+      const { k, ox, oy, tiles } = lv; // k: px тайла уровня z → px экрана
+      ctx.save();
+      ctx.scale(k, k);
       // подложку рисуем с перекрытием ~1 px экрана, чтобы при повороте не было швов
       const ov = layer.base ? 1 / k : 0;
       const sz = TILE_SIZE + ov;
@@ -84,6 +91,7 @@ export class MapRenderer {
         stats.missing++;
         if (layer.base && this.store.isFailed(key)) ctx.drawImage(this.placeholder, dx, dy, sz, sz);
       }
+      ctx.restore();
     }
     ctx.restore();
     this.lastDrawn = stats;

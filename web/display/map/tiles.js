@@ -178,6 +178,20 @@ export class TileStore {
   }
 }
 
+// Esri, где снимка такого уровня нет, отдаёт 200 и серую «Map data not yet available» (одну и ту же; fnav-core
+// узнаёт её сам — fnav/core/tiles.py). Тайлы напрямую с arcgisonline (демо, удалённо) проверяем здесь.
+const ESRI_NO_DATA_SIZE = 2521;
+const ESRI_NO_DATA_SHA256 = "9eafd300d61393184a4abc1d458564cfd1cd9b6f9c4e9c74687045c0a0e5b858";
+
+/** Заглушка Esri «нет снимка»? (без crypto.subtle — небезопасная страница — только по размеру) */
+export async function isEsriNoData(blob) {
+  if (!blob || blob.size !== ESRI_NO_DATA_SIZE) return false;
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return true;
+  const d = new Uint8Array(await subtle.digest("SHA-256", await blob.arrayBuffer()));
+  return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("") === ESRI_NO_DATA_SHA256;
+}
+
 /** Браузерный загрузчик: fetch (с отменой) + декодирование вне главного потока. */
 export async function browserTileLoader(url, signal) {
   const r = await fetch(url, { signal, credentials: "same-origin" });
@@ -188,6 +202,11 @@ export async function browserTileLoader(url, signal) {
   }
   const blob = await r.blob();
   if (signal.aborted) throw new DOMException("aborted", "AbortError");
+  if (await isEsriNoData(blob)) {
+    const e = new Error("Esri has no imagery at this zoom here");
+    e.status = 404; // как «тайла нет»: рисуется растянутый тайл уровнем выше
+    throw e;
+  }
   try {
     if (typeof createImageBitmap === "function") return await createImageBitmap(blob);
     // запасной путь для старых браузеров

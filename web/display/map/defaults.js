@@ -95,7 +95,7 @@ export const DEFAULT_SETTINGS = {
   },
   "tiles": {
     "esri_api_key": "",
-    "max_zoom": 19,
+    "max_zoom": 21,
     "imagery_url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     "transport_url": "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
     "places_url": "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",

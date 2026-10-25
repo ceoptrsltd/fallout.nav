@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import shutil
@@ -36,6 +37,15 @@ UTIME_EVERY_S = 3600.0
 NEG_TTL_S = 600.0  # «такого тайла у Esri нет» — помним 10 минут
 CHECK_ONLINE_S = 60.0
 CHECK_OFFLINE_S = 15.0
+
+# Где снимка (карты улиц) такого уровня у Esri нет, сервер отвечает 200 и серой картинкой «Map data not yet
+# available» (одна и та же по всему миру). Для нас это «тайла нет» (404): экран рисует растянутый тайл уровнем выше.
+ESRI_NO_DATA = (2521, "9eafd300d61393184a4abc1d458564cfd1cd9b6f9c4e9c74687045c0a0e5b858")
+
+
+def is_esri_no_data(data: bytes) -> bool:
+    return len(data) == ESRI_NO_DATA[0] and hashlib.sha256(data).hexdigest() == ESRI_NO_DATA[1]
+
 
 _EXT_BY_CT = {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 _CT_BY_EXT = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
@@ -252,6 +262,11 @@ class TileService:
                 self._drop(key)  # файл удалили снаружи
             return None
         data, ext, mtime = res
+        if is_esri_no_data(data):  # закэширована раньше, чем мы научились её узнавать
+            self._drop(key)
+            await asyncio.to_thread(_unlink_many, [self._path(key, ext)])
+            self._remember_missing(key)
+            return None
         if e:
             e.atime = now
             if bump:
@@ -282,6 +297,9 @@ class TileService:
             # Esri при ошибке токена отдаёт JSON с кодом 200
             raise TileError(404, "Tile server did not return an image")
         data = r.content
+        if is_esri_no_data(data):
+            self._remember_missing(key)
+            raise TileError(404, "Esri has no imagery at this zoom here")
         path = self._path(key, ext)
         try:
             mtime = await asyncio.to_thread(_write_tile, path, data)

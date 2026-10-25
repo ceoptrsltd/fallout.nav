@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { TileStore } from "../../web/display/map/tiles.js";
-import { activeLayers, planRequests } from "../../web/display/map/layers.js";
+import { TileStore, isEsriNoData } from "../../web/display/map/tiles.js";
+import { VECTOR_MAX_Z, activeLayers, layerLevel, planRequests } from "../../web/display/map/layers.js";
 import { Trail } from "../../web/display/map/trail.js";
-import { lonLatToMerc, makeView, moveMerc } from "../../web/display/map/mercator.js";
+import { lonLatToMerc, makeView, moveMerc, parentTile, tileKey, visibleTiles } from "../../web/display/map/mercator.js";
 import { DEFAULT_SETTINGS, deepMerge } from "../../web/display/map/defaults.js";
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -189,4 +189,40 @@ test("TileStore: сервер недоступен — общая пауза з�
   calls[6].resolve(img("ok"));
   await tick();
   assert.equal(s.netBackoff, 0);
+});
+
+test("layerLevel: a sharper screen takes more detailed imagery; roads and labels stop at z19", () => {
+  const [imagery, transport] = activeLayers(DEFAULT_SETTINGS);
+  assert.equal(imagery.maxZ, 21);
+  assert.equal(transport.maxZ, VECTOR_MAX_Z);
+  assert.equal(layerLevel(imagery, 19, 20), 19); // the car: canvas pixels = screen pixels
+  assert.equal(layerLevel(imagery, 19, 20, Math.log2(2)), 20); // laptop, 2 screen px per canvas px
+  assert.equal(layerLevel(imagery, 19, 20, Math.log2(3)), 20); // capped by max_zoom
+  assert.equal(layerLevel(transport, 19, 20, 1), 19);
+  assert.equal(layerLevel(imagery, 17, 20, Math.log2(1.25)), 17);
+  assert.equal(layerLevel(imagery, 17, 20, Math.log2(1.5)), 18);
+});
+
+test("planRequests: per-layer levels; a missing tile asks for its parent", () => {
+  const c = lonLatToMerc(21.0122, 52.2297);
+  const view = makeView({ cx: c.x, cy: c.y, zoom: 19, bearing: 0, ax: 384, ay: 386, w: 768, h: 576 });
+  const layers = activeLayers(DEFAULT_SETTINGS);
+  const reqs = planRequests({ view, layers, maxZoom: 20, detail: 1, maxRequests: 1000 });
+  assert.ok(reqs.some((r) => r.key.startsWith("imagery/20/")));
+  assert.ok(!reqs.some((r) => r.key.startsWith("imagery/19/")));
+  assert.ok(reqs.some((r) => r.key.startsWith("transport/19/")) && !reqs.some((r) => r.key.startsWith("transport/20/")));
+  // Esri has no z20 imagery for one tile: its z19 parent is requested right after it
+  const t = visibleTiles(view, 20, 48)[0];
+  const missing = tileKey("imagery", 20, t.wx, t.y);
+  const p = parentTile(20, t.wx, t.y, 1);
+  const withParent = planRequests({ view, layers, maxZoom: 20, detail: 1, maxRequests: 1000, failed: (k) => k === missing });
+  const iMissing = withParent.findIndex((r) => r.key === missing);
+  const iParent = withParent.findIndex((r) => r.key === tileKey("imagery", 19, p.x, p.y));
+  assert.ok(iMissing >= 0 && iParent > iMissing);
+});
+
+test("isEsriNoData: the grey Esri tile by size and SHA-256", async () => {
+  assert.equal(await isEsriNoData(new Blob([new Uint8Array(100)])), false);
+  assert.equal(await isEsriNoData(new Blob([new Uint8Array(2521)])), false); // same size, other bytes
+  assert.equal(await isEsriNoData(null), false);
 });

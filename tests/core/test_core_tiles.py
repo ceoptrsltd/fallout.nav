@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import time
 
@@ -6,6 +7,7 @@ import httpx
 import pytest
 from core_helpers import FakeUpstream, login, make_opts, running_app, tiny_jpeg
 
+from fnav.core import tiles as tmod
 from fnav.core.tiles import TileError, TileService
 from fnav.models import Settings
 
@@ -68,6 +70,35 @@ async def test_concurrent_requests_single_upstream(tmp_path):
     res = await asyncio.gather(*[t.get("imagery", 10, 5, 6) for _ in range(10)])
     assert len(up.requests) == 1
     assert all(r.data == res[0].data for r in res)
+    await t.stop()
+
+
+async def test_esri_no_data_tile_is_a_miss(tmp_path, monkeypatch):
+    """Esri answers 200 with a grey "Map data not yet available" where it has no imagery at that zoom:
+    not cached, 404 to the screen (it draws the level above); one cached earlier is thrown away."""
+    grey = bytes([0xFF, 0xD8]) + b"grey" * 50
+    monkeypatch.setattr(tmod, "ESRI_NO_DATA", (len(grey), hashlib.sha256(grey).hexdigest()))
+    assert tmod.is_esri_no_data(grey) and not tmod.is_esri_no_data(tiny_jpeg())
+
+    async def h(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=grey, headers={"content-type": "image/jpeg"})
+
+    up = AsyncUpstream(h)
+    t = svc(tmp_path, up)
+    old = tmp_path / "tiles/imagery/20/5/6.jpg"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(grey)
+    await t.start(background=False)
+    with pytest.raises(TileError) as e:
+        await t.get("imagery", 20, 5, 6)  # the cached grey tile
+    assert e.value.status == 404 and not old.exists() and up.requests == []
+    with pytest.raises(TileError) as e:
+        await t.get("imagery", 20, 7, 8)  # fresh from Esri
+    assert e.value.status == 404 and len(up.requests) == 1
+    assert not (tmp_path / "tiles/imagery/20/7/8.jpg").exists()
+    with pytest.raises(TileError):
+        await t.get("imagery", 20, 7, 8)  # remembered for a while: Esri is not asked again
+    assert len(up.requests) == 1
     await t.stop()
 
 

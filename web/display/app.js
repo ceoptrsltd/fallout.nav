@@ -3,7 +3,7 @@
 // запасной вариант — ./map/debug-hud.js.
 //
 // Параметры URL: ?pal=1 (устройство, 720×576, scaleX 0.9375), ?preview=1 (iframe веб-интерфейса),
-// ?debug=1 (статистика), ?fps=30 (ограничить частоту кадров), ?dpr=2 (чёткость на ноутбуке),
+// ?debug=1 (статистика), ?fps=30 (ограничить частоту кадров), ?dpr=2 (чёткость; без него в браузере — по экрану),
 // ?ui=debug (принудительно отладочный HUD), ?demo=1 (демо в браузере без fnav-core, docs/contracts/demo.md;
 // ?camera=<url> — картинка «камеры» в демо).
 // Удалённый доступ (страница не с устройства, а через сервер, docs/contracts/remote.md): адреса — от корня
@@ -12,7 +12,7 @@
 import { DEFAULT_SETTINGS, deepMerge } from "./map/defaults.js";
 import { TileStore, browserTileLoader } from "./map/tiles.js";
 import { MapRenderer, BG_COLOR } from "./map/renderer.js";
-import { activeLayers, planRequests } from "./map/layers.js";
+import { activeLayers, layerLevel, planRequests } from "./map/layers.js";
 import { CompassFilter, MotionModel, OrientationBlend, RotationRig, ZoomAnimator, vehicleAnchor } from "./map/motion.js";
 import { Trail } from "./map/trail.js";
 import { CameraLayer } from "./map/camera.js";
@@ -20,7 +20,7 @@ import { Link, wsUrl } from "./map/link.js";
 import { REMOTE, appUrl } from "./map/root.js";
 import { ESRI_ATTRIBUTION, esriTileUrl } from "./map/esri.js";
 import { GamesMenu } from "./ui/games-menu.js";
-import { clamp, makeView, tileLevelFor } from "./map/mercator.js";
+import { clamp, makeView } from "./map/mercator.js";
 import * as debugHud from "./map/debug-hud.js";
 
 const W = 768;
@@ -31,7 +31,12 @@ const PAL = params.get("pal") === "1" && !DEMO; // демо — всегда б�
 const PREVIEW = params.get("preview") === "1";
 const DEBUG = params.get("debug") === "1";
 const FPS_CAP = Number(params.get("fps")) || 0;
-const PR = clamp(Number(params.get("dpr")) || 1, 1, 3);
+const DPR_PARAM = Number(params.get("dpr")) || 0;
+// пикселей холста на логический px. Устройство (PAL) — 1: холст 768×576 и так сжимается до 720×480.
+// В браузере — сколько настоящих пикселей экрана приходится на px холста (масштаб окна × devicePixelRatio):
+// карта рисуется в разрешении экрана, а не растягивается, и берёт тайлы подробнее (map/layers.js layerLevel).
+let PR = clamp(DPR_PARAM || 1, 1, 3);
+const TILE_CAPACITY = 300;
 const FORCE_DEBUG_UI = params.get("ui") === "debug";
 const DIRECT_TILES = DEMO || REMOTE; // Esri напрямую: на карте нужна подпись источников
 
@@ -43,10 +48,13 @@ const mapCanvas = document.getElementById("map");
 const hudCanvas = document.getElementById("hud");
 document.body.classList.toggle("pal", PAL);
 document.body.classList.toggle("preview", PREVIEW);
-for (const c of [mapCanvas, hudCanvas]) {
-  c.width = W * PR;
-  c.height = H * PR;
+function sizeCanvases() {
+  for (const c of [mapCanvas, hudCanvas]) {
+    c.width = Math.round(W * PR);
+    c.height = Math.round(H * PR);
+  }
 }
+sizeCanvases();
 const mapCtx = mapCanvas.getContext("2d", { alpha: false });
 // меню игр (геймпад) — только на самом устройстве
 const gamesMenu = !DEMO && !REMOTE && !PREVIEW
@@ -55,6 +63,7 @@ const gamesMenu = !DEMO && !REMOTE && !PREVIEW
 const hudCtx = hudCanvas.getContext("2d");
 
 let mirrorX = false;   // settings.display.mirror_x (set in applySettings)
+let resized = false;   // холсты пересозданы (PR сменился) — карту перерисовать
 function layout() {
   if (PAL) {
     // 768 -> 720 for the PAL pixel aspect; display.mirror_x flips left-right for monitors that mirror
@@ -72,6 +81,16 @@ function layout() {
   const x = (innerWidth - W * s) / 2;
   const y = (innerHeight - H * s) / 2;
   root.style.transform = `translate(${x}px, ${y}px) scale(${s})`;
+  if (!DPR_PARAM) {
+    // окно предпросмотра в веб-интерфейсе ещё и уменьшено (transform) — его масштаб в devicePixelRatio не виден,
+    // но и не нужен: лишние пиксели только сглаживаются. Ступенями по 0.25, чтобы не пересоздавать холсты на каждый px.
+    const pr = clamp(Math.ceil(s * (devicePixelRatio || 1) * 4) / 4, 1, 3);
+    if (pr !== PR) {
+      PR = pr;
+      sizeCanvases();
+      resized = true;
+    }
+  }
 }
 layout();
 addEventListener("resize", layout);
@@ -107,7 +126,7 @@ const trail = new Trail();
 const store = new TileStore({
   loader: browserTileLoader,
   now: nowS,
-  capacity: 300,
+  capacity: TILE_CAPACITY,
   maxConcurrent: 6,
   onChange: () => {
     mapDirty = true;
@@ -306,6 +325,10 @@ function frame(tms) {
   requestAnimationFrame(frame);
   const t = tms / 1000;
   if (FPS_CAP && lastFrame !== null && t - lastFrame < 1 / FPS_CAP - 0.004) return;
+  if (resized) {
+    resized = false;
+    mapDirty = true;
+  }
   const dt = lastFrame === null ? 0 : Math.min(0.25, t - lastFrame);
   if (dt > 0) fpsEma = fpsEma ? fpsEma + (1 / dt - fpsEma) * 0.05 : 1 / dt;
   lastFrame = t;
@@ -369,8 +392,10 @@ function frame(tms) {
   const covered = camera.coversMap(t);
   if (m.hasPos) {
     // тайлы заказываем и под камерой (реже) — при возврате к карте они уже готовы
-    const level = tileLevelFor(zoom, maxZoom());
+    const detail = Math.log2(PR);
+    const level = layers.length ? layerLevel(layers[0], zoom, maxZoom(), detail) : 0;
     if (t - lastPlan > (covered ? 1.0 : 0.15) || level !== lastPlanLevel) {
+      store.capacity = Math.round(TILE_CAPACITY * Math.max(1, PR)); // экран чётче — тайлов в кадре больше
       store.want(
         planRequests({
           view,
@@ -380,6 +405,9 @@ function frame(tms) {
           headingDeg: m.heading,
           speedMps: m.speed ?? 0,
           urlFor: tileUrlFor,
+          detail,
+          failed: (key) => store.isFailed(key),
+          maxRequests: Math.round(160 * Math.max(1, PR)),
         }),
       );
       lastPlan = t;
@@ -422,7 +450,7 @@ function frame(tms) {
     const s = store.stats;
     debugHud.drawStats(hudCtx, [
       `fps ${fpsEma.toFixed(0)}  map ${mapMsEma.toFixed(1)}ms  hud ${hudMsEma.toFixed(1)}ms  draws ${drawnFrames}  ui ${uiName}`,
-      `zoom ${zoom.toFixed(2)} → ${zoomAnim.target ?? "-"}  lvl ${tileLevelFor(zoom, maxZoom())}  brg ${pose.bearing.toFixed(1)}  veh ${rot.vehicle.toFixed(1)}  ${rig.tracking ? "trk" : "hold"}`,
+      `zoom ${zoom.toFixed(2)} → ${zoomAnim.target ?? "-"}  lvl ${layers.length ? layerLevel(layers[0], zoom, maxZoom(), Math.log2(PR)) : "-"}  pr ${PR}  brg ${pose.bearing.toFixed(1)}  veh ${rot.vehicle.toFixed(1)}  ${rig.tracking ? "trk" : "hold"}`,
       `tiles cache ${store.cache.size}  load ${store.inflight.size}  q ${store.queue.length}  fail ${store.failures.size}`,
       `drawn ${renderer.lastDrawn.tiles}/${renderer.lastDrawn.fallbacks}/${renderer.lastDrawn.missing}  ok ${s.loaded} err ${s.failed} abort ${s.aborted} evict ${s.evicted}`,
       `pos ${m.lat?.toFixed(5) ?? "-"}, ${m.lon?.toFixed(5) ?? "-"}  v ${(m.speed ?? 0).toFixed(1)}  trail ${trail.pts.length}`,

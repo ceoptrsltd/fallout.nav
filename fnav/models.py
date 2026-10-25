@@ -128,7 +128,7 @@ class StorageSettings(_Model):
 
 class TileSettings(_Model):
     esri_api_key: str = ""  # пусто = старые адреса без ключа
-    max_zoom: int = Field(19, ge=10, le=23)
+    max_zoom: int = Field(21, ge=10, le=23)  # самый подробный уровень снимков (у Esri в Варшаве есть z20–z21)
     imagery_url: str = (
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
     )
