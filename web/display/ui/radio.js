@@ -5,8 +5,9 @@
 // По CPU дёшево: плашка, шкала и тексты пререндерены в спрайты (тексты — в маленьком LRU), кадр — несколько
 // drawImage. Анимации — только по событию (смена трека/станции, громкость, поиск сигнала) и медленная бегущая
 // строка, если трек не помещается.
-// radio.shuffle (клавиша 6: следующая станция случайная) — значок справа от станции; после переключения
-// режим на 2.5 с показывается в строке трека.
+// radio.mode (клавиша 6: следующая станция по порядку / случайная / по избранному) — значок справа от станции
+// (стрелки / звезда); после переключения режим на 2.5 с показывается в строке трека. radio.fav_seq (удержание
+// клавиши 6: станцию в избранное) — там же «FAVORITE SAVED» / «ALREADY SAVED».
 
 import { SPEED_BOX } from "./speed.js";
 import { INDICATOR_ROW, indicatorsWidth } from "./status.js";
@@ -30,8 +31,10 @@ const DIAL_Y = 15; // линия шкалы
 const WIPE_S = 0.6; // смена трека: «развёртка» слева направо
 const TUNE_S = 0.9; // смена станции: стрелка переезжает
 const VOLUME_S = 2.5; // громкость показывается после изменения
-const MODE_S = 2.5; // режим «по порядку / случайно» — после переключения
-const SHUFFLE_W = 30; // место под значок shuffle справа от станции
+const MODE_S = 2.5; // режим «по порядку / случайно / избранное» — после переключения
+const FAV_S = 2.5; // «в избранное» — после удержания клавиши 6
+const MODE_W = 30; // место под значок режима справа от станции
+const MODE_TEXT = { order: "NEXT: IN ORDER", random: "NEXT: RANDOM", favorites: "NEXT: FAVORITES" };
 const APPEAR_S = 0.25;
 
 // ── чистые помощники (тестируются в tests/display/radio.test.mjs) ─────────
@@ -192,8 +195,10 @@ function dialSprite(w) {
   });
 }
 
-/** Значок shuffle: две скрещённые стрелки; straight — две параллельные («по порядку»). 26×20. */
-function modeSprite(straight) {
+/** Значок режима (26×20): random — две скрещённые стрелки, order — две параллельные, favorites — звезда. */
+function modeSprite(mode) {
+  if (mode === "favorites") return starSprite();
+  const straight = mode !== "random";
   return sprite(straight ? "radio-inorder" : "radio-shuffle", 26, 20, (c) => {
     const paths = straight
       ? [[[2, 6], [20, 6]], [[2, 14], [20, 14]]]
@@ -220,6 +225,28 @@ function modeSprite(straight) {
       }
       heads(() => c.stroke());
     }
+  });
+}
+
+/** Звезда «избранное» 26×20, с тёмной обводкой. */
+function starSprite() {
+  return sprite("radio-star", 26, 20, (c) => {
+    c.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const r = i % 2 ? 4.2 : 9.6;
+      const a = -Math.PI / 2 + (i * Math.PI) / 5;
+      const px = 12 + r * Math.cos(a);
+      const py = 10.6 + r * Math.sin(a);
+      if (i) c.lineTo(px, py);
+      else c.moveTo(px, py);
+    }
+    c.closePath();
+    c.lineJoin = "round";
+    c.lineWidth = 3.4;
+    c.strokeStyle = C.shadow;
+    c.stroke();
+    c.fillStyle = C.ink;
+    c.fill();
   });
 }
 
@@ -256,8 +283,8 @@ function panelFor(ctx) {
   let p = panels.get(key);
   if (!p) {
     p = { station: null, track: null, trackT0: 0, prevTrack: null, wipeT0: -1, needleFrom: null, needle: 0.5,
-          tuneT0: -1, prevStation: null, volume: null, volumeT0: -1, shuffle: null, modeT0: -1, appearT0: -1,
-          visible: false };
+          tuneT0: -1, prevStation: null, volume: null, volumeT0: -1, mode: null, modeT0: -1, appearT0: -1,
+          favSeq: null, favorite: false, favT0: -1, favAdded: false, visible: false };
     panels.set(key, p);
   }
   return p;
@@ -279,7 +306,9 @@ function update(p, radio, now) {
     p.prevTrack = null;
     p.prevStation = null;
     p.volume = radio.volume ?? null;
-    p.shuffle = !!radio.shuffle;
+    p.mode = radioMode(radio);
+    p.favSeq = radio.fav_seq ?? 0;
+    p.favorite = !!radio.favorite;
     return;
   }
   if (station !== p.station) {
@@ -303,9 +332,22 @@ function update(p, radio, now) {
   const v = radio.volume;
   if (typeof v === "number" && p.volume !== null && v !== p.volume) p.volumeT0 = now;
   if (typeof v === "number") p.volume = v;
-  const sh = !!radio.shuffle;
-  if (p.shuffle !== null && sh !== p.shuffle) p.modeT0 = now;
-  p.shuffle = sh;
+  const mode = radioMode(radio);
+  if (p.mode !== null && mode !== p.mode) p.modeT0 = now;
+  p.mode = mode;
+  const seq = radio.fav_seq ?? 0;
+  if (p.favSeq !== null && seq !== p.favSeq) {
+    p.favT0 = now;
+    p.favAdded = !!radio.favorite && !p.favorite; // в том же сообщении станция стала избранной — добавлена сейчас
+  }
+  p.favSeq = seq;
+  p.favorite = !!radio.favorite;
+}
+
+/** Режим перехода к следующей станции; старое ядро присылало shuffle: bool. */
+export function radioMode(radio) {
+  if (radio?.mode === "random" || radio?.mode === "favorites") return radio.mode;
+  return radio?.shuffle ? "random" : "order";
 }
 
 function currentNeedle(p, now) {
@@ -398,11 +440,21 @@ function drawVolume(ctx, x, yc, w, vol) {
   ctx.restore();
 }
 
-/** «NEXT: RANDOM» / «NEXT: IN ORDER» — после переключения клавишей 6. */
-function drawMode(ctx, x, yc, shuffle) {
-  blit(ctx, modeSprite(!shuffle), x - 1, Math.round(yc - 10));
-  const s = textSprite(ctx, shuffle ? "NEXT: RANDOM" : "NEXT: IN ORDER", fontLabel(25), 30);
-  blit(ctx, s, x + 30, Math.round(yc - 15));
+/** Значок + надпись в строке трека; надпись ужимается шрифтом, чтобы не вылезти за плашку (w — ширина строки). */
+function drawFlash(ctx, x, yc, w, icon, text) {
+  blit(ctx, icon, x - 1, Math.round(yc - 10));
+  const size = [25, 23, 21].find((n) => textWidth(ctx, fontLabel(n), text) <= w - 34) ?? 21;
+  blit(ctx, textSprite(ctx, text, fontLabel(size), 30), x + 30, Math.round(yc - 15));
+}
+
+/** «NEXT: RANDOM» / «NEXT: IN ORDER» / «NEXT: FAVORITES» — после переключения клавишей 6. */
+function drawMode(ctx, x, yc, w, mode) {
+  drawFlash(ctx, x, yc, w, modeSprite(mode), MODE_TEXT[mode] ?? MODE_TEXT.order);
+}
+
+/** «FAVORITE SAVED» / «ALREADY SAVED» — после удержания клавиши 6. */
+function drawFavorite(ctx, x, yc, w, added) {
+  drawFlash(ctx, x, yc, w, starSprite(), added ? "FAVORITE SAVED" : "ALREADY SAVED");
 }
 
 /** «NO SPEAKER» — светлая аварийная плашка (как NO GPS), не мигает: это не авария, а подсказка. */
@@ -475,7 +527,8 @@ export function drawRadio(ctx, state, safe, liftPx = 0) {
     p.prevTrack = null;
   }
   const barX = tx0 - 10 + wipe * (tx1 - tx0 + 20);
-  const sx1 = p.shuffle ? tx1 - SHUFFLE_W : tx1; // справа от станции — значок shuffle
+  const modeIcon = p.mode === "random" || p.mode === "favorites";
+  const sx1 = modeIcon ? tx1 - MODE_W : tx1; // справа от станции — значок режима
   const st = stationSprite(ctx, p.station || "RADIO", sx1 - tx0);
   const sy = Math.round(y + STATION_Y - 17);
   if (wipe < 1 && p.prevStation != null) {
@@ -484,16 +537,18 @@ export function drawRadio(ctx, state, safe, liftPx = 0) {
   } else {
     drawClipped(ctx, st, tx0, sy, 0, sx1 - tx0, tx0, sx1);
   }
-  if (p.shuffle) blit(ctx, modeSprite(false), tx1 - 24, Math.round(y + STATION_Y - 10));
+  if (modeIcon) blit(ctx, modeSprite(p.mode), tx1 - 24, Math.round(y + STATION_Y - 10));
 
-  // строка трека: громкость или режим (после изменения, последнее из них) / NO SPEAKER / TUNING / трек
+  // строка трека: громкость, режим или «в избранное» (после изменения, последнее из них) / NO SPEAKER / TUNING /
+  // трек
   const yc = y + TRACK_Y;
-  const showVol = p.volumeT0 >= 0 && now - p.volumeT0 < VOLUME_S && typeof p.volume === "number";
-  const showMode = p.modeT0 >= 0 && now - p.modeT0 < MODE_S;
-  if (showMode && !(showVol && p.volumeT0 > p.modeT0)) {
-    drawMode(ctx, tx0, yc, p.shuffle);
-  } else if (showVol) {
-    drawVolume(ctx, tx0, yc, tx1 - tx0, p.volume);
+  const flashes = [
+    [p.volumeT0, VOLUME_S, () => drawVolume(ctx, tx0, yc, tx1 - tx0, p.volume), typeof p.volume === "number"],
+    [p.modeT0, MODE_S, () => drawMode(ctx, tx0, yc, tx1 - tx0, p.mode), true],
+    [p.favT0, FAV_S, () => drawFavorite(ctx, tx0, yc, tx1 - tx0, p.favAdded), true],
+  ].filter(([t0, dur, , ok]) => ok && t0 >= 0 && now - t0 < dur);
+  if (flashes.length) {
+    flashes.reduce((a, b) => (b[0] > a[0] ? b : a))[2]();
   } else if (radio.state === "waiting_output") {
     drawNoSpeaker(ctx, tx0 - 2, yc);
   } else if (radio.state === "connecting") {

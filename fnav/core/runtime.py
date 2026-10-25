@@ -149,6 +149,7 @@ class Core:
             "video_toggle": self.toggle_video_output,
             "protect": self.protect_with_feedback,
             "shuffle": self._keypad_shuffle,
+            "favorite": self._keypad_favorite,
             "radio_toggle": self._keypad_radio_toggle,
             "volume_down": lambda: self._keypad_volume(-1),
             "volume_up": lambda: self._keypad_volume(1),
@@ -481,11 +482,22 @@ class Core:
         await self.store.patch({"display": {"force_mode": mode}})
 
     async def _keypad_shuffle(self) -> None:
-        """Клавиша 6: следующая станция — по порядку ↔ случайная (экран показывает режим на плашке радио)."""
+        """Клавиша 6: следующая станция — по порядку → случайная → по избранному (если оно есть) → по порядку.
+        Экран показывает режим на плашке радио."""
         if self.games.running:  # в игре радио на паузе; геймпад отключили вместо клавиатуры — выйти из игры
             await self.games.stop("keypad")
             return
-        await self.store.patch({"radio": {"shuffle": not self.store.get().radio.shuffle}})
+        mode = {"order": "random", "random": "favorites", "favorites": "order"}[self.store.get().radio.mode]
+        if mode == "favorites" and not self.radio.favorites:
+            mode = "order"
+        await self.store.patch({"radio": {"mode": mode}})
+
+    async def _keypad_favorite(self) -> None:
+        """Клавиша 6 (удержание): играющую станцию — в избранное; экран: FAVORITE SAVED / ALREADY SAVED.
+        Радио выключено — ничего (плашки нет, подтвердить нечем)."""
+        if self.games.running or not self.radio.want_play:
+            return
+        await self.radio.add_favorite(from_keypad=True)
 
     async def _keypad_radio_toggle(self) -> None:
         """Нажатие крутилки: радио играет (или ждёт колонку / ищет сигнал) — стоп, иначе — последняя станция."""

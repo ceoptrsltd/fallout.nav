@@ -517,6 +517,10 @@ class VolumeBody(BaseModel):
     volume: int = Field(..., ge=0, le=100)
 
 
+class StationBody(BaseModel):
+    station: RadioStation
+
+
 def _register_radio(app: FastAPI, core: Core) -> None:
     @app.exception_handler(RadioError)
     async def _radio_err(_r: Request, e: RadioError):
@@ -561,6 +565,15 @@ def _register_radio(app: FastAPI, core: Core) -> None:
     @app.post("/api/radio/volume")
     async def radio_volume(body: VolumeBody):
         return (await core.radio.set_volume(body.volume)).model_dump()
+
+    @app.post("/api/radio/favorites/add")
+    async def radio_favorite_add(body: StationBody):
+        await core.radio.add_favorite(body.station)
+        return core.radio.state().model_dump()
+
+    @app.post("/api/radio/favorites/remove")
+    async def radio_favorite_remove(body: StationBody):
+        return (await core.radio.remove_favorite(body.station)).model_dump()
 
 
 # ───────────────────────── Bluetooth ─────────────────────────

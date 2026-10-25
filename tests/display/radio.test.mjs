@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { RADIO_H, dialPosition, marqueeOffset, radioRect, radioVisible, trackLine } from "../../web/display/ui/radio.js";
+import { RADIO_H, dialPosition, marqueeOffset, radioMode, radioRect, radioVisible, trackLine } from "../../web/display/ui/radio.js";
 import { SPEED_BOX } from "../../web/display/ui/speed.js";
 import { INDICATOR_ROW } from "../../web/display/ui/status.js";
 import { CONNECT_S, DEMO_STATIONS, STATION_S, TRACK_S, demoRadioStatus } from "../../web/display/demo/radio.js";
@@ -86,4 +86,13 @@ test("satsText: visible / used satellites, no fix label", async () => {
   assert.equal(satsText({ fix: "3d", sats_visible: 39, sats_used: 20 }), "39/20");
   assert.equal(satsText({ fix: "none", sats_visible: 3 }), "3/0");
   assert.equal(satsText(null), "0/0");
+});
+
+test("radioMode: mode from the core; the old shuffle flag still reads as random", () => {
+  assert.equal(radioMode({ mode: "favorites" }), "favorites");
+  assert.equal(radioMode({ mode: "random" }), "random");
+  assert.equal(radioMode({ mode: "order" }), "order");
+  assert.equal(radioMode({ shuffle: true }), "random");
+  assert.equal(radioMode({}), "order");
+  assert.equal(radioMode(null), "order");
 });

@@ -1,9 +1,10 @@
 // Radio: internet stations (radio-browser.info directory) played on the device through the Bluetooth speaker
 // (docs/contracts/radio.md). Live state from telemetry `radio`, the rest from api/radio/state.
+// Favorites: the star on a station (or holding key 6 of the macro pad) adds it, the star again removes it.
 import { h, icon, clear } from "../dom.js";
 import { api, errText } from "../api.js";
 import { store, on, applySettings } from "../store.js";
-import { toast, banner, badge, switchEl } from "../ui.js";
+import { toast, banner, badge, switchEl, segmented } from "../ui.js";
 import {
   groupGenres, codecText, stationTags, sameStation, radioStateText, radioStateHint, debounce,
 } from "../radio-fmt.js";
@@ -18,12 +19,13 @@ export function mount(root) {
   let stopped = false;
   let st = null; // RadioState from the API
   let genres = [];
-  let view = { kind: "recent" }; // recent | genre {tag,label} | search {q} | popular
+  let view = { kind: "recent" }; // recent | favorites | genre {tag,label} | search {q} | popular
   let stations = [];
   let listToken = 0;
   let volDragUntil = 0;
   let lastStationName;
   let lastState;
+  let lastFavCount;
   let refreshTimer = null;
 
   const unavailable = h("div", { hidden: true });
@@ -32,6 +34,7 @@ export function mount(root) {
   const eq = eqBars(false);
   const stName = h(".np-name", null, "—");
   const stBadge = h("span.badge", null, "—");
+  const npFav = h("button.st-fav.np-fav", { type: "button", hidden: true, onclick: () => st && st.station && toggleFavorite(st.station) });
   const track = h(".np-track");
   const meta = h(".np-meta");
   const hint = h(".np-hint");
@@ -57,7 +60,7 @@ export function mount(root) {
     h(".np", null,
       h(".np-dial", null, eq),
       h(".np-main", null,
-        h(".np-top", null, stName, stBadge),
+        h(".np-top", null, stName, npFav, stBadge),
         track, meta, hint),
     ),
     h(".np-ctl", null,
@@ -79,6 +82,8 @@ export function mount(root) {
     const station = s.station;
     stName.textContent = station ? station.name : "No station";
     stName.classList.toggle("off", !active);
+    npFav.hidden = !station;
+    if (station) favButton(npFav, station);
     const sb = radioStateText(state);
     stBadge.textContent = sb.text;
     stBadge.className = "badge" + (sb.kind ? " " + sb.kind : "");
@@ -129,7 +134,8 @@ export function mount(root) {
       st = r;
       unavailable.hidden = true;
       renderNow();
-      if (view.kind === "recent") renderList();
+      renderFavCount();
+      if (view.kind === "recent" || view.kind === "favorites") renderList();
     } catch (e) {
       if (stopped) return;
       if (e.status === 404) {
@@ -151,10 +157,11 @@ export function mount(root) {
   const offTel = on("telemetry", (t) => {
     const r = t && t.radio;
     if (!r || !st) return;
-    if (r.station !== lastStationName || r.state !== lastState) {
-      if (lastState !== undefined) scheduleRefresh(); // another station / state: fetch the full record
+    if (r.station !== lastStationName || r.state !== lastState || r.favorites !== lastFavCount) {
+      if (lastState !== undefined) scheduleRefresh(); // another station / state / favorites: fetch the full record
       lastStationName = r.station;
       lastState = r.state;
+      lastFavCount = r.favorites;
     }
     const out = st.output ? { ...st.output, connected: !!r.output_connected, name: r.output || st.output.name } : st.output;
     const next = { ...st, state: r.state, track: r.track, volume: r.volume, output: out };
@@ -185,6 +192,35 @@ export function mount(root) {
       return;
     }
     if (!stopped) { renderNow(); if (view.kind === "recent") renderList(); }
+  }
+
+  // ── favorites ──
+  const isFavorite = (s) => !!(st && (st.favorites || []).some((f) => sameStation(f, s)));
+
+  function favButton(btn, s) {
+    const fav = isFavorite(s);
+    btn.textContent = fav ? "★" : "☆";
+    btn.classList.toggle("on", fav);
+    btn.title = fav ? `Remove “${s.name}” from favorites` : `Add “${s.name}” to favorites`;
+    btn.setAttribute("aria-pressed", String(fav));
+    return btn;
+  }
+
+  async function toggleFavorite(s) {
+    const fav = isFavorite(s);
+    try {
+      const r = await api.post(fav ? "/api/radio/favorites/remove" : "/api/radio/favorites/add", { station: s });
+      if (stopped) return;
+      st = { ...(st || {}), favorites: r.favorites };
+      toast("ok", fav ? `Removed “${s.name}” from favorites` : `“${s.name}” added to favorites`);
+    } catch (e) {
+      toast("error", "Favorites: " + errText(e));
+      return;
+    }
+    renderNow();
+    renderFavCount();
+    if (view.kind === "favorites") renderList();
+    else for (const b of listBody.querySelectorAll(".st-fav")) favButton(b, b._station);
   }
 
   // ── genres ──
@@ -222,6 +258,10 @@ export function mount(root) {
   const searchIn = h("input", { type: "text", placeholder: "Search stations by name", autocomplete: "off", "aria-label": "Search stations" });
   const btnPopular = h("button.btn.sm", { type: "button", onclick: () => setView({ kind: "popular" }) }, "🔥 Popular");
   const btnRecent = h("button.btn.sm", { type: "button", onclick: () => setView({ kind: "recent" }) }, "Recent");
+  const favCount = h("span.mono.fav-n");
+  const btnFav = h("button.btn.sm", { type: "button", title: "Keypad keys 1 / 2 go through the favorites in the Favorites mode",
+    onclick: () => setView({ kind: "favorites" }) }, "★ Favorites", favCount);
+  const renderFavCount = () => { favCount.textContent = st && st.favorites && st.favorites.length ? String(st.favorites.length) : ""; };
   const searchForm = h("form.st-search", { onsubmit: (e) => {
     e.preventDefault();
     const q = searchIn.value.trim();
@@ -234,14 +274,15 @@ export function mount(root) {
     for (const b of tilesBox.querySelectorAll(".gtile")) b.classList.toggle("sel", v.kind === "genre" && b.dataset.tag === v.tag);
     btnPopular.classList.toggle("on", v.kind === "popular");
     btnRecent.classList.toggle("on", v.kind === "recent");
+    btnFav.classList.toggle("on", v.kind === "favorites");
     if (v.kind !== "search") searchIn.value = "";
     loadList();
   }
 
   async function loadList() {
     const my = ++listToken;
-    if (view.kind === "recent") {
-      listTitle.textContent = "Recent stations";
+    if (view.kind === "recent" || view.kind === "favorites") {
+      listTitle.textContent = view.kind === "recent" ? "Recent stations" : "Favorites";
       renderList();
       return;
     }
@@ -268,7 +309,7 @@ export function mount(root) {
     const tags = stationTags(s, 3);
     const cur = st && st.station && sameStation(st.station, s);
     const row = h("button.st-row" + (cur ? ".cur" : ""), {
-      type: "button", role: "listitem", title: `Play “${s.name}”`, onclick: () => play(s),
+      type: "button", title: `Play “${s.name}”`, onclick: () => play(s),
     },
       h("span.ic", null, cur && st.state === "playing" ? eqBars(true) : icon("play")),
       h("span.nm", null, s.name),
@@ -277,36 +318,55 @@ export function mount(root) {
         codecText(s) ? h("span.mono", null, codecText(s)) : null,
         tags.map((t) => h("span.tag", null, t))),
     );
-    row._station = s;
-    return row;
+    const fav = favButton(h("button.st-fav", { type: "button", onclick: () => toggleFavorite(s) }), s);
+    fav._station = s;
+    const item = h(".st-item" + (cur ? ".cur" : ""), { role: "listitem" }, row, fav);
+    item._station = s;
+    return item;
   }
 
   function renderList() {
-    const list = view.kind === "recent" ? ((st && st.recent) || []) : stations;
+    const list = view.kind === "recent" ? ((st && st.recent) || [])
+      : view.kind === "favorites" ? ((st && st.favorites) || []) : stations;
     clear(listBody);
     listInfo.textContent = list.length ? `${list.length} station${list.length === 1 ? "" : "s"}` : "";
     if (!list.length) {
       listBody.append(h(".st-msg.dim", null, view.kind === "recent"
         ? "Nothing played yet — pick a genre on the left."
-        : "No stations found."));
+        : view.kind === "favorites"
+          ? "No favorites yet. Click ☆ next to a station, or hold key 6 of the macro pad while it plays."
+          : "No stations found."));
       return;
     }
     for (const s of list) listBody.append(stationRow(s));
   }
 
   function renderListHighlight() {
-    for (const row of listBody.querySelectorAll(".st-row")) {
-      const cur = !!(st && st.station && sameStation(st.station, row._station));
-      if (cur !== row.classList.contains("cur") || (cur && !!row.querySelector(".eq") !== (st.state === "playing"))) {
-        row.replaceWith(stationRow(row._station));
+    for (const item of listBody.querySelectorAll(".st-item")) {
+      const cur = !!(st && st.station && sameStation(st.station, item._station));
+      if (cur !== item.classList.contains("cur") || (cur && !!item.querySelector(".eq") !== (st.state === "playing"))) {
+        item.replaceWith(stationRow(item._station));
       }
     }
   }
 
   // ── settings that belong to the radio ──
   const setBox = h(".np-set");
+  const MODES = [
+    { value: "order", label: "In order" },
+    { value: "random", label: "Random" },
+    { value: "favorites", label: "★ Favorites" },
+  ];
   function renderSettings(s) {
     clear(setBox);
+    if (s && s.radio && s.radio.mode) {
+      setBox.append(h(".np-mode", { title: "Keypad keys 1 / 2. Key 6 switches the mode; holding key 6 adds the playing station to favorites" },
+        h("span", null, "Next station"),
+        segmented({ name: "radio-mode", options: MODES, value: s.radio.mode, onchange: async (v) => {
+          try { applySettings(await api.patch("/api/settings", { radio: { mode: v } })); toast("ok", "Saved"); }
+          catch (e) { toast("error", errText(e)); renderSettings(store.settings); }
+        } })));
+    }
     const add = (sec, key, label) => {
       if (!s || !s[sec] || s[sec][key] === undefined) return;
       setBox.append(switchEl({ checked: !!s[sec][key], label, onchange: async (v) => {
@@ -315,7 +375,6 @@ export function mount(root) {
       } }));
     };
     add("radio", "resume_on_boot", "Resume after restart");
-    add("radio", "shuffle", "Next station at random (keypad keys 1 / 2; key 6 toggles)");
     add("display", "radio_panel", "Show the station on the car screen");
   }
   const offSet = on("settings", renderSettings);
@@ -328,7 +387,7 @@ export function mount(root) {
     h(".radio-layout", null,
       h(".card", null, h("h2", null, "Genres"), tilesBox),
       h(".card", null,
-        h(".card-head", null, listTitle, listInfo, btnRecent, btnPopular),
+        h(".card-head", null, listTitle, listInfo, btnFav, btnRecent, btnPopular),
         searchForm,
         listBody,
         h(".hint", null, "Stations come from the community directory radio-browser.info. Playing uses about 60 MB of mobile data per hour (128 kbit/s)."),

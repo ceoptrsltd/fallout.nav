@@ -44,6 +44,8 @@
 | POST | `/api/radio/stop` | → `RadioState` |
 | POST | `/api/radio/resume` | играть последнюю станцию → `RadioState` (409, если её нет) |
 | POST | `/api/radio/volume` | `{"volume":0..100}` → `RadioState` (сохраняется в `radio.volume`) |
+| POST | `/api/radio/favorites/add` | `{"station":Station}` → `RadioState` (в конец избранного; уже там — без изменений; до 100) |
+| POST | `/api/radio/favorites/remove` | `{"station":Station}` → `RadioState` (по uuid, иначе по url) |
 | GET | `/api/bluetooth/state` | `BtState` (ниже) |
 | POST | `/api/bluetooth/power` | `{"on":bool}` |
 | POST | `/api/bluetooth/scan` | `{"seconds":15}` — поиск устройств N секунд (1…60) |
@@ -64,6 +66,7 @@ RadioState = {
   "output": {"address","name","connected":bool} | null,   # колонка по умолчанию
   "error": str | null,
   "recent": [Station…]             # последние 12 запущенных, новые первыми
+  "favorites": [Station…]          # избранное в порядке добавления (клавиша 6 — удержание, звезда в веб-интерфейсе)
 }
 BtState = {
   "available": bool, "powered": bool, "discovering": bool,
@@ -80,7 +83,7 @@ BtState = {
   `alsa/bluealsa:DEV=<mac>,PROFILE=a2dp` подключённой колонки (ставится при подключении).
 - Нет подключённой колонки → `waiting_output` (поток не открываем — не тратим трафик); колонка подключилась → играем.
 - Поток оборвался / нет интернета → `connecting`, повтор с паузой 2→4→…→30 с, пока станция выбрана.
-- Состояние (последняя станция, «играло ли», recent) — в `data_dir/radio_state.json`; колонка по умолчанию — там же
+- Состояние (последняя станция, «играло ли», recent, favorites) — в `data_dir/radio_state.json`; колонка по умолчанию — там же
   или в `data_dir/bluetooth_state.json`. После перезагрузки: если `radio.resume_on_boot` и радио играло — продолжить.
 - Автоподключение: при старте и каждые 30 с, пока колонка по умолчанию не подключена и адаптер включён, — Connect.
 - Трафик: только пока играет станция (128 кбит/с ≈ 60 МБ/ч).
@@ -89,7 +92,9 @@ BtState = {
 
 ```
 RadioSettings:     volume: int 0..100 = 60;  resume_on_boot: bool = True;
-                   shuffle: bool = False (следующая станция с клавиатуры — случайная; клавиша 6 переключает)
+                   mode: "order" | "random" | "favorites" = "order" — следующая станция с клавиатуры (клавиши 1/2):
+                   по списку жанра / случайная из него / по избранному (пустое — как order); клавиша 6 переключает
+                   по кругу, избранное пропускает, пока оно пустое. Старое shuffle: true читается как "random".
 BluetoothSettings: enabled: bool = True (адаптер включать при старте);  auto_connect: bool = True
 DisplaySettings:   radio_panel: bool = True  (плашка радио на экране)
 ```
@@ -98,11 +103,13 @@ DisplaySettings:   radio_panel: bool = True  (плашка радио на эк�
 
 `Telemetry.radio: RadioStatus | null` (каждый кадр, компактно):
 `{"state","station":"name"|null,"track":str|null,"genre":"Jazz"|null (подпись плитки или первый тег станции),
-"volume":int,"output":"JBL Go 3"|null,"output_connected":bool,"shuffle":bool}`.
+"volume":int,"output":"JBL Go 3"|null,"output_connected":bool,"mode":"order"|"random"|"favorites",
+"favorite":bool (станция в избранном),"favorites":int,"fav_seq":int (+1 при каждом удержании клавиши 6)}`.
 
 Экран (web/display) показывает плашку, когда `display.radio_panel` и `state` ∈ {playing, connecting, waiting_output}.
 Плашка — в стиле HUD (как компас и спидометр: те же шрифты, рамки, монохром, читаемо на 5″ ч/б CRT 720×480 с полями),
 название станции крупно, трек — бегущей строкой, если не помещается; смена трека — заметная, но короткая анимация;
-`connecting` / `waiting_output` — свои понятные состояния; `shuffle` — значок справа от станции, после
-переключения режим на 2.5 с в строке трека. Не перекрывает компас, спидометр, индикаторы и машину.
+`connecting` / `waiting_output` — свои понятные состояния; `mode` — значок справа от станции (random — стрелки,
+favorites — звезда), после переключения режим на 2.5 с в строке трека; `fav_seq` изменился — там же на 2.5 с
+«FAVORITE SAVED» (станция только что стала избранной) или «ALREADY SAVED». Не перекрывает компас, спидометр, индикаторы и машину.
 Демо-режим (`?demo=1`) показывает плашку с вымышленной станцией и сменой треков.

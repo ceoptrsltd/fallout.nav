@@ -22,7 +22,8 @@ fallout.nav turns a Raspberry Pi CM4 into an in‑car computer for an old van:
 - **Internet radio on a Bluetooth speaker** — stations from the radio-browser.info directory by mood, genre and era
   (or by name), played by mpv through BlueZ + bluez-alsa (A2DP) on the CM4's on-board Bluetooth; the speaker is
   paired from the web UI and reconnects by itself; the station resumes after a reboot. The car screen shows a
-  tuner panel with the station and the scrolling track title.
+  tuner panel with the station and the scrolling track title. A 6-key macro pad with a knob switches stations
+  (in order, at random or through the favorites; holding key 6 saves the station to favorites) and the volume.
 - **Position log (Tracking)** — a GPS point every minute, queued on the device while offline, merged on the server
   into places and visits (the same spot within 50 m is not recorded twice); a hybrid Esri map with parking and
   transit points, the visit history of each place, and the live vehicle position.

@@ -31,6 +31,7 @@ FALLBACK_MIRROR = "all.api.radio-browser.info"
 RETRY_PAUSE_S = 0.7
 LIMIT_TAG, LIMIT_NAME, LIMIT_TOP = 60, 100, 30
 RECENT_MAX = 12
+FAVORITES_MAX = 100
 BACKOFF_S = (2.0, 4.0, 8.0, 16.0, 30.0)
 CONNECT_TIMEOUT_S = 25.0  # дольше «connecting» без звука — открыть поток заново
 MPV_SOCKET = "/run/fnav-radio/mpv.sock"
@@ -457,6 +458,8 @@ class RadioService:
         self.track: str | None = None
         self.error: str | None = None
         self.recent: list[RadioStation] = []
+        self.favorites: list[RadioStation] = []  # в порядке добавления; по нему листают в режиме «favorites»
+        self.fav_seq = 0
         self.volume = get_settings().volume
         # FNAV_RADIO_TEST_OUTPUT=1 — проверка без колонки (mpv с --ao=null): «колонка» всегда подключена
         self.output: RadioOutput | None = (RadioOutput(address="null", name="Null output (test)", connected=True)
@@ -469,7 +472,7 @@ class RadioService:
         self._vol_save: asyncio.Task | None = None
         self._lock = asyncio.Lock()
         self._ring: tuple[str | None, float, list[RadioStation]] | None = None  # (жанр, когда, станции) для step()
-        self._back: list[RadioStation] = []  # shuffle: откуда пришли — клавиша «назад» возвращает по очереди
+        self._back: list[RadioStation] = []  # random: откуда пришли — клавиша «назад» возвращает по очереди
         player.on_event(self._on_player)
 
     # ── жизненный цикл ──
@@ -503,12 +506,14 @@ class RadioService:
             self.genre = d.get("genre") or None
             self.want_play = bool(d.get("playing")) and self.station is not None
             self.recent = [RadioStation(**x) for x in d.get("recent", [])][:RECENT_MAX]
+            self.favorites = [RadioStation(**x) for x in d.get("favorites", [])][:FAVORITES_MAX]
         except (TypeError, ValueError, KeyError) as e:
             log.warning("radio: bad %s: %s", self.state_path, e)
 
     def _save_state(self) -> None:
         d = {"station": self.station.model_dump() if self.station else None, "genre": self.genre,
-             "playing": self.want_play, "recent": [s.model_dump() for s in self.recent]}
+             "playing": self.want_play, "recent": [s.model_dump() for s in self.recent],
+             "favorites": [s.model_dump() for s in self.favorites]}
         tmp = self.state_path.with_suffix(".tmp")
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -519,7 +524,8 @@ class RadioService:
 
     def state(self) -> RadioState:
         return RadioState(state=self.phase, station=self.station, genre=self.genre, track=self.track,
-                          volume=self.volume, output=self.output, error=self.error, recent=self.recent)
+                          volume=self.volume, output=self.output, error=self.error, recent=self.recent,
+                          favorites=self.favorites)
 
     def status(self) -> RadioStatus:
         genre = GENRE_LABELS.get(self.genre or "") if self.genre else None
@@ -529,7 +535,33 @@ class RadioService:
                            track=self.track if self.phase == "playing" else None, genre=genre,
                            volume=self.volume, output=self.output.name if self.output else None,
                            output_connected=bool(self.output and self.output.connected),
-                           shuffle=self.get_settings().shuffle)
+                           mode=self.get_settings().mode, favorite=self.is_favorite(self.station),
+                           favorites=len(self.favorites), fav_seq=self.fav_seq)
+
+    def is_favorite(self, station: RadioStation | None) -> bool:
+        return station is not None and any(_key(s) == _key(station) for s in self.favorites)
+
+    async def add_favorite(self, station: RadioStation | None = None, from_keypad: bool = False) -> bool:
+        """В конец избранного (по умолчанию — текущую станцию). False — уже там или станции нет.
+        from_keypad: экран покажет FAVORITE SAVED / ALREADY SAVED (RadioStatus.fav_seq)."""
+        station = station or self.station
+        if station is None:
+            return False
+        if from_keypad:
+            self.fav_seq += 1
+        if self.is_favorite(station):
+            return False
+        if len(self.favorites) >= FAVORITES_MAX:
+            raise RadioError(409, f"Favorites are full ({FAVORITES_MAX} stations)")
+        self.favorites = [*self.favorites, station]
+        await asyncio.to_thread(self._save_state)
+        log.info("radio: favorite %s", station.name)
+        return True
+
+    async def remove_favorite(self, station: RadioStation) -> RadioState:
+        self.favorites = [s for s in self.favorites if _key(s) != _key(station)]
+        await asyncio.to_thread(self._save_state)
+        return self.state()
 
     # ── команды ──
     async def play(self, station: RadioStation, genre: str | None = None) -> RadioState:
@@ -550,13 +582,17 @@ class RadioService:
     async def step(self, delta: int) -> RadioState:
         """Соседняя станция (клавиши мини-клавиатуры): по списку жанра, из которого выбрана текущая,
         иначе — по недавним. Список запоминается на 10 минут: порядок не скачет от нажатия к нажатию.
-        settings.radio.shuffle: вперёд — случайная станция списка (не из недавно звучавших),
-        назад — та, что играла перед ней."""
+        settings.radio.mode: "random" — вперёд случайная станция списка (не из недавно звучавших), назад — та, что
+        играла перед ней; "favorites" — по избранному по порядку (пустое избранное — как "order")."""
         cur = self.station
-        lst = await self._step_list()
+        mode = self.get_settings().mode
+        lst = list(self.favorites) if mode == "favorites" else []
+        if not lst:
+            mode = "random" if mode == "random" else "order"
+            lst = await self._step_list()
         if not lst:
             raise RadioError(409, "No stations to switch to")
-        if self.get_settings().shuffle:
+        if mode == "random":
             if delta < 0 and self._back:
                 return await self.play(self._back.pop(), self.genre)
             others = [s for s in lst if cur is None or _key(s) != _key(cur)] or lst
@@ -566,7 +602,10 @@ class RadioService:
                 self._back = (self._back + [cur])[-RECENT_MAX:]
             return await self.play(nxt, self.genre)
         idx = next((i for i, s in enumerate(lst) if cur is not None and _key(s) == _key(cur)), -1)
-        nxt = lst[(idx + delta) % len(lst)] if idx >= 0 else lst[0]
+        if idx >= 0:
+            nxt = lst[(idx + delta) % len(lst)]
+        else:  # текущей нет в списке (другой режим, другой жанр): вперёд — с начала, назад — с конца
+            nxt = lst[0] if delta > 0 else lst[-1]
         return await self.play(nxt, self.genre)
 
     async def _step_list(self) -> list[RadioStation]:

@@ -417,8 +417,8 @@ async def test_step_through_genre_and_recent(tmp_path):
     assert (await svc.step(1)).station.uuid == "b"
 
 
-async def test_step_shuffle(tmp_path):
-    settings = RadioSettings(shuffle=True)
+async def test_step_random(tmp_path):
+    settings = RadioSettings(mode="random")
     svc = _svc(tmp_path, CtlPlayer(), settings)
     await svc.start()
     stations = [RadioStation(uuid=str(i), name=f"S{i}", url=f"http://x/{i}") for i in range(8)]
@@ -428,21 +428,64 @@ async def test_step_shuffle(tmp_path):
 
     svc.directory.by_tag = by_tag
     await svc.play(stations[0], "jazz")
-    assert svc.status().shuffle is True
+    assert svc.status().mode == "random"
     path = [svc.station.uuid]
     for _ in range(4):
         path.append((await svc.step(1)).station.uuid)
     # forward: never the current one, and not one of the recently heard (half of the list)
     assert len(set(path)) == len(path)
-    # back: retraces the shuffle path, then random again once the history is used up
+    # back: retraces the random path, then random again once the history is used up
     for want in reversed(path[:-1]):
         assert (await svc.step(-1)).station.uuid == want
     assert (await svc.step(-1)).station.uuid != path[0]
-    # shuffle off: in list order again
-    settings.shuffle = False
+    # in order again
+    settings.mode = "order"
     cur = int(svc.station.uuid)
     assert (await svc.step(1)).station.uuid == str((cur + 1) % 8)
-    assert svc.status().shuffle is False
+    assert svc.status().mode == "order"
+
+
+def test_old_shuffle_setting_becomes_random_mode():
+    assert RadioSettings.model_validate({"shuffle": True}).mode == "random"
+    assert RadioSettings.model_validate({"shuffle": False}).mode == "order"
+    assert RadioSettings.model_validate({"shuffle": True, "mode": "favorites"}).mode == "favorites"
+    assert "shuffle" not in RadioSettings().model_dump()
+
+
+async def test_favorites(tmp_path):
+    settings = RadioSettings()
+    svc = _svc(tmp_path, CtlPlayer(), settings)
+    await svc.start()
+    a, b, c, d = (RadioStation(uuid=u, name=u.upper(), url=f"http://x/{u}") for u in "abcd")
+
+    async def by_tag(tag):
+        return [a, b, c, d]
+
+    svc.directory.by_tag = by_tag
+    await svc.play(b, "jazz")
+    assert await svc.add_favorite(from_keypad=True) is True
+    assert await svc.add_favorite(from_keypad=True) is False  # already there
+    assert await svc.add_favorite(d) is True
+    st = svc.status()
+    assert st.favorite is True and st.favorites == 2 and st.fav_seq == 2  # only the keypad presses count
+    # favorites mode: through the favorites in the order they were added, the genre is kept
+    settings.mode = "favorites"
+    await svc.play(a, "jazz")
+    assert svc.status().favorite is False
+    assert (await svc.step(1)).station.uuid == "b"  # not a favorite now: forward from the first one
+    assert (await svc.step(1)).station.uuid == "d"
+    assert (await svc.step(1)).station.uuid == "b"
+    assert (await svc.step(-1)).station.uuid == "d"
+    assert svc.genre == "jazz"
+    # kept across a restart
+    svc2 = _svc(tmp_path, CtlPlayer(), settings)
+    await svc2.start()
+    assert [s.uuid for s in svc2.favorites] == ["b", "d"]
+    # removed (web UI): the last one gone -> favorites mode steps like "order"
+    await svc.remove_favorite(b)
+    await svc.remove_favorite(RadioStation(uuid="d", name="?", url="http://x/other"))
+    assert svc.favorites == [] and svc.status().favorites == 0
+    assert (await svc.step(1)).station.uuid == "a"  # d is the last of the genre: round to a
 
 
 async def test_bt_restarts_a_crashed_chip(tmp_path, monkeypatch):

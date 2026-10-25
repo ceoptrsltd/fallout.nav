@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _Model(BaseModel):
@@ -225,22 +225,34 @@ class TrackingSettings(_Model):
     max_hdop: float = Field(5.0, gt=0)  # точки с худшим HDOP не пишем
 
 
+# следующая станция с клавиатуры (клавиши 1/2): по списку жанра, случайная из него, по избранному
+RadioMode = Literal["order", "random", "favorites"]
+
+
 class RadioSettings(_Model):
     """Интернет-радио (docs/contracts/radio.md)."""
 
     volume: int = Field(60, ge=0, le=100)
     resume_on_boot: bool = True  # после перезагрузки продолжить станцию, если радио играло
-    shuffle: bool = False  # следующая станция (клавиши 1/2): случайная, а не по порядку; клавиша 6 переключает
+    mode: RadioMode = "order"  # клавиша 6 переключает по кругу
+
+    @model_validator(mode="before")
+    @classmethod
+    def _old_shuffle(cls, d):  # до избранного было shuffle: bool
+        if isinstance(d, dict) and "mode" not in d and d.get("shuffle") is True:
+            d = {**d, "mode": "random"}
+        return d
 
 
 # действия клавиш мини-клавиатуры (fnav/core/keypad.py); "none" — клавиша ничего не делает
-KeypadAction = Literal["none", "station_prev", "station_next", "radio_toggle", "shuffle", "volume_down", "volume_up",
-                       "view_toggle", "video_toggle", "protect"]
+KeypadAction = Literal["none", "station_prev", "station_next", "radio_toggle", "shuffle", "favorite", "volume_down",
+                       "volume_up", "view_toggle", "video_toggle", "protect"]
 
 
 class KeypadSettings(_Model):
     """Мини-клавиатура (6 клавиш + крутилка): какое действие у каждой. Сама клавиатура всегда шлёт F13–F21 и Enter —
-    раскладка меняется здесь, без перепрошивки. Клавиши — слева направо, сверху вниз; крутилка справа."""
+    раскладка меняется здесь, без перепрошивки. Клавиши — слева направо, сверху вниз; крутилка справа.
+    *_hold — удержание (дольше 0.8 с) вместо нажатия; "none" — у клавиши только нажатие (срабатывает сразу)."""
 
     key1: KeypadAction = "station_prev"
     key2: KeypadAction = "station_next"
@@ -251,6 +263,13 @@ class KeypadSettings(_Model):
     knob_left: KeypadAction = "volume_down"
     knob_right: KeypadAction = "volume_up"
     knob_press: KeypadAction = "radio_toggle"
+    key1_hold: KeypadAction = "none"
+    key2_hold: KeypadAction = "none"
+    key3_hold: KeypadAction = "none"
+    key4_hold: KeypadAction = "none"
+    key5_hold: KeypadAction = "none"
+    key6_hold: KeypadAction = "favorite"
+    knob_press_hold: KeypadAction = "none"
 
 
 class BluetoothSettings(_Model):
@@ -428,6 +447,7 @@ class RadioState(_Model):
     output: RadioOutput | None = None
     error: str | None = None
     recent: list[RadioStation] = []
+    favorites: list[RadioStation] = []  # избранное: клавиша 6 (удержание) добавляет, удаляют в веб-интерфейсе
 
 
 class SpeedLimit(_Model):
@@ -476,7 +496,10 @@ class RadioStatus(_Model):
     volume: int = 60
     output: str | None = None
     output_connected: bool = False
-    shuffle: bool = False  # режим «следующая станция — случайная» (settings.radio.shuffle)
+    mode: RadioMode = "order"  # следующая станция: по порядку / случайная / по избранному (settings.radio.mode)
+    favorite: bool = False  # текущая станция — в избранном
+    favorites: int = 0  # сколько станций в избранном
+    fav_seq: int = 0  # +1 при каждом «в избранное» с клавиатуры (экран: FAVORITE SAVED / ALREADY SAVED)
 
 
 class BtDevice(_Model):

@@ -6,7 +6,7 @@ from __future__ import annotations
 import glob
 
 from fnav.core.games import PAD_GLOB
-from fnav.core.keypad import ACTIONS, PLACE_LABELS
+from fnav.core.keypad import ACTIONS, HOLD_PLACES, HOLD_S, PLACE_LABELS
 from fnav.models import KeypadSettings
 
 GAMEPAD = [
@@ -27,9 +27,10 @@ BUTTON = [
 def controls_info(keypad_connected: bool, bindings: KeypadSettings) -> dict:
     return {
         "keypad": {"connected": keypad_connected,
-                   "places": [{"place": p, "label": lbl, "action": getattr(bindings, p)}
+                   "places": [{"place": p, "label": lbl, "action": getattr(bindings, p),
+                               "hold": getattr(bindings, p + "_hold") if p in HOLD_PLACES else None}
                               for p, lbl in PLACE_LABELS.items()],
-                   "actions": ACTIONS, "defaults": KeypadSettings().model_dump()},
+                   "hold_s": HOLD_S, "actions": ACTIONS, "defaults": KeypadSettings().model_dump()},
         "gamepad": {"connected": bool(glob.glob(PAD_GLOB)), "controls": GAMEPAD},
         "button": {"controls": BUTTON},
         "notes": ["The macro pad and the gamepad share the USB port: plug in one or the other.",
