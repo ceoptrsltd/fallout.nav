@@ -18,6 +18,12 @@ Pi (fnav-tunnel.service: ssh -N -R 127.0.0.1:18080:127.0.0.1:8090 -L 127.0.0.1:1
 
 Сервер без префикса снимает `/fnadmin`: `/fnadmin/api/x` → Pi `/api/x`. `/fnadmin` и `/fnadmin/` → 301 на `/fnadmin/admin/`.
 
+Если у сайта, на котором живёт `/fnadmin`, есть PWA с service worker'ом на весь домен (Workbox, scope `/`), он
+отвечает на переходы своей страницей, и в браузере, где он установлен, вместо админки открывается вход самого сайта.
+`/fnadmin` надо исключить из его `navigateFallback` (`navigateFallbackDenylist` в сборке сайта). Пока этого нет,
+на сервере `/sw.js` проходит через `sub_filter`, который дописывает `/fnadmin` в `denylist` (отдельный сниппет
+`snippets/fnadmin-sw.conf` рядом с `fnadmin.conf`, вне репозитория: зависит от сборки чужого сайта).
+
 ## 1. Префикс адресов (веб: admin и display)
 
 - Все адреса приложения строятся от корня `ROOT`:
