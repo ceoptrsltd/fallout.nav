@@ -8,6 +8,7 @@ import { esriTileUrl as demoEsri } from "../../web/display/demo/demo.js";
 import { esriTileUrl } from "../../web/display/map/esri.js";
 import {
   RANGES, rangeFrom, rangeQuery, fmtStay, fmtDay, fmtTime, fmtWhen, fmtVisit, agoText, sortVisits, esriTemplates,
+  tileZoomLimits, tileUrlFrom, parentTileCrop, isEsriNoData, ESRI_NO_DATA_SIZE,
 } from "../../web/admin/js/tracking-fmt.js";
 
 // ── address prefix (docs/contracts/remote.md §1) ──
@@ -139,4 +140,27 @@ test("googleMapsUrl: coordinates as a search query", async () => {
   const { googleMapsUrl } = await import("../../web/admin/js/tracking-fmt.js");
   assert.equal(googleMapsUrl(36.1146958, -115.1728), "https://www.google.com/maps/search/?api=1&query=36.114696%2C-115.172800");
   assert.equal(googleMapsUrl(-33.9, -70.1), "https://www.google.com/maps/search/?api=1&query=-33.900000%2C-70.100000");
+});
+
+test("tileZoomLimits: imagery to z21 by default, roads and labels to z19", () => {
+  assert.deepEqual(tileZoomLimits(null), { imagery: 21, overlay: 19 });
+  assert.deepEqual(tileZoomLimits({ tiles: { max_zoom: 21 } }), { imagery: 21, overlay: 19 });
+  assert.deepEqual(tileZoomLimits({ tiles: { max_zoom: 18 } }), { imagery: 18, overlay: 18 });
+  assert.deepEqual(tileZoomLimits({ tiles: { max_zoom: 99 } }), { imagery: 23, overlay: 19 });
+  assert.equal(tileUrlFrom("https://x/tile/{z}/{y}/{x}?token=k", 21, 5, 7), "https://x/tile/21/7/5?token=k");
+});
+
+test("parentTileCrop: the ancestor square that covers a tile", () => {
+  assert.deepEqual(parentTileCrop(21, 5, 7, 0), { z: 21, x: 5, y: 7, sx: 0, sy: 0, size: 256 });
+  assert.deepEqual(parentTileCrop(21, 5, 7, 1), { z: 20, x: 2, y: 3, sx: 128, sy: 128, size: 128 });
+  assert.deepEqual(parentTileCrop(21, 5, 7, 2), { z: 19, x: 1, y: 1, sx: 64, sy: 192, size: 64 });
+  assert.equal(parentTileCrop(1, 0, 0, 2), null);
+});
+
+test("isEsriNoData: the admin and the car screen know the same grey tile", async () => {
+  const disp = await import("../../web/display/map/tiles.js");
+  for (const blob of [null, new Blob([new Uint8Array(10)]), new Blob([new Uint8Array(ESRI_NO_DATA_SIZE)])]) {
+    assert.equal(await isEsriNoData(blob), false);
+    assert.equal(await isEsriNoData(blob), await disp.isEsriNoData(blob));
+  }
 });

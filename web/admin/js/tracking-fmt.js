@@ -102,6 +102,49 @@ export function esriTemplates(settings) {
   };
 }
 
+/** Esri draws roads and labels only down to z19 (deeper tiles are empty): those layers are stretched below it. */
+export const VECTOR_MAX_Z = 19;
+
+/**
+ * Deepest tile levels from settings.tiles.max_zoom (default 21: Esri has z20-z21 imagery in cities):
+ * imagery — that level, roads and labels — VECTOR_MAX_Z at most.
+ */
+export function tileZoomLimits(settings) {
+  const v = settings && settings.tiles ? settings.tiles.max_zoom : undefined;
+  const imagery = typeof v === "number" && Number.isFinite(v) ? Math.min(23, Math.max(10, Math.round(v))) : 21;
+  return { imagery, overlay: Math.min(imagery, VECTOR_MAX_Z) };
+}
+
+/** URL of one tile from a Leaflet-style template ({z}/{y}/{x}). */
+export function tileUrlFrom(template, z, x, y) {
+  return String(template).replace("{z}", z).replace("{x}", x).replace("{y}", y);
+}
+
+/**
+ * The ancestor `up` levels above tile z/x/y and the square of it (in its 256 px) that covers the tile:
+ * drawn stretched where Esri has no imagery at z.
+ */
+export function parentTileCrop(z, x, y, up) {
+  if (up < 0 || z - up < 0) return null;
+  const px = x >> up, py = y >> up;
+  const size = 256 / (1 << up);
+  return { z: z - up, x: px, y: py, sx: (x - (px << up)) * size, sy: (y - (py << up)) * size, size };
+}
+
+// Where Esri has no imagery at a level it answers 200 with one and the same grey "Map data not yet available"
+// JPEG (same check as web/display/map/tiles.js isEsriNoData: the admin does not depend on display modules).
+export const ESRI_NO_DATA_SIZE = 2521;
+export const ESRI_NO_DATA_SHA256 = "9eafd300d61393184a4abc1d458564cfd1cd9b6f9c4e9c74687045c0a0e5b858";
+
+/** Esri's "no imagery here" tile? Without crypto.subtle (a page over plain http) — by the size alone. */
+export async function isEsriNoData(blob) {
+  if (!blob || blob.size !== ESRI_NO_DATA_SIZE) return false;
+  const subtle = globalThis.crypto && globalThis.crypto.subtle;
+  if (!subtle) return true;
+  const d = new Uint8Array(await subtle.digest("SHA-256", await blob.arrayBuffer()));
+  return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("") === ESRI_NO_DATA_SHA256;
+}
+
 /** Google Maps link for a point (opens the app on a phone, the site on a laptop). */
 export function googleMapsUrl(lat, lon) {
   return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(`${(+lat).toFixed(6)},${(+lon).toFixed(6)}`);

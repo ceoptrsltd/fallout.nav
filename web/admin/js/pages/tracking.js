@@ -6,7 +6,10 @@ import { api, ApiError, errText } from "../api.js";
 import { store, on } from "../store.js";
 import { modal, segmented, switchEl, banner, poll } from "../ui.js";
 import { loadVendorCss, loadVendorScript } from "../vendor.js";
-import { RANGES, rangeQuery, fmtStay, fmtVisit, fmtWhen, agoText, sortVisits, esriTemplates, googleMapsUrl } from "../tracking-fmt.js";
+import {
+  RANGES, rangeQuery, fmtStay, fmtVisit, fmtWhen, agoText, sortVisits, esriTemplates, googleMapsUrl,
+  tileZoomLimits, tileUrlFrom, parentTileCrop, isEsriNoData,
+} from "../tracking-fmt.js";
 
 const OPTS_KEY = "fnav.tracking.opts";
 const REFRESH_MS = 60000;
@@ -14,6 +17,62 @@ const LIVE_STALE_MS = 5000;
 const ESRI_ATTR = 'Powered by <a href="https://www.esri.com" target="_blank" rel="noopener">Esri</a> | Esri, Maxar, Earthstar Geographics, and the GIS User Community';
 
 const nowS = () => Date.now() / 1000;
+
+/**
+ * Esri imagery as canvas tiles. A tile Esri has no imagery for (its grey "Map data not yet available", or 404) is
+ * drawn from the nearest ancestor, up to 3 levels up, stretched — no grey squares in the countryside at z20-z21.
+ * On a sharp screen (devicePixelRatio >= 1.5) it asks for one level more detail at half the tile size, like
+ * Leaflet's detectRetina; only for the photo — roads and labels would shrink.
+ */
+function esriImageryLayer(L, template, { maxZoom, maxNative, attribution }) {
+  const offset = (window.devicePixelRatio || 1) >= 1.5 ? 1 : 0;
+  const missing = new Set(); // "z/x/y" Esri has no imagery for: not asked again
+
+  async function fetchTile(z, x, y, signal) {
+    const key = `${z}/${x}/${y}`;
+    if (missing.has(key)) return null;
+    const r = await fetch(tileUrlFrom(template, z, x, y), { signal });
+    let blob = null;
+    if (r.ok) blob = await r.blob();
+    else if (r.status !== 404 && r.status !== 400) throw new Error("HTTP " + r.status);
+    if (!blob || await isEsriNoData(blob)) {
+      if (missing.size > 5000) missing.clear();
+      missing.add(key);
+      return null;
+    }
+    return blob;
+  }
+
+  async function drawTile(tile, z, x, y, signal) {
+    for (let up = 0; up <= 3; up++) {
+      const p = parentTileCrop(z, x, y, up);
+      if (!p) break;
+      const blob = await fetchTile(p.z, p.x, p.y, signal);
+      if (!blob) continue;
+      const img = await createImageBitmap(blob);
+      const ctx = tile.getContext("2d");
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, p.sx, p.sy, p.size, p.size, 0, 0, tile.width, tile.height);
+      if (img.close) img.close();
+      return;
+    }
+    throw new Error("No imagery here");
+  }
+
+  const Layer = L.GridLayer.extend({
+    createTile(c, done) {
+      const tile = document.createElement("canvas");
+      tile.width = tile.height = 256;
+      tile._ctl = new AbortController();
+      drawTile(tile, c.z + offset, c.x, c.y, tile._ctl.signal).then(() => done(null, tile), (e) => done(e, tile));
+      return tile;
+    },
+  });
+  // grid zoom Z with half-size tiles = Esri level Z + offset (same indices), so the native limit moves by offset
+  const layer = new Layer({ tileSize: 256 >> offset, maxZoom, maxNativeZoom: maxNative - offset, attribution });
+  layer.on("tileunload", (e) => e.tile._ctl && e.tile._ctl.abort());
+  return layer;
+}
 
 function loadOpts() {
   const def = { range: "7d", line: true, follow: false };
@@ -84,11 +143,12 @@ export async function mount(root) {
   }
   if (!mapEl.isConnected) return () => {}; // left the page while loading
 
-  const map = L.map(mapEl, { preferCanvas: true, worldCopyJump: true, maxZoom: 20, zoomControl: true });
+  const zl = tileZoomLimits(store.settings); // imagery down to z21 by default, roads and labels to z19
+  const map = L.map(mapEl, { preferCanvas: true, worldCopyJump: true, maxZoom: zl.imagery, zoomControl: true });
   map.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
   const tpl = esriTemplates(store.settings);
-  const tileOpts = { maxZoom: 20, maxNativeZoom: 19, crossOrigin: true };
-  L.tileLayer(tpl.imagery, { ...tileOpts, attribution: ESRI_ATTR }).addTo(map);
+  esriImageryLayer(L, tpl.imagery, { maxZoom: zl.imagery, maxNative: zl.imagery, attribution: ESRI_ATTR }).addTo(map);
+  const tileOpts = { maxZoom: zl.imagery, maxNativeZoom: zl.overlay, crossOrigin: true };
   L.tileLayer(tpl.transport, tileOpts).addTo(map);
   L.tileLayer(tpl.places, tileOpts).addTo(map);
   map.setView([50, 15], 4);
