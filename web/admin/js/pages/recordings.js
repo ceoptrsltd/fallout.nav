@@ -62,6 +62,7 @@ export function openPlayer(rec) {
 export function mount(root) {
   const closedDays = new Set();
   let list = [];
+  let shown = null; // what render() last drew: the 10 s poll does not rebuild an unchanged list
   let firstLoad = true;
   const body = h("div", { style: { display: "flex", flexDirection: "column", gap: "12px" } });
   const summary = h("span.dim.mono");
@@ -80,6 +81,7 @@ export function mount(root) {
       render();
     } catch (e) {
       if (stopped) return;
+      shown = null;
       clear(body).append(banner("bad", "Could not load the recordings list: " + errText(e)));
     }
   }
@@ -103,6 +105,9 @@ export function mount(root) {
     try {
       await api.del("/api/recordings/file/" + encPath(r.path) + (r.protected ? "?force=1" : ""));
       toast("ok", "Deleted: " + r.path.split("/").pop());
+      // the row goes away where it is: the list stays where it was scrolled to
+      list = list.filter((x) => x.path !== r.path);
+      render();
       load();
     } catch (e) { toast("error", errText(e)); }
   }
@@ -126,10 +131,16 @@ export function mount(root) {
   }
 
   function render() {
+    const sig = JSON.stringify(list);
+    if (sig === shown) return;
+    shown = sig;
     const total = list.reduce((a, r) => a + (r.size_bytes || 0), 0);
     summary.textContent = `${list.length} file${list.length === 1 ? "" : "s"} · ${fmtBytes(total)} · protected: ${list.filter((r) => r.protected).length}`;
-    clear(body);
-    if (!list.length) return body.append(emptyState("No recordings yet"));
+    // the page scrolls in #view: rebuilding the list must not move it (one DOM swap, the position put back)
+    const scroller = body.closest("#view");
+    const top = scroller ? scroller.scrollTop : 0;
+    const days = [];
+    if (!list.length) days.push(emptyState("No recordings yet"));
     const groups = new Map();
     for (const r of list) {
       if (!groups.has(r.date)) groups.set(r.date, []);
@@ -148,8 +159,10 @@ export function mount(root) {
         ),
         h(".day-body", null, items.map(row)),
       );
-      body.append(day);
+      days.push(day);
     }
+    body.replaceChildren(...days);
+    if (scroller) scroller.scrollTop = top;
   }
 
   root.append(

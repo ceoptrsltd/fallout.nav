@@ -48,7 +48,8 @@ export function modal({ title, body, foot, width, dismissable = true, onClose, h
       if (i < 0) return;
       stack.splice(i, 1);
       ov.remove();
-      try { prevFocus && prevFocus.focus && prevFocus.focus(); } catch { /* */ }
+      // back to where the dialog was opened from, without scrolling the page to it
+      try { prevFocus && prevFocus.focus && prevFocus.focus({ preventScroll: true }); } catch { /* */ }
       if (onClose) onClose();
     },
   };
