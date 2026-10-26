@@ -5,8 +5,9 @@
 #   tools/speedlimits.sh europe/germany DE    # another Geofabrik extract + country code (zones only for PL so far)
 #   tools/speedlimits.sh --copy               # only copy the database the server already has
 #
-# Server (tools/.remote.env: REMOTE_SSH, REMOTE_SSH_KEY): installs osmium-tool once, downloads the extract
-# (only when Geofabrik has a newer one), keeps car roads, runs tools/speedlimits/build_db.py -> speedlimits.sqlite.
+# Server (tools/.remote.env: REMOTE_SSH, REMOTE_SSH_KEY): installs osmium-tool once, downloads the extract, keeps
+# car roads, runs tools/speedlimits/build_db.py -> speedlimits.sqlite. The extract (~2 GB for Poland) is deleted after
+# the build: the server disk is shared with other services.
 # Device (FNAV_HOST, default the ssh alias "fnav"; FNAV_SSH_OPTS): the file goes to /var/lib/fnav/speedlimits.sqlite,
 # fnav-core picks it up within a minute (no restart). Data © OpenStreetMap contributors, ODbL.
 set -euo pipefail
@@ -30,13 +31,13 @@ echo "== server: osmium, $EXTRACT"
 "${SRV[@]}" "cat > $WORK/build_db.py" < tools/speedlimits/build_db.py
 "${SRV[@]}" "cat > $WORK/export.json" < tools/speedlimits/export.json
 "${SRV[@]}" "set -e; cd $WORK
-    curl -fsSL -z extract.osm.pbf -o extract.osm.pbf https://download.geofabrik.de/$EXTRACT-latest.osm.pbf
+    curl -fsSL -o extract.osm.pbf https://download.geofabrik.de/$EXTRACT-latest.osm.pbf
     ls -la extract.osm.pbf
     nice osmium tags-filter --overwrite -o roads.osm.pbf extract.osm.pbf w/highway=$CLASSES
     nice osmium export --overwrite -c export.json -f geojsonseq -x print_record_separator=false \
         --geometry-types=linestring -i sparse_mem_array -o roads.geojsonseq roads.osm.pbf
     nice python3 build_db.py roads.geojsonseq speedlimits.sqlite --region $CC
-    rm -f roads.osm.pbf roads.geojsonseq
+    rm -f extract.osm.pbf roads.osm.pbf roads.geojsonseq
     ls -la speedlimits.sqlite"
 
 fi
