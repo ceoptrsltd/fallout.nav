@@ -11,6 +11,10 @@
 - **Без авторизации доступно:** `/api/login`, `/api/session`, `/admin/login.html` и статика логина;
   а с адреса `127.0.0.1` (киоск Chromium на самом устройстве) — также `/display/**`, `/ws`, `/tiles/**`, `/api/camera/mjpeg`, `/api/settings` (GET).
 - Всё остальное без сессии → `401` (API) или редирект на `/admin/login.html` (страницы).
+- Установленное приложение (PWA, `display-mode: standalone` / iOS Home Screen) при первом запуске на устройстве
+  спрашивает пароль, даже если браузер уже вошёл (на Android приложение делит cookie с Chrome): метка
+  `fnav.appLogin` в localStorage ставится только входом из самого приложения и снимается кнопкой Log out
+  (`web/admin/js/app-login.js`). Это клиентская ступенька; защита — по-прежнему сессия на сервере.
 
 ## Статика
 

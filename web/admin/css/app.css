@@ -496,6 +496,8 @@ tbody tr:hover { background: var(--panel2); }
 .login-card form { display: flex; flex-direction: column; gap: 12px; }
 .login-card input { width: 100%; }
 .login-card .err { color: var(--red); min-height: 20px; font-size: 13px; }
+.login-note { color: var(--amber); font-size: 13.5px; line-height: 1.4; }
+.login-note[hidden] { display: none; }
 
 /* ───── responsive down to 1024 ───── */
 @media (max-width: 1279px) {

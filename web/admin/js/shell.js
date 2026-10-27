@@ -8,6 +8,7 @@ import { store, start, on } from "./store.js";
 import { toast, banner, modal } from "./ui.js";
 import { openPreview } from "./preview.js";
 import { installEntry } from "./install.js";
+import { needsAppLogin, clearAppLogin } from "./app-login.js";
 
 const PAGES = [
   { id: "dashboard", title: "Dashboard", icon: "dash", load: () => import("./pages/dashboard.js") },
@@ -195,6 +196,7 @@ on("conn", (o) => {
 
 // ───── logout ─────
 async function logout() {
+  clearAppLogin();
   try { await api.post("/api/logout", {}, { noRedirect: true }); } catch { /* */ }
   goLogin();
 }
@@ -233,7 +235,7 @@ if (window.isSecureContext && "serviceWorker" in navigator) {
 (async function init() {
   try {
     const s = await api.get("/api/session", { noRedirect: true });
-    if (!s || !s.authenticated) return goLogin();
+    if (!s || !s.authenticated || needsAppLogin()) return goLogin();
     if (s.offline) setOffline(true);
   } catch (e) {
     toast("error", "No connection to the device: " + errText(e));

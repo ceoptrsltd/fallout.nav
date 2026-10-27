@@ -4,6 +4,7 @@
 import { h, icon } from "./dom.js";
 import { modal, toast } from "./ui.js";
 import { installMode, installSteps, platformOf } from "./install-fmt.js";
+import { isStandalone } from "./app-login.js";
 
 const subs = new Set();
 let deferred = window.fnavInstallEvent || null; // caught by the inline script in index.html
@@ -29,11 +30,6 @@ window.addEventListener("appinstalled", () => {
 });
 const standaloneMq = matchMedia("(display-mode: standalone)");
 if (standaloneMq.addEventListener) standaloneMq.addEventListener("change", emit);
-
-/** Running as the installed app. */
-export function isStandalone() {
-  return navigator.standalone === true || standaloneMq.matches || matchMedia("(display-mode: fullscreen)").matches;
-}
 
 const platform = () => platformOf({ ua: navigator.userAgent || "", platform: navigator.platform || "", touch: navigator.maxTouchPoints || 0 });
 
