@@ -22,7 +22,7 @@
 -->
 <div id="out"></div>
 <script type="module">
-import { drawHud, drawVehicle, loadUi } from "./index.js";
+import { drawHud, drawStandby, drawVehicle, loadUi } from "./index.js";
 import { DEFAULT_SETTINGS } from "../map/defaults.js";
 import { esriTileUrl } from "../map/esri.js";
 
@@ -79,6 +79,7 @@ const CASES = [
   ["hazard-off-phase", "Hazard lights: dark phase of the blink (only the outline)",
     [[0, S({ alarm: { ...hit("impact", "Impact detected"), hazard: true } })], [0.5, S({ alarm: { ...hit("impact", "Impact detected"), hazard: true } })]]],
   ["armed-camera", "Armed, camera mode, everything else down", [[0, S({ alarm: ARMED, radio: R })]], { camera: true, down: true }],
+  ["standby", "Armed with display.armed_standby (default): standby screen instead of map and HUD, redrawn once a second (the block moves a little every minute)", [[0, S({ alarm: ARMED })]], { standby: true }],
   // level
   ["level", "Level: both angles ≤ 0.3° — LEVEL frame instead of the wheels", still(L(0.2, -0.1)), { weather: WX }],
   ["level-noseup", "Nose up 1.8°, right side low 1.2°: raise the rear and right wheels", still(L(1.8, -1.2)), { weather: WX }],
@@ -160,6 +161,10 @@ for (const [id, caption, steps, opts = {}] of CASES) {
   for (const [t, step] of all) {
     const st = state(t, step, opts);
     g.setTransform(1, 0, 0, 1, 0, 0);
+    if (opts.standby) {
+      drawStandby(g, st);
+      continue;
+    }
     g.drawImage(opts.camera || !sat ? cam : sat, 0, 0);
     if (!opts.camera && sat) drawVehicle(g, st.view.vehicleX, st.view.vehicleY, 0, st);
     drawHud(g, st);

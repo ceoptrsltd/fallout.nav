@@ -3,6 +3,11 @@
 // останавливает этот экран и запускает RetroArch (служба fnav-games); после выхода из игры экран вернётся сам.
 // Только с геймпада: мини-клавиатура (fnav/core/keypad.py) подключается вместо него и меню не открывает.
 // Только на самом устройстве: не в демо и не в превью через сервер.
+//
+// Опрос: Chromium, раз увидев getGamepads() (или слушатель gamepadconnected), опрашивает устройства ~250 раз в
+// секунду, пока страница видна, — даже без геймпада (≈5 % ядра CM4). Поэтому getGamepads() — только пока fnav-core
+// видит геймпад (telemetry.display.gamepad); пропал — останавливаем опрос: в Blink (navigator_gamepad.cc) его
+// останавливает снятие последнего слушателя gamepadconnected — добавляем и сразу снимаем.
 
 const HOLD_OPEN_S = 0.8; // столько держать PS, чтобы открыть меню
 const REPEAT_FIRST_S = 0.35;
@@ -34,6 +39,7 @@ export class GamesMenu {
    */
   constructor(root, url) {
     this.url = url;
+    this.polling = false; // звали getGamepads() — Chromium опрашивает устройства
     this.open = false;
     this.games = [];
     this.sel = 0;
@@ -47,8 +53,16 @@ export class GamesMenu {
     root.appendChild(this.el);
   }
 
-  /** Каждый кадр: опрос геймпадов. t — секунды, speed — м/с из телеметрии. */
-  poll(t, speed) {
+  /**
+   * Каждый кадр: опрос геймпадов. t — секунды, speed — м/с из телеметрии; present — геймпад подключён
+   * (telemetry.display.gamepad; false — не опрашивать вовсе).
+   */
+  poll(t, speed, present = true) {
+    if (!present) {
+      this.stopPolling();
+      return;
+    }
+    this.polling = true;
     const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
     if (!pads.length) { this.holdSince = null; return; }
     const s = pads.map(readPad).reduce((a, c) => {
@@ -81,6 +95,18 @@ export class GamesMenu {
     }
     if (!s.home && this.holdSince === Infinity) this.holdSince = null;
     this.prev = s;
+  }
+
+  /** Перестать опрашивать (геймпада нет, экран «на охране»): меню закрыть, опрос в Chromium остановить. */
+  stopPolling() {
+    this.holdSince = null;
+    this.prev = {};
+    if (this.open) this.hide();
+    if (!this.polling) return;
+    this.polling = false;
+    const f = () => {};
+    addEventListener("gamepadconnected", f);
+    removeEventListener("gamepadconnected", f);
   }
 
   async show(speed) {

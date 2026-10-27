@@ -3,9 +3,10 @@
 // запасной вариант — ./map/debug-hud.js.
 //
 // Параметры URL: ?pal=1 (устройство, 720×576, scaleX 0.9375), ?preview=1 (iframe веб-интерфейса),
-// ?debug=1 (статистика), ?fps=30 (ограничить частоту кадров), ?dpr=2 (чёткость; без него в браузере — по экрану),
+// ?debug=1 (статистика, свой холст поверх), ?fps=30 (ограничить частоту кадров), ?dpr=2 (чёткость; без него в браузере — по экрану),
 // ?ui=debug (принудительно отладочный HUD), ?demo=1 (демо в браузере без fnav-core, docs/contracts/demo.md;
-// ?camera=<url> — картинка «камеры» в демо).
+// ?camera=<url> — картинка «камеры» в демо), ?verify=1 (с ?debug=1: HUD и ветер рисуются ещё и напрямую на
+// скрытых холстах, пиксели сравниваются с экранными — проверка перерисовки по изменению, map/retained.js).
 // Удалённый доступ (страница не с устройства, а через сервер, docs/contracts/remote.md): адреса — от корня
 // приложения, тайлы Esri — напрямую с arcgisonline (не через мобильный интернет машины), MJPEG — ~5 к/с.
 
@@ -16,6 +17,8 @@ import { activeLayers, layerLevel, planRequests } from "./map/layers.js";
 import { CompassFilter, MotionModel, OrientationBlend, RotationRig, ZoomAnimator, vehicleAnchor } from "./map/motion.js";
 import { Trail } from "./map/trail.js";
 import { CameraLayer } from "./map/camera.js";
+import { RetainedLayer, bumpEpoch } from "./map/retained.js";
+import { armedStandby, standbyDelayMs } from "./map/standby.js";
 import { Link, wsUrl } from "./map/link.js";
 import { REMOTE, appUrl } from "./map/root.js";
 import { ESRI_ATTRIBUTION, esriTileUrl } from "./map/esri.js";
@@ -30,6 +33,7 @@ const DEMO = params.get("demo") === "1";
 const PAL = params.get("pal") === "1" && !DEMO; // демо — всегда без PAL-сжатия и без зеркала
 const PREVIEW = params.get("preview") === "1";
 const DEBUG = params.get("debug") === "1";
+const VERIFY = DEBUG && params.get("verify") === "1";
 const FPS_CAP = Number(params.get("fps")) || 0;
 const DPR_PARAM = Number(params.get("dpr")) || 0;
 // пикселей холста на логический px. Устройство (PAL) — 1: холст 768×576 и так сжимается до 720×480.
@@ -45,14 +49,23 @@ const nowS = () => performance.now() / 1000;
 // ───────────── разметка ─────────────
 const root = document.getElementById("root");
 const mapCanvas = document.getElementById("map");
+const windCanvas = document.getElementById("wind");
 const hudCanvas = document.getElementById("hud");
+// ?debug=1: статистика на своём холсте — иначе она меняется каждый кадр и HUD никогда не пропускал бы кадры
+const debugCanvas = DEBUG ? root.appendChild(Object.assign(document.createElement("canvas"), { id: "debug" })) : null;
 document.body.classList.toggle("pal", PAL);
 document.body.classList.toggle("preview", PREVIEW);
+// HUD и ветер перерисовываются, только когда изменилось нарисованное (map/retained.js); создаются ниже
+let hudLayer = null;
+let windLayer = null;
 function sizeCanvases() {
-  for (const c of [mapCanvas, hudCanvas]) {
+  for (const c of [mapCanvas, windCanvas, hudCanvas, debugCanvas]) {
+    if (!c) continue;
     c.width = Math.round(W * PR);
     c.height = Math.round(H * PR);
   }
+  hudLayer?.invalidate();
+  windLayer?.invalidate();
 }
 sizeCanvases();
 const mapCtx = mapCanvas.getContext("2d", { alpha: false });
@@ -60,7 +73,14 @@ const mapCtx = mapCanvas.getContext("2d", { alpha: false });
 const gamesMenu = !DEMO && !REMOTE && !PREVIEW
   ? new GamesMenu(root, appUrl)
   : null;
-const hudCtx = hudCanvas.getContext("2d");
+// ?verify=1: все холсты сравнения — в памяти (CPU), иначе GPU и CPU сглаживают края по-разному
+const CTX_OPTS = VERIFY ? { willReadFrequently: true } : undefined;
+const hudCtx = hudCanvas.getContext("2d", CTX_OPTS);
+const windCtx = windCanvas.getContext("2d", CTX_OPTS);
+const debugCtx = debugCanvas ? debugCanvas.getContext("2d") : null;
+hudLayer = new RetainedLayer(hudCtx);
+windLayer = new RetainedLayer(windCtx);
+const FULL = { x: 0, y: 0, w: W, h: H };
 
 let mirrorX = false;   // settings.display.mirror_x (set in applySettings)
 let resized = false;   // холсты пересозданы (PR сменился) — карту перерисовать
@@ -103,6 +123,11 @@ let telemetry = null;
 let weather = null; // {"type":"weather"} от fnav-core (ui/weather.js)
 let lastInternet = null;
 let mapDirty = true;
+// экран «на охране» (map/standby.js, ui/standby.js): вместо кадров по rAF — таймер раз в секунду
+let standby = false;
+let rafId = 0;
+let standbyTimer = null;
+const HUD_REFRESH_S = 2; // страховка: HUD проигрывается не реже (map/retained.js)
 
 const STUB_TELEMETRY = {
   type: "telemetry",
@@ -163,6 +188,7 @@ function applySettings(s) {
   if (!settings.display.show_trail) trail.clear();
   if (zoomAnim.target !== null) zoomAnim.setTarget(clamp(zoomAnim.target, 1, maxZoom()));
   mapDirty = true;
+  checkStandby();
 }
 applySettings({});
 
@@ -178,6 +204,7 @@ function onMessage(msg) {
     const inet = msg.system ? msg.system.internet : null;
     if (inet === true && lastInternet === false) store.resetFailures(); // сеть вернулась — перезапросить
     lastInternet = inet;
+    checkStandby();
   } else if (msg.type === "weather") {
     weather = msg;
   } else if (msg.type === "settings") {
@@ -230,9 +257,9 @@ if (DEMO) {
 }
 
 // ───────────── HUD (агент C) с запасным вариантом ─────────────
-let ui = { drawHud: debugHud.drawHud, drawVehicle: debugHud.drawVehicle, drawTrail: debugHud.drawTrail };
+let ui = { drawHud: debugHud.drawHud, drawVehicle: debugHud.drawVehicle, drawTrail: debugHud.drawTrail, drawWind: null, drawStandby: null };
 let uiName = "debug";
-const uiErrors = { drawHud: 0, drawVehicle: 0, drawTrail: 0 };
+const uiErrors = { drawHud: 0, drawVehicle: 0, drawTrail: 0, drawWind: 0, drawStandby: 0 };
 
 async function loadExternalUi() {
   if (FORCE_DEBUG_UI) return;
@@ -249,19 +276,26 @@ async function loadExternalUi() {
       drawHud: mod.drawHud,
       drawVehicle: typeof mod.drawVehicle === "function" ? mod.drawVehicle : debugHud.drawVehicle,
       drawTrail: typeof mod.drawTrail === "function" ? mod.drawTrail : debugHud.drawTrail,
+      // ветер на своём холсте (drawHud(..., {wind: false})); нет функции — ветер рисует сам drawHud
+      drawWind: typeof mod.drawWind === "function" ? mod.drawWind : null,
+      drawStandby: typeof mod.drawStandby === "function" ? mod.drawStandby : null,
     };
     uiName = "ui";
     mapDirty = true;
+    bumpEpoch(); // шрифты HUD загружены — перерисовать текст
   } catch (e) {
     console.warn("fnav: web/display/ui unavailable, using debug HUD", e);
   }
 }
 
-/** Вызов функции C с защитой: исключение не роняет кадр; при систематических — откат на отладочную. */
+/**
+ * Вызов функции C с защитой: исключение не роняет кадр; при систематических — откат на отладочную
+ * (нет отладочной — функция отключается). Возвращает результат функции (или undefined при ошибке).
+ */
 function callUi(name, ctx, ...args) {
   ctx.save();
   try {
-    ui[name](ctx, ...args);
+    return ui[name](ctx, ...args);
   } catch (e) {
     if (uiErrors[name]++ === 0) console.error(`fnav: ui.${name} failed`, e);
     if (typeof ctx.reset === "function") ctx.reset();
@@ -269,8 +303,9 @@ function callUi(name, ctx, ...args) {
     ctx.setTransform(PR, 0, 0, PR, 0, 0);
     if (uiErrors[name] > 30 && ui[name] !== debugHud[name]) {
       console.error(`fnav: ui.${name} keeps failing, switching to debug HUD`);
-      ui[name] = debugHud[name];
+      ui[name] = debugHud[name] ?? null;
     }
+    return undefined;
   } finally {
     ctx.restore();
   }
@@ -322,7 +357,6 @@ function needsMapRedraw(view, t, hasFix) {
 }
 
 function frame(tms) {
-  requestAnimationFrame(frame);
   const t = tms / 1000;
   if (FPS_CAP && lastFrame !== null && t - lastFrame < 1 / FPS_CAP - 0.004) return;
   if (resized) {
@@ -334,7 +368,8 @@ function frame(tms) {
   lastFrame = t;
 
   const tel = telemetry || STUB_TELEMETRY;
-  if (gamesMenu) gamesMenu.poll(t, tel.gps ? tel.gps.speed_mps : null);
+  // геймпад: только пока fnav-core его видит (display.gamepad; нет поля — старое ядро, опрашиваем как раньше)
+  if (gamesMenu) gamesMenu.poll(t, tel.gps ? tel.gps.speed_mps : null, telemetry !== null && tel.display?.gamepad !== false);
   const m = motion.update(t);
   lastPos = m;
   const f = orient.update(dt);
@@ -439,29 +474,151 @@ function frame(tms) {
     mapDirty = true; // после возврата с камеры — перерисовать сразу
   }
 
-  // ── HUD ──
-  hudCtx.setTransform(PR, 0, 0, PR, 0, 0);
-  hudCtx.clearRect(0, 0, W, H);
+  // ── ветер (свой холст под HUD) и HUD: проигрываются на холст, только когда нарисованное изменилось ──
   const th = DEBUG ? performance.now() : 0;
-  callUi("drawHud", hudCtx, state);
-  if (DIRECT_TILES && mode === "map") drawAttribution(hudCtx, state);
+  const windOwn = typeof ui.drawWind === "function";
+  const wrec = windLayer.begin();
+  let windBox = null;
+  if (windOwn) {
+    wrec.setTransform(PR, 0, 0, PR, 0, 0);
+    windBox = callUi("drawWind", wrec, state) ?? null;
+  }
+  windLayer.end(t, windBox, PR);
+  const hrec = hudLayer.begin();
+  hrec.setTransform(PR, 0, 0, PR, 0, 0);
+  callUi("drawHud", hrec, state, { wind: !windOwn });
+  if (DIRECT_TILES && mode === "map") drawAttribution(hrec, state);
+  hudLayer.end(t, FULL, PR);
+  if (verify) verifyFrame(state, windOwn, mode);
   if (DEBUG) {
     hudMsEma += (performance.now() - th - hudMsEma) * 0.05;
     const s = store.stats;
-    debugHud.drawStats(hudCtx, [
+    drawDebug([
       `fps ${fpsEma.toFixed(0)}  map ${mapMsEma.toFixed(1)}ms  hud ${hudMsEma.toFixed(1)}ms  draws ${drawnFrames}  ui ${uiName}`,
       `zoom ${zoom.toFixed(2)} → ${zoomAnim.target ?? "-"}  lvl ${layers.length ? layerLevel(layers[0], zoom, maxZoom(), Math.log2(PR)) : "-"}  pr ${PR}  brg ${pose.bearing.toFixed(1)}  veh ${rot.vehicle.toFixed(1)}  ${rig.tracking ? "trk" : "hold"}`,
       `tiles cache ${store.cache.size}  load ${store.inflight.size}  q ${store.queue.length}  fail ${store.failures.size}`,
       `drawn ${renderer.lastDrawn.tiles}/${renderer.lastDrawn.fallbacks}/${renderer.lastDrawn.missing}  ok ${s.loaded} err ${s.failed} abort ${s.aborted} evict ${s.evicted}`,
       `pos ${m.lat?.toFixed(5) ?? "-"}, ${m.lon?.toFixed(5) ?? "-"}  v ${(m.speed ?? 0).toFixed(1)}  trail ${trail.pts.length}`,
-      `ws ${connected ? "ok" : "LOST"}  mode ${mode}  cam ${camera.ok ? "ok" : "-"}`,
+      `ws ${connected ? "ok" : "LOST"}  mode ${mode}  cam ${camera.ok ? "ok" : "-"}  pad ${gamesMenu?.polling ? "poll" : "-"}`,
+      layerStats(),
     ]);
   }
 }
 
+function layerStats() {
+  const h = hudLayer.stats, w = windLayer.stats;
+  const v = verify ? `  verify ${verify.checked} bad ${verify.bad} max ${verify.maxDiff}` : "";
+  return `hud drawn ${h.drawn} skip ${h.skipped}  wind drawn ${w.drawn} skip ${w.skipped}${standby ? "  STANDBY" : ""}${v}`;
+}
+
+// ?verify=1: те же кадры напрямую (без записи и пропусков) на скрытых холстах — с первого кадра, чтобы
+// анимации (бегущая строка, вспышки) шли так же; раз в 30 кадров пиксели сравниваются с экранными.
+const verify = VERIFY ? { hud: null, wind: null, n: 0, checked: 0, bad: 0, maxDiff: 0 } : null;
+function verifyFrame(state, windOwn, mode) {
+  const mk = () => {
+    const c = document.createElement("canvas");
+    c.width = hudCanvas.width;
+    c.height = hudCanvas.height;
+    return c.getContext("2d", CTX_OPTS);
+  };
+  verify.hud ??= mk();
+  verify.wind ??= mk();
+  const vh = verify.hud, vw = verify.wind;
+  vh.setTransform(PR, 0, 0, PR, 0, 0);
+  vh.clearRect(0, 0, W, H);
+  callUi("drawHud", vh, state, { wind: !windOwn });
+  if (DIRECT_TILES && mode === "map") drawAttribution(vh, state);
+  vw.setTransform(PR, 0, 0, PR, 0, 0);
+  vw.clearRect(0, 0, W, H);
+  if (windOwn) callUi("drawWind", vw, state);
+  if (++verify.n % 30) return;
+  for (const [live, direct] of [[hudCtx, vh], [windCtx, vw]]) {
+    const a = live.getImageData(0, 0, live.canvas.width, live.canvas.height).data;
+    const b = direct.getImageData(0, 0, direct.canvas.width, direct.canvas.height).data;
+    let mx = a.length === b.length ? 0 : 255;
+    for (let i = 0; i < a.length && mx < 255; i++) mx = Math.max(mx, Math.abs(a[i] - b[i]));
+    verify.checked++;
+    if (mx) verify.bad++;
+    verify.maxDiff = Math.max(verify.maxDiff, mx);
+  }
+}
+
+/** ?debug=1: статистика на своём холсте поверх всего. */
+function drawDebug(lines) {
+  debugCtx.setTransform(PR, 0, 0, PR, 0, 0);
+  debugCtx.clearRect(0, 0, W, H);
+  debugHud.drawStats(debugCtx, lines);
+}
+
+// ───────────── экран «на охране» ─────────────
+// Пока охрана в состоянии armed (map/standby.js): ни карты, ни тайлов, ни ветра, ни камеры, ни геймпада;
+// вместо rAF — таймер раз в секунду, HUD-холст проигрывается, только когда сменилась минута.
+
+function loop(tms) {
+  rafId = 0;
+  if (armedStandby(telemetry, settings)) {
+    standbyFrame();
+    return;
+  }
+  rafId = requestAnimationFrame(loop);
+  frame(tms);
+}
+
+function standbyFrame() {
+  const t = nowS();
+  if (!standby) {
+    standby = true;
+    camera.suspend(true);
+    if (gamesMenu) gamesMenu.stopPolling();
+    windLayer.begin();
+    windLayer.end(t, null, PR); // стереть струйки
+    hudLayer.refreshS = 60;
+  }
+  const state = {
+    now: t,
+    telemetry: telemetry || STUB_TELEMETRY,
+    weather,
+    settings,
+    view: { mode: "map", wallMs: Date.now(), connected: link.connected(3) },
+    canvas: { w: W, h: H, safe: { x: 0, y: 0, w: W, h: H }, pxPerMm: W / (settings.display.screen?.w_mm || 92) },
+  };
+  lastState = state;
+  const rec = hudLayer.begin();
+  rec.setTransform(PR, 0, 0, PR, 0, 0);
+  if (ui.drawStandby) {
+    callUi("drawStandby", rec, state);
+  } else {
+    rec.fillStyle = "#000";
+    rec.fillRect(0, 0, W, H);
+  }
+  hudLayer.end(t, FULL, PR);
+  if (DEBUG) drawDebug([`standby (alarm armed)  ui ${uiName}`, layerStats()]);
+  clearTimeout(standbyTimer);
+  standbyTimer = setTimeout(() => {
+    standbyTimer = null;
+    if (!rafId) rafId = requestAnimationFrame(loop);
+  }, standbyDelayMs(Date.now()));
+}
+
+/** Телеметрия/настройки: охрану сняли (или сработала) — сразу обычный экран. */
+function checkStandby() {
+  if (standby && !armedStandby(telemetry, settings)) wake();
+}
+
+function wake() {
+  standby = false;
+  clearTimeout(standbyTimer);
+  standbyTimer = null;
+  camera.suspend(false);
+  hudLayer.refreshS = HUD_REFRESH_S;
+  mapDirty = true;
+  lastFrame = null; // время сна не считать кадром
+  if (!rafId) rafId = requestAnimationFrame(loop);
+}
+
 // ждём HUD агента C (шрифты/спрайты) не дольше 3 с, затем стартуем; догрузится — переключимся
 await Promise.race([loadExternalUi(), new Promise((r) => setTimeout(r, 3000))]);
-requestAnimationFrame(frame);
+rafId = requestAnimationFrame(loop);
 
 // для отладки из консоли
-window.fnav = { store, motion, trail, link, camera, rig, get demo() { return link && link.sim ? link : null; }, get state() { return lastState; }, get settings() { return settings; }, get telemetry() { return telemetry; } };
+window.fnav = { store, motion, trail, link, camera, rig, gamesMenu, verify, layers: { hud: hudLayer, wind: windLayer }, get standby() { return standby; }, get demo() { return link && link.sim ? link : null; }, get state() { return lastState; }, get settings() { return settings; }, get telemetry() { return telemetry; } };

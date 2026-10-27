@@ -119,6 +119,7 @@ function textSprite(ctx, text, font, h, { fill = C.ink, lw = 4 } = {}) {
   }
   c.fillStyle = fill;
   c.fillText(text, lw / 2 + 2, yb);
+  canvas.fnavStatic = true; // готов и больше не меняется (map/retained.js)
   s = { canvas, w, h };
   textCache.set(key, s);
   if (textCache.size > TEXT_CACHE_MAX) textCache.delete(textCache.keys().next().value);

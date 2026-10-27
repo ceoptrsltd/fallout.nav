@@ -62,6 +62,8 @@ class DisplaySettings(_Model):
     weather_panel: bool = True  # погода (сейчас + 2 дня) на месте плашки радио, пока радио выключено
     wind_on_map: bool = True  # ветер вокруг машины на карте (анимация)
     speed_limit: bool = True  # знак разрешённой скорости у спидометра (OSM, data_dir/speedlimits.sqlite)
+    # На охране (alarm armed) вместо карты и HUD — чёрный экран с ALARM ON и часами, перерисовка раз в секунду
+    armed_standby: bool = True
 
 
 class ZoomStep(_Model):
@@ -481,6 +483,7 @@ class DisplayState(_Model):
     reason: Literal["speed", "no_fix", "forced", "startup"] = "startup"
     target_zoom: float = 19
     orientation: Literal["heading_up", "north_up"] = "heading_up"
+    gamepad: bool = False  # подключён геймпад: только тогда экран опрашивает его (меню игр)
 
 
 class DiskStatus(_Model):

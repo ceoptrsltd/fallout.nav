@@ -31,7 +31,8 @@ export const DEFAULT_SETTINGS = {
     "show_clock": true,
     "weather_panel": true,
     "wind_on_map": true,
-    "speed_limit": true
+    "speed_limit": true,
+    "armed_standby": true
   },
   "nav": {
     "camera_below_mps": 2.0,

@@ -7,13 +7,14 @@ import { compassStyles, drawCompass } from "./compass.js";
 import { drawLevel } from "./level.js";
 import { drawAlarmFlash, drawRadio } from "./radio.js";
 import { SPEED_BOX, drawSpeed } from "./speed.js";
+import { drawStandby } from "./standby.js";
 import { drawIndicators, drawWarnings } from "./status.js";
 import { clearSprites, safeRect, setting } from "./theme.js";
 import { drawTrail } from "./trail.js";
 import { drawVehicle } from "./vehicle.js";
 import { drawWeather, drawWind } from "./weather.js";
 
-export { compassStyles, drawRadio, drawTrail, drawVehicle };
+export { compassStyles, drawRadio, drawStandby, drawTrail, drawVehicle, drawWind };
 export { LEVEL_BOX, drawLevelPanel } from "./level.js";
 
 const FONTS = [
@@ -69,8 +70,10 @@ export function loadUi() {
  *   Центральная полоса над машиной (дорога впереди) свободна; сработала охрана — 10 с крупная плашка
  *   IMPACT / TILTED / MOVING над машиной, поверх всего (машина стоит, дорога не нужна).
  * view.attribution — внизу по центру подпись источников карты (демо/удалённо): радио поднимается над ней.
+ * opts.wind = false — без ветра: app.js рисует его на своём холсте под HUD (тот же вид, но HUD не перерисовывается
+ * ради анимации струек).
  */
-export function drawHud(ctx, state) {
+export function drawHud(ctx, state, { wind = true } = {}) {
   const safe = safeRect(state);
   ctx.save();
   ctx.setLineDash([]);
@@ -78,7 +81,7 @@ export function drawHud(ctx, state) {
   ctx.globalCompositeOperation = "source-over";
 
   updateAlarm(ctx, state); // раз за кадр: вспышки и плашка охраны (alarm.js) читают это состояние
-  drawWind(ctx, state); // под всеми плашками
+  if (wind) drawWind(ctx, state); // под всеми плашками
   const style = setting(state, "display.compass_style", "v1");
   const cr = drawCompass(ctx, state, safe, style);
   const clock = setting(state, "display.show_clock", true) ? drawClock(ctx, state, safe, cr) : null;

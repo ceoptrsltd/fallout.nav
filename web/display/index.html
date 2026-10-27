@@ -113,6 +113,8 @@
       <img id="camera" alt="">
       <div id="camera-msg" hidden>NO CAMERA</div>
     </div>
+    <!-- ветер вокруг машины: свой холст, чтобы анимация струек не перерисовывала весь HUD -->
+    <canvas id="wind" width="768" height="576"></canvas>
     <canvas id="hud" width="768" height="576"></canvas>
   </div>
   <script type="module" src="./app.js"></script>

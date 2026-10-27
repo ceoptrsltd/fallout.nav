@@ -108,6 +108,8 @@ export function sprite(key, w, h, draw, ss = SS) {
   const c = canvas.getContext("2d");
   c.scale(ss, ss);
   draw(c);
+  // больше не меняется: запись кадра HUD (map/retained.js) сравнивает такие картинки по ссылке
+  canvas.fnavStatic = true;
   s = { canvas, w, h };
   sprites.set(k, s);
   return s;

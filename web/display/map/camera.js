@@ -16,6 +16,7 @@ export class CameraLayer {
     this.lingerS = lingerS;
     this.shown = false;
     this.shownAt = 0;
+    this.suspended = false; // экран «на охране»: поток не нужен вовсе
     this.streaming = false;
     this.ok = false;
     this.retryTimer = null;
@@ -54,6 +55,7 @@ export class CameraLayer {
 
   /** Показать/скрыть (вызывать при каждой телеметрии — повторные вызовы дёшевы). */
   setVisible(on, nowS) {
+    if (this.suspended) return;
     if (on === this.shown) return;
     this.shown = on;
     this.shownAt = nowS;
@@ -68,6 +70,21 @@ export class CameraLayer {
         if (!this.shown) this._disconnect();
       }, this.lingerS * 1000);
     }
+  }
+
+  /**
+   * Экран «на охране»: спрятать слой и сразу закрыть поток (без задержки lingerS) — ни браузер не декодирует
+   * MJPEG, ни fnav-camera его не кодирует. После снятия очередной setVisible() включит камеру как обычно.
+   */
+  suspend(on) {
+    if (on === this.suspended) return;
+    this.suspended = on;
+    if (!on) return;
+    clearTimeout(this.lingerTimer);
+    this.lingerTimer = null;
+    this.shown = false;
+    this.layer.classList.remove("on");
+    this._disconnect();
   }
 
   /** Камера полностью закрыла карту (переход завершён) — карту можно не рисовать. */

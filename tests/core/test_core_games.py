@@ -117,3 +117,35 @@ def test_pad_exit_combo():
     assert not w.exit_held(1.0, now=13.0)
     w.feed(ev(0x13A, 1) + ev(0x13B, 1), now=20.0)  # Select + Start (стандартная раскладка)
     assert w.exit_held(1.0, now=21.0)
+
+
+def test_pad_presence(tmp_path, monkeypatch):
+    inp = tmp_path / "input"
+    (inp / "by-id").mkdir(parents=True)
+    monkeypatch.setattr(gm, "PRESENCE_GLOBS", (str(inp / "js*"), str(inp / "by-id" / "*-event-joystick")))
+    svc = gm.GamesService(lambda: 0.0, Radio(False).pause, Radio(False).resume, lambda *a: None, mock=False)
+    assert svc.pad_present(now=100.0) is False
+    (inp / "js0").write_text("")
+    assert svc.pad_present(now=101.0) is False  # проверка не чаще раза в PRESENCE_CACHE_S
+    assert svc.pad_present(now=102.1) is True
+    (inp / "js0").unlink()
+    (inp / "by-id" / "usb-Sony_Wireless_Controller-event-joystick").write_text("")
+    assert svc.pad_present(now=104.2) is True
+    (inp / "by-id" / "usb-Sony_Wireless_Controller-event-joystick").unlink()
+    assert svc.pad_present(now=106.3) is False
+    mock = gm.GamesService(lambda: 0.0, Radio(False).pause, Radio(False).resume, lambda *a: None, mock=True)
+    assert mock.pad_present() is True  # на ноутбуке меню игр открывается с настоящего геймпада
+
+
+async def test_telemetry_gamepad_flag(tmp_path, monkeypatch, data_dir):
+    app = create_app(make_opts())
+    async with app.router.lifespan_context(app):
+        c = httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("10.0.0.5", 4000)),
+                              base_url="http://testserver")
+        async with c:
+            await login(c)
+            disp = (await c.get("/api/telemetry")).json()["display"]
+            assert disp["gamepad"] is True  # mock: геймпад считается подключённым
+        core = app.state.core
+        monkeypatch.setattr(core.games, "pad_present", lambda now=None: False)
+        assert core.build_telemetry().display.gamepad is False

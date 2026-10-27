@@ -55,6 +55,10 @@ DUKE_SHAREWARE_SIZE = 11035779  # DUKE3D.GRP 1.3D shareware (эпизод L.A. M
 
 # выход из игры с геймпада: обе кнопки пары держать EXIT_HOLD_S
 PAD_GLOB = "/dev/input/by-id/*-event-joystick"
+# геймпад подключён (экран опрашивает Gamepad API только тогда): узел joydev, по которому его видит
+# и Chromium, или evdev-узел джойстика (by-id — только у USB)
+PRESENCE_GLOBS = ("/dev/input/js*", PAD_GLOB)
+PRESENCE_CACHE_S = 2.0
 EXIT_PAIRS = ({0x138, 0x139}, {0x13A, 0x13B})  # Share+Options (порядок DualShock 4 у hid-generic) / Select+Start
 EXIT_HOLD_S = 1.0
 EV_KEY = 1
@@ -118,6 +122,12 @@ def scan_games(content_dir: Path | None = None, doom_dir: Path | None = None,
     return games
 
 
+def pads_present(patterns: tuple[str, ...] | None = None) -> bool:
+    import glob
+
+    return any(glob.glob(p) for p in (patterns or PRESENCE_GLOBS))
+
+
 class GamesError(Exception):
     def __init__(self, status: int, detail: str):
         super().__init__(detail)
@@ -143,6 +153,22 @@ class GamesService:
         self._moving_since: float | None = None
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        self._pad: bool = False
+        self._pad_at = -1e9
+
+    def pad_present(self, now: float | None = None) -> bool:
+        """Подключён ли геймпад (для telemetry.display.gamepad; проверка не чаще раза в PRESENCE_CACHE_S).
+        В mock — всегда да: меню игр на ноутбуке открывается с настоящего геймпада."""
+        if self.mock:
+            return True
+        now = time.monotonic() if now is None else now
+        if now - self._pad_at >= PRESENCE_CACHE_S:
+            self._pad_at = now
+            try:
+                self._pad = pads_present()
+            except OSError:
+                self._pad = False
+        return self._pad
 
     def games(self) -> list[Game]:
         return scan_games()

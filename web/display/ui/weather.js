@@ -286,13 +286,15 @@ const smooth = (a, b, v) => {
  * Ветер вокруг машины: струйки со стрелками летят туда, куда дует ветер, — с учётом поворота карты, то есть
  * относительно машины (встречный — сверху вниз в heading-up). Скорость и длина струек — от силы ветра.
  * Только на карте; display.wind_on_map. Машина — в state.view.vehicleX/Y.
+ * Возвращает прямоугольник, за который струйки не выходят ({x, y, w, h}), или null — ничего не рисовали
+ * (app.js рисует ветер на своём холсте и очищает только этот участок).
  */
 export function drawWind(ctx, state) {
   const w = state?.weather;
   const v = state?.view ?? {};
-  if (!w || v.mode === "camera" || setting(state, "display.wind_on_map", true) === false) return;
+  if (!w || v.mode === "camera" || setting(state, "display.wind_on_map", true) === false) return null;
   const a = windScreenAngle(state);
-  if (a === null || !(w.wind_ms >= 0.5)) return;
+  if (a === null || !(w.wind_ms >= 0.5)) return null;
   const cw = state?.canvas?.w ?? 768, ch = state?.canvas?.h ?? 576;
   const cx = Number.isFinite(v.vehicleX) ? v.vehicleX : cw / 2;
   const cy = Number.isFinite(v.vehicleY) ? v.vehicleY : ch * 0.67;
@@ -335,4 +337,8 @@ export function drawWind(ctx, state) {
     ctx.stroke();
   }
   ctx.restore();
+  // голова струйки — внутри R_OUT, хвост — ещё на длину (s.len ≤ 1.2), плюс обводка и сглаживание
+  const r = R_OUT + baseLen * 1.2 + 8;
+  const x0 = Math.floor(cx - r), y0 = Math.floor(cy - r);
+  return { x: x0, y: y0, w: Math.ceil(cx + r) - x0, h: Math.ceil(cy + r) - y0 };
 }

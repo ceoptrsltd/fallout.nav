@@ -328,13 +328,16 @@ class Core:
         cam = self.camera.status
         if cam.state == "error" and cam.error:
             errors.append(f"Camera: {cam.error}")
+        disp = self.display_state
+        if self.games.pad_present():  # экран опрашивает геймпад, только когда он есть (ui/games-menu.js)
+            disp = disp.model_copy(update={"gamepad": True})
         return Telemetry(
             t=time.time(),
             gps=snap.gps,
             heading=snap.heading,
             compass=snap.compass,
             compass_cal=snap.compass_cal,
-            display=self.display_state,
+            display=disp,
             camera=cam,
             disk=self.system.disk,
             system=self.system.status,

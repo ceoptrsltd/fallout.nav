@@ -215,6 +215,9 @@ export async function mount(root) {
     store.settings?.display?.wind_on_map !== undefined
       ? f({ path: "display.wind_on_map", label: "Wind around the vehicle", hint: "Animated streaks on the map show where the wind blows, relative to the vehicle", type: "switch" })
       : null,
+    store.settings?.display?.armed_standby !== undefined
+      ? f({ path: "display.armed_standby", label: "Standby screen while armed", hint: "While the alarm is armed the car screen shows only ALARM ON and the clock: no map, camera or animation, so the display uses almost no CPU. Any other alarm state brings the normal screen back at once", type: "switch" })
+      : null,
     f({ path: "display.mirror_x", label: "Mirror screen left-right", hint: "For monitors that mirror the picture themselves (rear-view CRTs like the WAECO RV-50). Affects only the physical screen, not this preview", type: "switch" }),
     f({ path: "display.trail_seconds", label: "Trail length", type: "number", min: 0, max: 600, step: 10, unit: "s" }),
     // until the device software has the radio (docs/contracts/radio.md) the setting does not exist: no switch

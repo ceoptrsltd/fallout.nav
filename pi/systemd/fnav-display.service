@@ -1,5 +1,5 @@
 [Unit]
-Description=fallout.nav display (cage + Chromium kiosk on composite PAL 720x576)
+Description=fallout.nav display (cage + Chromium kiosk on composite NTSC 720x480i)
 Documentation=file:///opt/fnav/app/pi/README.md
 After=systemd-user-sessions.service systemd-udevd.service seatd.service fnav-core.service plymouth-quit-wait.service
 Wants=fnav-core.service
@@ -48,6 +48,9 @@ ExecStartPre=/bin/bash /opt/fnav/app/pi/bin/fnav-display-prestart
 # No mouse cursor: the transparent cursor theme above (the macro pad has a mouse interface), and the page sets cursor:none.
 # Chromium: profile on eMMC (/var/lib/fnav/chromium), 100 MB disk cache in tmpfs to spare the eMMC.
 # --ozone-platform=wayland: we run under cage. The GPU flags are for 2D canvas / rasterization on V3D.
+# The window is the whole output (cage ignores --window-size): 720x480 from cmdline.txt (NTSC), the page scales to it.
+# --disable-renderer-accessibility: the Raspberry Pi wrapper (/etc/chromium.d/00-rpi-vars) adds
+# --force-renderer-accessibility; nothing on the car screen needs the accessibility tree.
 ExecStart=/usr/bin/cage -d -- chromium \
     --kiosk \
     --noerrdialogs \
@@ -74,6 +77,7 @@ ExecStart=/usr/bin/cage -d -- chromium \
     --ignore-gpu-blocklist \
     --enable-gpu-rasterization \
     --enable-zero-copy \
+    --disable-renderer-accessibility \
     $FNAV_CHROMIUM_EXTRA \
     "${FNAV_DISPLAY_URL}"
 
