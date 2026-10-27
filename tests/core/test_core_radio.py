@@ -490,13 +490,18 @@ async def test_favorites(tmp_path):
 
 async def test_bt_restarts_a_crashed_chip(tmp_path, monkeypatch):
     """The CYW43455 firmware crashed ("hci0: hardware error"): the adapter powered off by itself and refuses to
-    power on. Maintenance retries, then restarts the chip; an adapter switched off from the web UI stays off."""
+    power on. One failed attempt is enough to restart the chip (it never comes back without a restart), at most
+    once in RESET_EVERY_S; "Busy" (the kernel is still resetting it) does not count; an adapter switched off
+    from the web UI stays off."""
     from fnav.core import bluetooth as btmod
 
     class Crashed(FakeBluetooth):
         dead = True
+        busy = False
 
         async def _power(self, on):
+            if on and self.busy:
+                raise BluetoothError(502, "Busy")
             if on and self.dead:
                 raise BluetoothError(502, "Failed: Authentication Failed")
             await super()._power(on)
@@ -509,9 +514,12 @@ async def test_bt_restarts_a_crashed_chip(tmp_path, monkeypatch):
         bt.dead = False
 
     bt.reset_controller = reset
+    bt.busy = True
     await bt.start(background=False)
-    assert bt.powered is False and bt._power_failures == 1  # start() tried once
-    await bt._tick()  # second failure in a row: restart the chip
+    await bt._tick()
+    assert bt.powered is False and bt._power_failures == 0 and resets == []  # Busy: not a crash (yet)
+    bt.busy = False
+    await bt._tick()  # refuses to power on: restart the chip at once
     assert resets == [1]
     await bt._tick()
     assert bt.powered is True and bt._power_failures == 0
@@ -529,3 +537,47 @@ async def test_bt_restarts_a_crashed_chip(tmp_path, monkeypatch):
     await bt.set_power(False)
     await bt._tick()
     assert bt.powered is False
+
+
+async def test_bt_crash_is_handled_without_waiting(tmp_path, monkeypatch):
+    """BlueZ reporting the adapter powered off by itself wakes maintenance right away (after the kernel's own
+    reset), not on the next 30 s round; as soon as the restarted chip is up, the speaker is connected again."""
+    from fnav.core import bluetooth as btmod
+
+    monkeypatch.setattr(btmod, "AUTO_CONNECT_S", 3600.0)  # only the wake-ups drive maintenance here
+    monkeypatch.setattr(btmod, "CRASH_SETTLE_S", 0.01)
+    adapter = "/org/bluez/hci0"
+
+    class Crashing(FakeBlueZ):
+        dead = False
+
+        async def _power(self, on):
+            if on and self.dead:
+                raise BluetoothError(502, "Failed: Authentication Failed")
+            self.on_signal(adapter, PROPS_IF, "PropertiesChanged", [ADAPTER_IF, {"Powered": on}, []])
+
+    bt = Crashing(tmp_path)
+    bt.audio_device = MAC
+    bt.objects[DEV][DEVICE_IF].update(Paired=True, Trusted=True, Connected=True)
+    resets = []
+
+    async def reset():
+        resets.append(1)
+        bt.dead = False
+        # bluetoothd powers the restarted chip on by itself (AutoEnable)
+        bt.on_signal(adapter, PROPS_IF, "PropertiesChanged", [ADAPTER_IF, {"Powered": True}, []])
+
+    bt.reset_controller = reset
+    await bt.start()
+    try:
+        bt.dead = True  # "hci0: hardware error": the speaker is gone, the adapter powered off
+        bt.on_signal(DEV, PROPS_IF, "PropertiesChanged", [DEVICE_IF, {"Connected": False}, []])
+        bt.on_signal(adapter, PROPS_IF, "PropertiesChanged", [ADAPTER_IF, {"Powered": False}, []])
+        for _ in range(200):
+            if bt.devices[MAC].connected:
+                break
+            await asyncio.sleep(0.01)
+        assert resets == [1] and bt.powered and bt.devices[MAC].connected
+        assert [c[2] for c in bt.calls] == ["Connect"]
+    finally:
+        await bt.stop()
