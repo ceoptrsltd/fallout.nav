@@ -1,5 +1,5 @@
 [Unit]
-Description=fallout.nav relay (remote tracking log, login when the device is offline)
+Description=fallout.nav relay (remote tracking log, alarm push, login when the device is offline)
 Documentation=https://github.com/ceoptrsltd/fallout.nav/blob/master/docs/contracts/remote.md
 After=network.target
 
@@ -16,7 +16,7 @@ ExecStart=/usr/bin/python3 -m fnav_relay
 Restart=always
 RestartSec=3
 
-# база (хэш пароля, секрет сессий, журнал) — только для владельца
+# база (хэш пароля, секрет сессий, ключ VAPID, журнал) — только для владельца
 StateDirectory=fnav-relay
 StateDirectoryMode=0700
 UMask=0077

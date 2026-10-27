@@ -18,13 +18,14 @@ log = logging.getLogger("fnav_relay")
 def main() -> None:
     logging.basicConfig(level=(os.environ.get("FNAV_RELAY_LOG_LEVEL") or "INFO").upper(),
                         format="%(levelname)s %(name)s: %(message)s")
-    os.umask(0o077)  # в базе лежат хэш пароля и секрет сессий
+    os.umask(0o077)  # в базе лежат хэш пароля, секрет сессий и закрытый ключ VAPID
     cfg = Config.from_env()
     if not cfg.device_token:
         log.warning("FNAV_RELAY_DEVICE_TOKEN is empty: the device cannot send positions or sync its password")
     Path(cfg.db_path).parent.mkdir(parents=True, exist_ok=True)
     store = Store(cfg.db_path, cfg.radius_m, cfg.stop_min_s)
     srv = RelayServer(cfg, store)
+    notifier = srv.notifier
 
     def stop(*_: object) -> None:  # shutdown() нельзя звать из потока serve_forever
         threading.Thread(target=srv.shutdown, daemon=True).start()
@@ -34,9 +35,11 @@ def main() -> None:
     log.info("listening on %s:%d, db %s, radius %.0f m, stop >= %.0f s",
              cfg.listen_host, srv.server_address[1], cfg.db_path, cfg.radius_m, cfg.stop_min_s)
     try:
+        notifier.start()  # рассылка push и сторож связи охраны
         srv.serve_forever(poll_interval=0.5)
     finally:
         srv.server_close()
+        notifier.stop()  # дослать то, что уже в очереди
         store.close()
         log.info("stopped")
 

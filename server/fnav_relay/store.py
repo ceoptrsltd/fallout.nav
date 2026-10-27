@@ -1,4 +1,5 @@
-"""Журнал позиций в SQLite: места и визиты (одинаковые позиции не пишутся), плюс служебные значения.
+"""Журнал позиций в SQLite: места и визиты (одинаковые позиции не пишутся), плюс служебные значения;
+подписки Web Push и события охраны (docs/contracts/alarm.md, раздел 6).
 
 Слияние точки (в порядке ts):
   1. рядом (≤ radius_m) с местом текущего визита → продлить визит;
@@ -15,6 +16,7 @@ import sqlite3
 import threading
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 EARTH_R_M = 6371008.8
 M_PER_DEG_LAT = 111320.0
@@ -41,7 +43,25 @@ CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS push_subs (
+    id INTEGER PRIMARY KEY,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    created REAL NOT NULL,
+    last_ok REAL,
+    last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS alarm_seen (
+    id TEXT PRIMARY KEY,
+    ts REAL NOT NULL,
+    kind TEXT NOT NULL,
+    received REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS alarm_seen_received ON alarm_seen(received);
 """
+SEEN_KEEP_S = 30 * 24 * 3600  # столько помнятся id событий охраны (повторы из outbox устройства)
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -238,3 +258,88 @@ class Store:
         with self._lock:
             v = self._get("last_sample")
         return json.loads(v) if v else {}
+
+    # ── служебные значения (ключи VAPID, sub, состояние охраны) ──
+    def get_value(self, key: str) -> str | None:
+        with self._lock:
+            return self._get(key)
+
+    def set_values(self, values: dict[str, str]) -> None:
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                for k, v in values.items():
+                    self._set(k, v)
+                self.db.execute("COMMIT")
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+
+    def set_default(self, key: str, value: str) -> str:
+        """Записать, если ключа ещё нет; вернуть то, что в итоге лежит в базе."""
+        with self._lock:
+            self.db.execute("INSERT OR IGNORE INTO kv(key, value) VALUES(?, ?)", (key, value))
+            return self._get(key) or value
+
+    def alarm_state(self) -> dict:
+        """Последнее состояние охраны от устройства: {armed, notify_offline, last_seen, offline_sent} или {}."""
+        v = self.get_value("alarm_state")
+        return json.loads(v) if v else {}
+
+    def set_alarm_state(self, state: dict) -> None:
+        self.set_values({"alarm_state": json.dumps(state)})
+
+    # ── события охраны ──
+    def alarm_new_events(self, events: list[dict], now: float | None = None) -> list[dict]:
+        """Запомнить id событий; вернуть только новые (повтор из outbox устройства — пропуск)."""
+        now = time.time() if now is None else now
+        new = []
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                for e in events:
+                    cur = self.db.execute("INSERT OR IGNORE INTO alarm_seen(id, ts, kind, received) "
+                                          "VALUES(?, ?, ?, ?)", (e["id"], e["ts"], e["kind"], now))
+                    if cur.rowcount == 1:
+                        new.append(e)
+                self.db.execute("DELETE FROM alarm_seen WHERE received < ?", (now - SEEN_KEEP_S,))
+                self.db.execute("COMMIT")
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+        return new
+
+    # ── подписки Web Push ──
+    def push_subscribe(self, endpoint: str, p256dh: str, auth: str, name: str, now: float | None = None) -> int:
+        """Новая подписка или обновление ключей и имени у того же endpoint (id и created остаются)."""
+        now = time.time() if now is None else now
+        with self._lock:
+            self.db.execute(
+                "INSERT INTO push_subs(endpoint, p256dh, auth, name, created) VALUES(?, ?, ?, ?, ?) "
+                "ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, "
+                "name = excluded.name, last_error = NULL", (endpoint, p256dh, auth, name, now))
+            return self.db.execute("SELECT id FROM push_subs WHERE endpoint = ?", (endpoint,)).fetchone()[0]
+
+    def push_unsubscribe(self, endpoint: str) -> bool:
+        with self._lock:
+            return self.db.execute("DELETE FROM push_subs WHERE endpoint = ?", (endpoint,)).rowcount > 0
+
+    def push_delete(self, sub_id: int) -> bool:
+        with self._lock:
+            return self.db.execute("DELETE FROM push_subs WHERE id = ?", (sub_id,)).rowcount > 0
+
+    def push_subs(self) -> list[dict]:
+        """Все подписки (с endpoint и ключами — для отправки), по id; host — хост endpoint'а."""
+        with self._lock:
+            rows = self.db.execute("SELECT id, endpoint, p256dh, auth, name, created, last_ok, last_error "
+                                   "FROM push_subs ORDER BY id").fetchall()
+        return [{**dict(r), "host": urlsplit(r["endpoint"]).hostname or ""} for r in rows]
+
+    def push_result(self, endpoint: str, ok_ts: float | None, error: str | None = None) -> None:
+        """Итог отправки: успех (ok_ts) стирает last_error, ошибка пишется в last_error."""
+        with self._lock:
+            if ok_ts is not None:
+                self.db.execute("UPDATE push_subs SET last_ok = ?, last_error = NULL WHERE endpoint = ?",
+                                (ok_ts, endpoint))
+            else:
+                self.db.execute("UPDATE push_subs SET last_error = ? WHERE endpoint = ?", (error, endpoint))

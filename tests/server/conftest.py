@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 import threading
 
 import pytest
 from relay_helpers import DEVICE_TOKEN, Config, Relay, RelayServer, Store
+
+# push (шифрование, VAPID) проверяется только с пакетом cryptography — как на сервере (python3-cryptography)
+if importlib.util.find_spec("cryptography") is None:
+    collect_ignore = ["test_relay_webpush.py", "test_relay_push.py"]
 
 
 @pytest.fixture
@@ -21,10 +26,12 @@ def relay(tmp_path):
                  device_token=DEVICE_TOKEN)
     st = Store(cfg.db_path, cfg.radius_m, cfg.stop_min_s)
     srv = RelayServer(cfg, st)
+    srv.notifier.start()
     th = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     th.start()
     yield Relay(f"http://127.0.0.1:{srv.server_address[1]}", st, cfg)
     srv.shutdown()
     srv.server_close()
     th.join(5)
+    srv.notifier.stop()
     st.close()

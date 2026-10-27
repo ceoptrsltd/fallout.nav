@@ -7,13 +7,14 @@
 ```
 браузер ── https://<server>/fnadmin/… ──► nginx (сервер)
                                                  ├─ /fnadmin/admin/, /fnadmin/display/  → статика (копия web/ на сервере)
-                                                 ├─ /fnadmin/api/tracking/…             → fnav-relay 127.0.0.1:8095
+                                                 ├─ /fnadmin/api/tracking/…, api/push/… → fnav-relay 127.0.0.1:8095
                                                  ├─ /fnadmin/api/{login,logout,session} → Pi; если Pi не в сети → fnav-relay
                                                  └─ /fnadmin/api/…, /fnadmin/ws, /fnadmin/tiles/… → 127.0.0.1:18080 ─┐
                                                                                                                       │ ssh -R
 Pi (fnav-tunnel.service: ssh -N -R 127.0.0.1:18080:127.0.0.1:8090 -L 127.0.0.1:18095:127.0.0.1:8095 fnavtun@сервер) ◄┘
    ├─ fnav-core слушает 0.0.0.0:80 (локально) и 127.0.0.1:8090 («удалённый» вход: без доверия к localhost)
-   └─ журнал: fnav-core раз в минуту берёт GPS-точку → outbox (SQLite) → POST http://127.0.0.1:18095/device/samples
+   ├─ журнал: fnav-core раз в минуту берёт GPS-точку → outbox (SQLite) → POST http://127.0.0.1:18095/device/samples
+   └─ охрана: события и пульс → outbox (SQLite) → POST http://127.0.0.1:18095/device/alarm → Web Push (раздел 5)
 ```
 
 Сервер без префикса снимает `/fnadmin`: `/fnadmin/api/x` → Pi `/api/x`. `/fnadmin` и `/fnadmin/` → 301 на `/fnadmin/admin/`.
@@ -39,12 +40,12 @@ Pi (fnav-tunnel.service: ssh -N -R 127.0.0.1:18080:127.0.0.1:8090 -L 127.0.0.1:1
 - Удалённо (REMOTE) экран (display, в т.ч. в превью Screen) берёт тайлы Esri **напрямую** с arcgisonline (как демо-режим),
   а не через `/tiles/` устройства, а MJPEG камеры — с `?fps=5`.
 
-## 2. Сервер: fnav-relay (`server/fnav_relay/`, только стандартная библиотека Python 3.12)
+## 2. Сервер: fnav-relay (`server/fnav_relay/`, стандартная библиотека Python 3.12 + apt `python3-cryptography` для push)
 
 - Слушает `127.0.0.1:8095`. Путь принимается и с префиксом `/fnadmin`, и без него (префикс отрезается).
 - Конфиг: `/etc/fnav-relay/relay.env` (`FNAV_RELAY_DEVICE_TOKEN`, `FNAV_RELAY_DB=/var/lib/fnav-relay/track.db`,
   `FNAV_RELAY_RADIUS_M=50`, `FNAV_RELAY_STOP_MIN_S=300`, `FNAV_RELAY_LISTEN=127.0.0.1:8095`,
-  `FNAV_RELAY_COOKIE_PATH=/fnadmin/`).
+  `FNAV_RELAY_COOKIE_PATH=/fnadmin/`; необязательно `FNAV_RELAY_VAPID_SUB` — раздел 5).
 - IP клиента для анти-перебора — из `X-Real-IP` (ставит nginx).
 
 ### Авторизация
@@ -52,7 +53,8 @@ Pi (fnav-tunnel.service: ssh -N -R 127.0.0.1:18080:127.0.0.1:8090 -L 127.0.0.1:1
   ключ = HMAC-SHA256(session_secret, password_hash)). Пароль — `scrypt$n$r$p$salt$hash` как в `fnav/core/secretsfile.py`.
 - Хэш пароля и секрет сессий присылает устройство (`POST /device/auth`), сервер хранит их у себя (файл 0600 или таблица).
 - Устройство: заголовок `X-Fnav-Device-Token: <token>` (сравнение `hmac.compare_digest`).
-- Эндпоинты `/api/tracking/*` — с валидной cookie **или** с токеном устройства. `/device/*` — только с токеном.
+- Эндпоинты `/api/tracking/*` и `/api/push/*` — с валидной cookie **или** с токеном устройства. `/device/*` — только
+  с токеном.
 
 ### Эндпоинты
 | Метод | Путь | Что |
@@ -103,3 +105,22 @@ Pi (fnav-tunnel.service: ssh -N -R 127.0.0.1:18080:127.0.0.1:8090 -L 127.0.0.1:1
 - Админка, Camera: режимы `webrtc` | `stream` (mpegts.js, `isLive`, догон задержки) | `mjpeg`.
   По умолчанию: на устройстве — `webrtc`, удалённо — `stream` (WebRTC через туннель не работает).
   Поток идёт только пока открыта страница: при уходе со страницы / закрытии превью плеер уничтожается.
+
+## 5. Push-уведомления охраны (маршрутизация)
+
+Форматы, тексты и поведение — `docs/contracts/alarm.md`, разделы 5–6; здесь только как это проходит через сервер.
+
+- Браузер → `https://<server>/fnadmin/api/push/…` → nginx `location ^~ /fnadmin/api/push/` → fnav-relay (всегда сервер,
+  в т.ч. когда Pi в сети; длиннее общего `^~ /fnadmin/api/`, поэтому выигрывает). Вход — cookie сессии, как у Tracking.
+  Push работает только по HTTPS (service worker и Push API — в защищённом контексте), поэтому только удалённо.
+- Устройство → `POST {FNAV_RELAY_URL}/device/alarm` через тот же `-L` туннель, что и журнал (`/device/samples`), с
+  `X-Fnav-Device-Token`; nginx не участвует.
+- fnav-relay сам ходит к push-сервисам (FCM, Mozilla, Apple) наружу по HTTPS: исходящий 443 с сервера должен быть открыт.
+- Зависимость: apt `python3-cryptography` (`server/install.sh` ставит, если её нет). Без неё relay работает, но
+  `/api/push/{key,subscribe,test}` → 503 `{"detail":"Push needs python3-cryptography on the server"}`.
+- Ключи VAPID создаются при первом запуске и лежат в базе relay (`FNAV_RELAY_DB`). Новая база = новые ключи: все
+  подписки браузеров недействительны, на каждом телефоне — включить уведомления заново.
+- `sub` в JWT: `FNAV_RELAY_VAPID_SUB` (`mailto:адрес` или `https://публичный-хост`), иначе `https://<Host>` первой
+  подписки (Host передаёт nginx сайта). Localhost и IP не годятся (Apple отвечает `BadJwtToken`) — тогда задать переменную.
+- Собственные уведомления сервера о связи (`notify_offline`): «Van went offline» и «Van is back online» — оба с
+  `tag`/`Topic` `offline`, второе заменяет первое на телефоне.

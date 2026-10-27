@@ -13,12 +13,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "server"))
 
 # всё из fnav_relay тесты берут отсюда: импорт ниже работает только после строки с sys.path
-from fnav_relay import auth  # noqa: F401
+from fnav_relay import alarm, auth, webpush  # noqa: F401
+from fnav_relay.alarm import Notifier  # noqa: F401
 from fnav_relay.api import RelayServer  # noqa: F401
 from fnav_relay.config import Config
 from fnav_relay.store import Store, haversine_m  # noqa: F401
 
 DEVICE_TOKEN = "test-device-token-0123456789"
+TEST_HASH = "scrypt$16384$8$1$c2FsdA==$aGFzaA=="  # cookie проверяется только по HMAC: хэш может быть любым
+TEST_SECRET = "session-secret-0123456789abcdef"
 LAT0, LON0 = 50.06, 19.94
 
 
@@ -66,3 +69,8 @@ class Relay:
 
     def device(self, method: str, path: str, body: object = None) -> Resp:
         return self.call(method, path, body, {"X-Fnav-Device-Token": DEVICE_TOKEN})
+
+    def session(self) -> dict:
+        """Заголовок Cookie с действующей сессией (хэш и секрет кладутся прямо в базу)."""
+        self.store.set_auth(TEST_HASH, TEST_SECRET)
+        return {"Cookie": f"{auth.COOKIE_NAME}={auth.issue_token(TEST_SECRET, TEST_HASH)}"}

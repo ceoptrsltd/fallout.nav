@@ -11,7 +11,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from . import auth
+from . import auth, webpush
+from .alarm import Notifier
 from .config import Config
 from .store import Store
 
@@ -20,6 +21,7 @@ log = logging.getLogger("fnav_relay.api")
 MAX_BODY = 2 * 1024 * 1024
 _PLACE_RE = re.compile(r"^/api/tracking/places/(\d+)$")
 _TRACKING_GET = {"/api/tracking/places", "/api/tracking/track", "/api/tracking/last"}
+_PUSH_SUB_RE = re.compile(r"^/api/push/subscriptions/(\d+)$")
 
 
 class ApiError(Exception):
@@ -32,11 +34,14 @@ class RelayServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, cfg: Config, store: Store, guard: auth.LoginGuard | None = None) -> None:
+    def __init__(self, cfg: Config, store: Store, guard: auth.LoginGuard | None = None,
+                 notifier: Notifier | None = None) -> None:
         if ":" in cfg.listen_host:
             self.address_family = socket.AF_INET6
         self.cfg, self.store = cfg, store
         self.guard = guard or auth.LoginGuard()
+        # потоки рассылки и сторожа запускает и останавливает владелец сервера (__main__, тесты)
+        self.notifier = notifier or Notifier(store, cfg)
         super().__init__((cfg.listen_host, cfg.listen_port), Handler)
 
 
@@ -174,6 +179,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/device/samples":
                 self._method(method, "POST")
                 return self._device_samples()
+            if path == "/device/alarm":
+                self._method(method, "POST")
+                return self._device_alarm()
             raise ApiError(404, "Not found")
         if path == "/api/login":
             self._method(method, "POST")
@@ -189,6 +197,13 @@ class Handler(BaseHTTPRequestHandler):
             if not (self._has_device_token() or self._logged_in()):
                 raise ApiError(401, "Login required")
             return self._tracking(method, path, qs)
+        if path == "/api/push" or path.startswith("/api/push/"):
+            if not (self._has_device_token() or self._logged_in()):
+                raise ApiError(401, "Login required")
+            try:
+                return self._push(method, path)
+            except webpush.PushUnavailable:
+                raise ApiError(503, webpush.NO_CRYPTO) from None
         if path == "/api" or path.startswith("/api/"):
             # nginx присылает сюда запросы к устройству, когда туннеля нет
             raise ApiError(503, "Device is offline")
@@ -211,6 +226,17 @@ class Handler(BaseHTTPRequestHandler):
         res = self.server.store.ingest(samples)
         log.debug("samples: %s", res)
         self._send(200, {"ok": True, **res})
+
+    def _device_alarm(self) -> None:
+        data = self._json_body()
+        state, events = data.get("state"), data.get("events", [])
+        if not (isinstance(state, dict) and isinstance(state.get("armed"), bool)
+                and isinstance(state.get("notify_offline"), bool)):
+            raise ApiError(400, "'state' must be {\"armed\": bool, \"notify_offline\": bool}")
+        if not isinstance(events, list):
+            raise ApiError(400, "'events' must be a list")
+        accepted = self.server.notifier.device_report(state, events)  # рассылка — в фоне
+        self._send(200, {"ok": True, "accepted": accepted})
 
     def _login(self) -> None:
         store, guard = self.server.store, self.server.guard
@@ -251,3 +277,55 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"points": store.track(t0, t1)})
         self._send(200, {"places": store.places(t0, t1), "stop_min_s": store.stop_min_s,
                          "radius_m": store.radius_m})
+
+    def _push(self, method: str, path: str) -> None:
+        store, notifier = self.server.store, self.server.notifier
+        m = _PUSH_SUB_RE.match(path)
+        if m:
+            self._method(method, "DELETE")
+            if not store.push_delete(int(m.group(1))):
+                raise ApiError(404, "Subscription not found")
+            return self._send(200, {"ok": True})
+        if path == "/api/push/key":
+            self._method(method, "GET")
+            return self._send(200, {"public_key": notifier.vapid().public_key})
+        if path == "/api/push/subscriptions":
+            self._method(method, "GET")
+            keys = ("id", "name", "created", "last_ok", "last_error", "host")
+            return self._send(200, {"subscriptions": [{k: s[k] for k in keys} for s in store.push_subs()]})
+        if path == "/api/push/subscribe":
+            self._method(method, "POST")
+            return self._push_subscribe()
+        if path == "/api/push/unsubscribe":
+            self._method(method, "POST")
+            endpoint = self._json_body().get("endpoint")
+            if not isinstance(endpoint, str) or not endpoint:
+                raise ApiError(400, "Field 'endpoint' is required")
+            store.push_unsubscribe(endpoint)
+            return self._send(200, {"ok": True})
+        if path == "/api/push/test":
+            self._method(method, "POST")
+            endpoint = self._json_body().get("endpoint")
+            if endpoint is not None and not isinstance(endpoint, str):
+                raise ApiError(400, "'endpoint' must be a string or null")
+            if endpoint is not None and all(s["endpoint"] != endpoint for s in store.push_subs()):
+                raise ApiError(404, "Subscription not found")
+            res = notifier.broadcast(notifier.test_message(), endpoint=endpoint, urgency="normal")
+            return self._send(200, {"ok": True, **res})
+        raise ApiError(404, "Not found")
+
+    def _push_subscribe(self) -> None:
+        data = self._json_body()
+        notifier = self.server.notifier
+        notifier.vapid()  # 503 без cryptography; ключи — до первой подписки
+        try:
+            endpoint, p256dh, key_auth = webpush.clean_subscription(
+                data.get("subscription"), allow_http=self.server.cfg.push_allow_http)
+        except webpush.InvalidSubscription as e:
+            raise ApiError(400, str(e)) from None
+        name = data.get("name")
+        name = " ".join(name.split())[:64] if isinstance(name, str) else ""
+        notifier.remember_host(self.headers.get("Host"))
+        sub_id = self.server.store.push_subscribe(endpoint, p256dh, key_auth, name, notifier.clock())
+        log.info("push: subscription %d from %s (%s)", sub_id, urlsplit(endpoint).hostname, name or "no name")
+        self._send(200, {"ok": True, "id": sub_id})

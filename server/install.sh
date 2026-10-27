@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Install or update fnav-relay on the server (Ubuntu 24.04, Python 3.12, stdlib only). Idempotent.
+# Install or update fnav-relay on the server (Ubuntu 24.04, Python 3.12 + apt python3-cryptography). Idempotent.
 #
 # Usage (as root, from a copy of the repository's server/ directory):
 #   sudo ./install.sh
 #
 # What it does:
+#   - apt python3-cryptography if python3 cannot import it (Web Push for alarm notifications; without it the relay
+#     runs, but /api/push/* answer 503);
 #   - system user fnav-relay;
 #   - code: server/fnav_relay -> /opt/fnav-relay/fnav_relay (owned by root, read-only for the service);
 #   - /etc/fnav-relay/relay.env (0640 root:fnav-relay) with a freshly generated FNAV_RELAY_DEVICE_TOKEN
@@ -22,6 +24,14 @@ UNIT=fnav-relay.service
 [ "$(id -u)" -eq 0 ] || { echo "Run as root (sudo $0)" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 [ -f "$HERE/fnav_relay/__main__.py" ] || { echo "fnav_relay/ not found next to $0" >&2; exit 1; }
+
+# ── python3-cryptography (Web Push: шифрование RFC 8291 и подпись VAPID) ──
+# сервис запускается /usr/bin/python3 (systemd/fnav-relay.service) — проверяем именно его
+if ! /usr/bin/python3 -c 'import cryptography' >/dev/null 2>&1; then
+    echo "installing python3-cryptography (Web Push)"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y -q python3-cryptography || { apt-get update -q && apt-get install -y -q python3-cryptography; }
+fi
 
 # ── user ──
 if ! id -u fnav-relay >/dev/null 2>&1; then
@@ -53,6 +63,9 @@ FNAV_RELAY_DB=/var/lib/fnav-relay/track.db
 FNAV_RELAY_RADIUS_M=50
 FNAV_RELAY_STOP_MIN_S=300
 FNAV_RELAY_COOKIE_PATH=/fnadmin/
+# Web Push (alarm notifications, docs/contracts/alarm.md section 6): "sub" of the VAPID JWT,
+# mailto:<address> or https://<public host>. Empty: https://<Host> of the first subscription.
+#FNAV_RELAY_VAPID_SUB=mailto:you@example.com
 EOF
     )
     echo "created $ENV_FILE"
@@ -94,4 +107,6 @@ if [ -z "$ok" ]; then
 fi
 
 echo "fnav-relay is running on $LISTEN"
+/usr/bin/python3 -c 'import cryptography; print("Web Push: python3-cryptography", cryptography.__version__)' \
+    || echo "Web Push is OFF: python3-cryptography is missing" >&2
 echo "Device token: FNAV_RELAY_DEVICE_TOKEN in $ENV_FILE (copy it to the device's /etc/fnav/remote.env)"
