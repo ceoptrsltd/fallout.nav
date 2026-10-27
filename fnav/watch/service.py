@@ -159,6 +159,9 @@ class WatchService:
             "ring": str(self.ring.path),
             "stats": asdict(w.stats) if w else None,
             "tracks": w.tracks_info() if w else [],
+            "loiter": {"present_s": round(w.snap.frame.t - w.loiter.since, 1)
+                       if w.loiter.since is not None and w.snap.frame is not None else None,
+                       "armed": w.loiter.armed, "source": w.loiter.source or None} if w else None,
             "motion": asdict(w.snap.motion) if w else None,
             "error": self.error,
         }

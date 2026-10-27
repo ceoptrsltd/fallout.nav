@@ -81,7 +81,7 @@ HAZARD_TEST_S = 3.0
 HAZARD_BLINK_ON_S, HAZARD_BLINK_OFF_S = 0.7, 0.5  # подтверждение Arm/Disarm
 
 DETECTED = ("armed", "triggered")  # события и сирена — только в этих состояниях
-VISION_KINDS = ("approach", "face")  # от камеры (fnav-watch): без сирены — push, аварийка, защита записи
+VISION_KINDS = ("approach", "face", "loiter")  # от камеры (fnav-watch): без сирены — push, аварийка, защита записи
 SNAPSHOTS_MAX = 100  # снимков камеры к событиям журнала (alarm_snaps/<id>.jpg)
 _EVENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -91,7 +91,7 @@ _EVENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 @dataclass
 class Detection:
-    kind: str  # "impact" | "tilt" | "move" | "approach" | "face"
+    kind: str  # "impact" | "tilt" | "move" | "approach" | "face" | "loiter"
     data: dict = field(default_factory=dict)
 
 
@@ -283,6 +283,9 @@ def make_event(kind: str, data: dict, ts: float) -> AlarmEvent:
         title, body = "Person approaching", f"Someone came close to the van at {hm}"
     elif kind == "face":
         title, body = "Someone is looking in", f"A face close to the windshield at {hm}"
+    elif kind == "loiter":
+        secs = float(data.get("held_s") or 0)
+        title, body = "Someone is lingering at the van", f"A person has stayed close to the van for {secs:.0f} s at {hm}"
     else:
         title, body = "Test alarm", f"Alarm notifications work ({hm})"
     return AlarmEvent(id=uuid.uuid4().hex, ts=round(ts, 3), kind=kind, title=title, body=body, url=url,  # type: ignore[arg-type]

@@ -2,7 +2,8 @@
 офлайн-прогона записей (replay): время — только из кадров, поэтому прогон записи ведёт себя как живой.
 
 Нейросеть — не больше одной на кадр: люди при движении 1 Гц (долго никого — 0,5 Гц), пока есть треки — 2 Гц;
-лица 2 Гц, пока движение у центра или лицо уже видно. Перегрев — все частоты делятся на slow.
+лица 2 Гц, пока движение у центра или лицо уже видно. Перегрев — все частоты делятся на slow. Правило «стоит у
+фургона» — на каждом кадре, по трекам и пятнам движения (без нейросети).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from fnav.models import VisionSettings
 from .detect import Det, Face
 from .frame import Frame
 from .motion import Motion, MotionGate
-from .track import FaceRule, Track, Tracker
+from .track import FaceRule, LoiterRule, Track, Tracker
 
 log = logging.getLogger("fnav.watch.pipeline")
 
@@ -76,6 +77,7 @@ class Snapshot:
     dets: list[Det] = field(default_factory=list)
     faces: list[Face] = field(default_factory=list)
     tracks: list[tuple[int, tuple, bool, float]] = field(default_factory=list)  # id, box, сработал, growth
+    loiter: tuple[tuple, float, str] | None = None  # рамка, сколько стоит, источник (track | motion)
     ran: str = ""  # "person" | "face" | ""
 
 
@@ -88,6 +90,7 @@ class Watcher:
         self.gate = MotionGate()
         self.tracker = Tracker()
         self.face_rule = FaceRule()
+        self.loiter = LoiterRule()
         self.stats = Stats()
         self.snap = Snapshot()
         self.slow = 1.0  # перегрев: частоты нейросетей делятся
@@ -108,6 +111,7 @@ class Watcher:
         self.gate.reset()
         self.tracker.reset()
         self.face_rule.reset()
+        self.loiter.reset()
         self._last_person = self._last_face = self._keep_person_until = -1e18
         self._empty_runs = 0
         self.snap = Snapshot()
@@ -150,7 +154,15 @@ class Watcher:
             events += self._run_person(frame, t, snap)
         elif face_due >= 0.95:
             events += self._run_face(frame, t, snap)
-        snap.tracks = [(tr.id, tr.box, tr.fired_t is not None, tr.growth) for tr in self.tracker.confirmed(t)]
+        confirmed = self.tracker.confirmed(t)
+        if s.loiter:
+            data = self.loiter.update(t, m.details, confirmed, s.near_line, s.loiter_s)
+            if data:
+                events.append(Event("loiter", self._wall(frame), data))
+            lo = self.loiter
+            if lo.box is not None and lo.since is not None:
+                snap.loiter = (lo.box, t - lo.since, lo.source)
+        snap.tracks = [(tr.id, tr.box, tr.fired_t is not None, tr.growth) for tr in confirmed]
         self.snap = snap
         return events
 
@@ -170,6 +182,7 @@ class Watcher:
         st.person_ms = st.ema(st.person_ms, ms, st.person_runs)
         self._empty_runs = 0 if dets else self._empty_runs + 1
         self.tracker.update(dets, t, dt)
+        self.loiter.add_vehicles(t, getattr(self.person, "vehicles", None) or [])
         snap.dets, snap.ran = dets, "person"
         out = []
         for _tr, data in self.tracker.approach(t, s.near_line, s.approach_hold_s):
@@ -222,6 +235,12 @@ class Watcher:
             col = (0, 0, 255) if fired else (0, 255, 0)
             cv2.rectangle(img, (x1, y1), (x2, y2), col, 2)
             cv2.putText(img, f"#{tid} x{growth:.2f}", (x1, max(10, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
+        if snap.loiter is not None:
+            box, held, src = snap.loiter
+            x1, y1, x2, y2 = px(box)
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 140, 255), 2)
+            cv2.putText(img, f"loiter {held:.0f}s {src}", (x1, min(h - 24, y2 + 14)), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        (0, 140, 255), 1)
         for f in snap.faces:
             x1, y1, x2, y2 = px(f.box)
             cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 255), 2)

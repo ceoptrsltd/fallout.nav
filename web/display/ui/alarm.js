@@ -16,7 +16,7 @@ import { C, blinkOn, blit, capHeight, chamferPath, fontLabel, fontStencil, sprit
 
 export const BANNER_S = 10; // крупная надпись после нового события
 export const FLASH_S = 2.5; // ALARM ON / ALARM OFF — как вспышка режима радио
-const BANNER_WORD = { impact: "IMPACT", tilt: "TILTED", move: "MOVING", approach: "PERSON", face: "FACE" };
+const BANNER_WORD = { impact: "IMPACT", tilt: "TILTED", move: "MOVING", approach: "PERSON", face: "FACE", loiter: "PERSON" };
 
 // ── чистые помощники (tests/display/alarm.test.mjs) ───────────────────────
 

@@ -142,6 +142,7 @@ const KINDS = {
   move: { label: "Moving", icon: "pin", kind: "warn" },
   approach: { label: "Person approaching", icon: "cam", kind: "bad" },
   face: { label: "Face at the windshield", icon: "cam", kind: "bad" },
+  loiter: { label: "Lingering at the van", icon: "cam", kind: "bad" },
   test: { label: "Test", icon: "info", kind: "" },
 };
 

@@ -676,7 +676,7 @@ def _register_games(app: FastAPI, core: Core) -> None:
 
 
 class SimulateBody(BaseModel):
-    kind: Literal["impact", "tilt", "move", "approach", "face"]
+    kind: Literal["impact", "tilt", "move", "approach", "face", "loiter"]
     g: float = Field(0.5, gt=0, le=16)
 
 

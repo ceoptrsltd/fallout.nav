@@ -1,4 +1,5 @@
-"""Клиент fnav-watch (127.0.0.1:8082): камера на охране — человек подходит / лицо у стекла (docs/contracts/vision.md).
+"""Клиент fnav-watch (127.0.0.1:8082): камера на охране — человек подходит / лицо у стекла / стоит у фургона
+(docs/contracts/vision.md).
 
 Ядро раз в секунду читает /status: сообщает «смотреть / не смотреть» (охрана + settings.alarm.vision.enabled) через
 POST /arm, если сервис думает иначе, и передаёт новые события в AlarmService.vision_event. Пока распознавание
@@ -15,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from fnav.core.alarm import VISION_KINDS
 from fnav.core.util import cancel_tasks
 from fnav.models import AlarmVision, VisionSettings
 
@@ -104,7 +106,7 @@ class VisionClient:
         now = self.clock()
         for ev in sorted(st.get("events") or [], key=lambda e: e.get("seq", 0)):
             n, kind, ts = ev.get("seq", 0), ev.get("kind"), ev.get("ts") or 0
-            if last is not None and n <= last or now - ts > STALE_S or kind not in ("approach", "face"):
+            if last is not None and n <= last or now - ts > STALE_S or kind not in VISION_KINDS:
                 continue
             log.warning("vision: %s %s", kind, ev.get("data") or {})
             try:

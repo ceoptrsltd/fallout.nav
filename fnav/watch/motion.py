@@ -6,6 +6,10 @@ Y → 192×144 (INTER_AREA), фон — скользящее среднее; п�
 капота, остаётся «движением»). Открытие 3×3, пятна от 0,5 % кадра, движение — в 2 из 3 кадров. Изменилось > 25 %
 кадра или скакнула выдержка × усиление (фары, AE) — фон заново и 1 с тишины. Метка времени в углу кадра и
 капот (ниже ближней линии) не смотрим.
+
+Для правила «стоит у фургона» у каждого пятна есть подробности (Blob): заполненность рамки, доля пикселей рамки,
+изменившихся с прошлого кадра (жив ли он: стоящая машина — нет), доля пикселей ярче фона и яркость (свет фар и
+блики — светлые, силуэт ночью — тёмный).
 """
 
 from __future__ import annotations
@@ -20,9 +24,27 @@ TIMESTAMP_RECT = (0.0, 0.0, 0.3, 0.08)  # наложенное время (fnav/
 
 
 @dataclass
+class Blob:
+    box: tuple[float, float, float, float]  # доли кадра x1,y1,x2,y2
+    fill: float  # площадь пятна / площадь рамки
+    active: float  # доля пикселей рамки, изменившихся с прошлого кадра
+    bright: float  # доля пикселей пятна ярче фона
+    level: float  # средняя яркость пятна, 0…255
+
+    @property
+    def h(self) -> float:
+        return self.box[3] - self.box[1]
+
+    @property
+    def cx(self) -> float:
+        return (self.box[0] + self.box[2]) / 2
+
+
+@dataclass
 class Motion:
     moving: bool = False  # движение подтверждено (2 из 3 кадров)
     blobs: list[tuple[float, float, float, float]] = field(default_factory=list)  # доли кадра x1,y1,x2,y2
+    details: list[Blob] = field(default_factory=list)  # те же пятна подробно
     frac: float = 0.0  # доля изменившихся пикселей в зоне
     thr: float = 0.0
     noise: float = 0.0
@@ -59,6 +81,7 @@ class MotionGate:
 
     def reset(self) -> None:
         self.bg: np.ndarray | None = None
+        self._prev: np.ndarray | None = None  # прошлый кадр (живое ли пятно)
         self._exp: float | None = None
         self._quiet_until = -1e18
         self._hist: deque[bool] = deque(maxlen=3)
@@ -73,6 +96,7 @@ class MotionGate:
         import cv2
 
         small = cv2.resize(y, (GW, GH), interpolation=cv2.INTER_AREA).astype(np.float32)
+        prev, self._prev = self._prev, small
         out = Motion()
         exp_prev, self._exp = self._exp, exposure_gain
         if self.bg is None:
@@ -107,6 +131,8 @@ class MotionGate:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self._kernel) if out.frac else mask
         quiet = t < self._quiet_until
         empty = not out.frac or not cv2.countNonZero(mask)
+        if not empty and not quiet:
+            self._blobs(out, small, prev, mask, thr)  # до обновления фона: яркость — относительно него
         if empty or quiet:  # обычный случай (сцена неподвижна) — без масок, вдвое дешевле
             cv2.accumulateWeighted(small, self.bg, 0.5 if quiet else self.alpha)
         else:
@@ -116,16 +142,28 @@ class MotionGate:
             cv2.accumulateWeighted(small, self.bg, self.alpha_fg, mask=fg)
         if quiet:
             return out
-        if empty:
-            self._hist.append(False)
-            out.moving = sum(self._hist) >= 2
-            return out
-        n, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        min_px = self.min_blob * self._roi_px
-        for i in range(1, n):
-            x, yy, w, h, area = stats[i]
-            if area >= min_px:
-                out.blobs.append((x / GW, yy / GH, (x + w) / GW, (yy + h) / GH))
         self._hist.append(bool(out.blobs))
         out.moving = sum(self._hist) >= 2
         return out
+
+    def _blobs(self, out: Motion, small: np.ndarray, prev: np.ndarray | None, mask: np.ndarray, thr: float) -> None:
+        import cv2
+
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        min_px = self.min_blob * self._roi_px
+        bg = self.bg
+        assert bg is not None
+        for i in range(1, n):
+            x, yy, w, h, area = (int(v) for v in stats[i])
+            if area < min_px:
+                continue
+            box = (x / GW, yy / GH, (x + w) / GW, (yy + h) / GH)
+            out.blobs.append(box)
+            cur = small[yy:yy + h, x:x + w]
+            inside = labels[yy:yy + h, x:x + w] == i
+            px = cur[inside]
+            active = 0.0
+            if prev is not None:
+                active = float(np.count_nonzero(np.abs(cur - prev[yy:yy + h, x:x + w]) > thr)) / (w * h)
+            bright = float(np.count_nonzero(px > bg[yy:yy + h, x:x + w][inside])) / max(1, px.size)
+            out.details.append(Blob(box, area / (w * h), active, bright, float(px.mean()) if px.size else 0.0))

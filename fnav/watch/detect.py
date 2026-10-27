@@ -20,6 +20,8 @@ NANODET_FILE = "nanodet-plus-m_320.onnx"
 YUNET_FILE = "face_detection_yunet_2023mar.onnx"
 
 Box = tuple[float, float, float, float]  # x1, y1, x2, y2 — доли кадра
+PERSON = (0,)
+VEHICLES = (2, 3, 5, 7)  # COCO: car, motorcycle, bus, truck — пятно машины у фургона не «человек стоит»
 
 
 @dataclass
@@ -83,6 +85,7 @@ class NanoDet:
         self.net = cv2.dnn.readNetFromONNX(str(self.path))
         self.conf, self.iou, self.fit = conf, iou, fit
         self.priors = centre_priors(self.SIZE, self.STRIDES)
+        self.vehicles: list[Det] = []  # машины с последнего кадра (тот же прогон сети, бесплатно)
 
     def _input(self, bgr: np.ndarray) -> tuple[np.ndarray, float, float]:
         """Блоб (1,3,320,320) и масштабы по x/y: пиксель входа → доля кадра."""
@@ -110,6 +113,7 @@ class NanoDet:
         return self.decode(out, sx, sy)
 
     def decode(self, out: np.ndarray, sx: float, sy: float) -> list[Det]:
+        self.vehicles = decode_nanodet(out, self.priors, self.conf, self.iou, sx, sy, VEHICLES)
         return decode_nanodet(out, self.priors, self.conf, self.iou, sx, sy)
 
 
@@ -124,9 +128,10 @@ def centre_priors(size: int = 320, strides: tuple[int, ...] = (8, 16, 32, 64)) -
 
 
 def decode_nanodet(out: np.ndarray, priors: np.ndarray, conf: float, iou: float, sx: float, sy: float,
-                   reg_max: int = 7) -> list[Det]:
-    """Выход (N, 80 + 4·(reg_max+1)) → люди; sx, sy — пиксель входа → доля кадра."""
-    score = out[:, 0]  # person
+                   classes: tuple[int, ...] = PERSON, reg_max: int = 7) -> list[Det]:
+    """Выход (N, 80 + 4·(reg_max+1)) → рамки классов classes (по умолчанию люди); sx, sy — пиксель входа → доля
+    кадра."""
+    score = out[:, classes[0]] if len(classes) == 1 else out[:, list(classes)].max(axis=1)
     idx = np.flatnonzero(score >= conf)
     if idx.size == 0:
         return []

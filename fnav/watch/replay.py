@@ -51,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--face-min", type=float, default=None)
     ap.add_argument("--approach-hold", type=float, default=None, help="approach_hold_s")
     ap.add_argument("--face-hold", type=float, default=None, help="face_hold_s")
+    ap.add_argument("--loiter", type=float, default=None, help="loiter_s")
+    ap.add_argument("--clock", default=None, help="wall clock of the first frame, HH:MM:SS[.s] (prints event times)")
     ap.add_argument("--settings", type=Path, default=None, help="settings.json to take alarm.vision from")
     ap.add_argument("--fps", type=float, default=4.0)
     ap.add_argument("--size", default="768x576", help="lores size WxH")
@@ -67,7 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.settings:
         vs = Settings.model_validate_json(args.settings.read_text(encoding="utf-8")).alarm.vision
     upd = {k: v for k, v in (("near_line", args.near_line), ("face_min", args.face_min),
-                             ("approach_hold_s", args.approach_hold), ("face_hold_s", args.face_hold)) if v is not None}
+                             ("approach_hold_s", args.approach_hold), ("face_hold_s", args.face_hold),
+                             ("loiter_s", args.loiter)) if v is not None}
     vs = vs.model_copy(update=upd)
     w, h = (int(v) for v in args.size.lower().split("x"))
 
@@ -78,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
     print(f"{args.file.name}: near_line {vs.near_line}, approach_hold {vs.approach_hold_s} s, "
-          f"face_min {vs.face_min}, face_hold {vs.face_hold_s} s", flush=True)
+          f"face_min {vs.face_min}, face_hold {vs.face_hold_s} s, loiter {vs.loiter_s} s", flush=True)
     busy_until = -1.0
     last_saved = -1e9
     n_events = 0
@@ -95,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         snap = watcher.snap
         for ev in events:
             n_events += 1
-            print(f"{_mmss(t)}  EVENT {ev.kind:8s} {json.dumps(ev.data)}", flush=True)
+            print(f"{_mmss(t)}{_clock(args.clock, t)}  EVENT {ev.kind:8s} {json.dumps(ev.data)}", flush=True)
             if args.out:
                 (args.out / f"event_{n_events:02d}_{ev.kind}_{t:07.1f}.jpg").write_bytes(watcher.render() or b"")
         found = snap.dets or snap.faces
@@ -112,6 +115,15 @@ def main(argv: list[str] | None = None) -> int:
 
 def _mmss(t: float) -> str:
     return f"{int(t // 60):02d}:{t % 60:04.1f}"
+
+
+def _clock(start: str | None, t: float) -> str:
+    """«  22:05:31» — время события по часам, если задано время первого кадра."""
+    if not start:
+        return ""
+    h, m, s = (float(v) for v in start.split(":"))
+    x = (h * 3600 + m * 60 + s + t) % 86400
+    return f"  {int(x // 3600):02d}:{int(x % 3600 // 60):02d}:{x % 60:04.1f}"
 
 
 if __name__ == "__main__":

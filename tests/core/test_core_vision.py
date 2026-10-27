@@ -133,3 +133,45 @@ async def test_alarm_status_reports_vision_off_by_default(tmp_path):
     st = svc.status()
     assert st.vision.enabled is False and st.vision.available is False
     assert AlarmSettings().vision.enabled is False
+
+
+async def test_loiter_event_texts_and_switch(tmp_path):
+    """«Стоит у фургона» (loiter): без сирены, текст с секундами, свой выключатель alarm.vision.loiter."""
+    svc, _, cfg = make_alarm(tmp_path, arm_delay_s=0, siren=True, vision=VisionSettings(enabled=True))
+    svc.snapshot = _snap
+    sirens: list = []
+
+    async def siren_start(seconds):
+        sirens.append(seconds)
+        return True
+
+    svc.siren.start = siren_start  # type: ignore[method-assign]
+    await svc.start(background=False)
+    await svc.arm()
+    assert await svc.vision_event("loiter", {"held_s": 8.2, "source": "motion"})
+    await settle()
+    ev = svc.events[0]
+    assert ev.kind == "loiter" and ev.title == "Someone is lingering at the van"
+    assert ev.body.startswith("A person has stayed close to the van for 8 s at ")
+    assert sirens == []
+    cfg["s"] = cfg["s"].model_copy(update={"vision": VisionSettings(enabled=True, loiter=False)})
+    assert not await svc.vision_event("loiter", {"held_s": 9})
+    await svc.stop()
+
+
+async def test_client_forwards_loiter():
+    got: list = []
+
+    async def on_event(kind, data):
+        got.append(kind)
+
+    w = FakeWatch()
+    w.watching = True
+    c = VisionClient(get_settings=lambda: VisionSettings(enabled=True), get_armed=lambda: True, on_event=on_event,
+                     transport=httpx.MockTransport(w), clock=lambda: 1000.0)
+    await c.poll()
+    w.add("loiter", 1000.0)
+    w.add("bogus", 1000.0)  # неизвестный вид — не тревога
+    await c.poll()
+    assert got == ["loiter"]
+    await c.stop()

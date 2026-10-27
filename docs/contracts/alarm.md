@@ -63,7 +63,7 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 3. Сирена (`siren`): через mpv радио на колонку Bluetooth, если она подключена — текущий поток на паузу/замена,
    синтезированный в коде звук сирены (свой WAV в data_dir, без сторонних файлов), громкость 100, `siren_s` секунд,
    потом восстановить, что играло (станция, громкость) или остаться в тишине. Колонки нет — пропустить (в лог).
-   **События камеры (`approach`, `face`) сирену не включают никогда** — [vision.md](vision.md).
+   **События камеры (`approach`, `face`, `loiter`) сирену не включают никогда** — [vision.md](vision.md).
 4. Снимок камеры (`GET /snapshot.jpg` fnav-camera) → `data_dir/alarm_snaps/<id>.jpg` (последние 100), `data.snapshot =
    true`; удаляются вместе с журналом.
 5. В outbox для сервера (если настроен `FNAV_RELAY_URL`/токен, как у журнала позиций).
@@ -115,12 +115,13 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 
 ## 4. API устройства (только с сессией, как остальной `/api`)
 
-`AlarmEvent = {id: str (uuid4 hex), ts: float (unix), kind: "impact"|"tilt"|"move"|"approach"|"face"|"test", title: str, body: str,
+`AlarmEvent = {id: str (uuid4 hex), ts: float (unix), kind: "impact"|"tilt"|"move"|"approach"|"face"|"loiter"|"test", title: str, body: str,
 url: str, data: object}` — `url` относительно каталога админки (`"#/alarm"`, для `move` — `"#/tracking"`).
 
 Тексты: `impact` — «Impact detected» / «Hit 0.42 g at 14:03»; `tilt` — «Van tilted» / «Tilted 4.2° at 14:03»;
 `move` — «Van is moving» / «230 m from the parking spot at 14:03»; `approach` — «Person approaching» / «Someone came
-close to the van at 14:03»; `face` — «Someone is looking in» / «A face close to the windshield at 14:03»; `test` — «Test alarm» / «Alarm notifications
+close to the van at 14:03»; `face` — «Someone is looking in» / «A face close to the windshield at 14:03»; `loiter` — «Someone is lingering at the van» /
+«A person has stayed close to the van for 8 s at 14:03» (секунды — `data.held_s`); `test` — «Test alarm» / «Alarm notifications
 work (14:03)». Время — локальное устройства, `HH:MM`.
 
 `AlarmStatus = {state, armed_at: float|null, arm_in_s: int|null, sensor: {ok: bool, model: str|null, address: int,
@@ -137,7 +138,7 @@ vision: {enabled, available, watching, people, error} ([vision.md](vision.md))}`
 | POST | `/api/alarm/test` | `AlarmStatus` — событие `test` идёт всем путём (журнал → сервер → push), без сирены |
 | GET | `/api/alarm/snapshot/{id}.jpg` | снимок камеры к событию журнала; 404 — нет |
 | DELETE | `/api/alarm/events` | `AlarmStatus` (и снимки) |
-| POST | `/api/alarm/simulate` | только в `--mock`: `{"kind": "impact"|"tilt"|"move"|"approach"|"face", "g": 0.5}` → как настоящее событие (если `armed`; камера — с учётом `settings.alarm.vision`) |
+| POST | `/api/alarm/simulate` | только в `--mock`: `{"kind": "impact"|"tilt"|"move"|"approach"|"face"|"loiter", "g": 0.5}` → как настоящее событие (если `armed`; камера — с учётом `settings.alarm.vision`) |
 
 Настройки — общим механизмом `settings` (как остальные разделы).
 

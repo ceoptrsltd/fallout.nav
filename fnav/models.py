@@ -304,8 +304,8 @@ class HazardSettings(_Model):
 
 
 class VisionSettings(_Model):
-    """Камера на охране (fnav-watch, docs/contracts/vision.md): человек подходит / лицо у стекла. Без сирены:
-    push, аварийка, защита записи."""
+    """Камера на охране (fnav-watch, docs/contracts/vision.md): человек подходит / лицо у стекла / стоит у фургона.
+    Без сирены: push, аварийка, защита записи."""
 
     enabled: bool = False
     approach: bool = True  # человек подошёл: рамка росла, нижний край дошёл до ближней линии
@@ -314,6 +314,8 @@ class VisionSettings(_Model):
     face: bool = True  # крупное лицо у центра кадра
     face_min: float = Field(0.06, ge=0.02, le=0.5)  # ширина лица — доля ширины кадра (широкий объектив: 0.06 ≈ 1,3 м)
     face_hold_s: float = Field(3.0, ge=0.5, le=30)
+    loiter: bool = True  # стоит у фургона (ночью — и по силуэту, который нейросеть теряет)
+    loiter_s: float = Field(8.0, ge=3, le=120)  # столько рядом у центра — тревога (раз за присутствие)
 
 
 class AlarmSettings(_Model):
@@ -625,7 +627,7 @@ class BtState(_Model):
 # ───────────────────────────── Охрана и уровень (MPU-6050) ─────────────────────────────
 
 AlarmStateName = Literal["off", "arming", "armed", "triggered"]
-AlarmKind = Literal["impact", "tilt", "move", "approach", "face", "test"]
+AlarmKind = Literal["impact", "tilt", "move", "approach", "face", "loiter", "test"]
 
 
 class AlarmEvent(_Model):
