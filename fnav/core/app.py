@@ -528,6 +528,10 @@ class VolumeBody(BaseModel):
     volume: int = Field(..., ge=0, le=100)
 
 
+class StepBody(BaseModel):
+    delta: Literal[-1, 1]
+
+
 class StationBody(BaseModel):
     station: RadioStation
 
@@ -572,6 +576,11 @@ def _register_radio(app: FastAPI, core: Core) -> None:
     @app.post("/api/radio/resume")
     async def radio_resume():
         return (await core.radio.resume()).model_dump()
+
+    @app.post("/api/radio/step")
+    async def radio_step(body: StepBody):
+        """Соседняя станция — как клавиши 1 / 2 мини-клавиатуры (режим settings.radio.mode)."""
+        return (await core.radio.step(body.delta)).model_dump()
 
     @app.post("/api/radio/volume")
     async def radio_volume(body: VolumeBody):

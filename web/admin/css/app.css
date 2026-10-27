@@ -383,6 +383,8 @@ tbody tr:hover { background: var(--panel2); }
 .np-hint { color: var(--dim); font-size: 13px; }
 .np-ctl { display: flex; align-items: center; gap: 12px 22px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
 .np-play { min-width: 104px; }
+.np-btns { display: flex; align-items: center; gap: 6px; }
+.np-step { padding-inline: 10px; }
 .np-vol { display: flex; align-items: center; gap: 10px; flex: 1 1 240px; max-width: 420px; color: var(--dim); }
 .np-vol svg { width: 20px; height: 20px; flex: none; }
 .np-vol input { flex: 1; min-width: 0; }

@@ -357,6 +357,10 @@ async def test_radio_and_bt_api(data_dir):
         assert tel["state"] == "playing" and tel["station"] == "Jazz FM" and tel["genre"] == "Jazz"
         assert (await c.post("/api/radio/volume", json={"volume": 101})).status_code == 422
         assert (await c.post("/api/radio/volume", json={"volume": 30})).json()["volume"] == 30
+        r = await c.post("/api/radio/step", json={"delta": 1})  # как клавиша 2: по списку жанра
+        assert r.status_code == 200 and r.json()["station"]["uuid"] == "u1" and r.json()["genre"] == "jazz"
+        assert (await c.post("/api/radio/step", json={"delta": -1})).status_code == 200
+        assert (await c.post("/api/radio/step", json={"delta": 2})).status_code == 422
         assert (await c.post("/api/radio/stop")).json()["state"] == "stopped"
 
         bt = (await c.get("/api/bluetooth/state")).json()

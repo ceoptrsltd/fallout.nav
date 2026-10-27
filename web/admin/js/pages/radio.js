@@ -39,6 +39,9 @@ export function mount(root) {
   const meta = h(".np-meta");
   const hint = h(".np-hint");
   const playBtn = h("button.btn.primary.np-play", { type: "button", onclick: () => togglePlay() });
+  // as keypad keys 1 / 2: in order / at random (back = along the stations heard) / through the favorites
+  const prevBtn = h("button.btn.np-step", { type: "button", "aria-label": "Previous station", onclick: () => step(-1) }, icon("prev"));
+  const nextBtn = h("button.btn.np-step", { type: "button", "aria-label": "Next station", onclick: () => step(1) }, icon("next"));
   const volIn = h("input", { type: "range", min: 0, max: 100, step: 1, value: 60, "aria-label": "Volume" });
   const volVal = h("span.mono.np-vol-val", null, "60");
   const outEl = h(".np-out");
@@ -64,7 +67,7 @@ export function mount(root) {
         track, meta, hint),
     ),
     h(".np-ctl", null,
-      playBtn,
+      h(".np-btns", null, prevBtn, playBtn, nextBtn),
       h(".np-vol", null, icon("vol"), volIn, volVal),
       outEl,
     ),
@@ -109,6 +112,12 @@ export function mount(root) {
     hint.textContent = hv;
     hint.hidden = !hv;
     hint.className = "np-hint" + (state === "error" ? " red" : state === "waiting_output" ? " amber" : "");
+
+    const mode = (store.settings && store.settings.radio && store.settings.radio.mode)
+      || (store.telemetry && store.telemetry.radio && store.telemetry.radio.mode) || null;
+    const how = mode === "random" ? "at random" : mode === "favorites" ? "through the favorites" : "in order";
+    prevBtn.title = mode === "random" ? "Previous station: back along the stations you heard" : `Previous station (${how})`;
+    nextBtn.title = `Next station (${how})`;
 
     clear(playBtn);
     if (active) { playBtn.append(icon("stop"), "Stop"); playBtn.disabled = false; playBtn.title = "Stop the radio"; }
@@ -177,6 +186,15 @@ export function mount(root) {
     try {
       st = await api.post(active ? "/api/radio/stop" : "/api/radio/resume", {});
     } catch (e) { toast("error", errText(e)); }
+    if (!stopped) renderNow();
+  }
+
+  async function step(delta) {
+    prevBtn.disabled = nextBtn.disabled = true;
+    try {
+      st = await api.post("/api/radio/step", { delta });
+    } catch (e) { toast("error", errText(e)); }
+    prevBtn.disabled = nextBtn.disabled = false;
     if (!stopped) renderNow();
   }
 
