@@ -63,7 +63,10 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 3. Сирена (`siren`): через mpv радио на колонку Bluetooth, если она подключена — текущий поток на паузу/замена,
    синтезированный в коде звук сирены (свой WAV в data_dir, без сторонних файлов), громкость 100, `siren_s` секунд,
    потом восстановить, что играло (станция, громкость) или остаться в тишине. Колонки нет — пропустить (в лог).
-4. В outbox для сервера (если настроен `FNAV_RELAY_URL`/токен, как у журнала позиций).
+   **События камеры (`approach`, `face`) сирену не включают никогда** — [vision.md](vision.md).
+4. Снимок камеры (`GET /snapshot.jpg` fnav-camera) → `data_dir/alarm_snaps/<id>.jpg` (последние 100), `data.snapshot =
+   true`; удаляются вместе с журналом.
+5. В outbox для сервера (если настроен `FNAV_RELAY_URL`/токен, как у журнала позиций).
 
 ### Аварийка (RC-реле на кнопку аварийной сигнализации)
 
@@ -112,16 +115,18 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 
 ## 4. API устройства (только с сессией, как остальной `/api`)
 
-`AlarmEvent = {id: str (uuid4 hex), ts: float (unix), kind: "impact"|"tilt"|"move"|"test", title: str, body: str,
+`AlarmEvent = {id: str (uuid4 hex), ts: float (unix), kind: "impact"|"tilt"|"move"|"approach"|"face"|"test", title: str, body: str,
 url: str, data: object}` — `url` относительно каталога админки (`"#/alarm"`, для `move` — `"#/tracking"`).
 
 Тексты: `impact` — «Impact detected» / «Hit 0.42 g at 14:03»; `tilt` — «Van tilted» / «Tilted 4.2° at 14:03»;
-`move` — «Van is moving» / «230 m from the parking spot at 14:03»; `test` — «Test alarm» / «Alarm notifications
+`move` — «Van is moving» / «230 m from the parking spot at 14:03»; `approach` — «Person approaching» / «Someone came
+close to the van at 14:03»; `face` — «Someone is looking in» / «A face close to the windshield at 14:03»; `test` — «Test alarm» / «Alarm notifications
 work (14:03)». Время — локальное устройства, `HH:MM`.
 
 `AlarmStatus = {state, armed_at: float|null, arm_in_s: int|null, sensor: {ok: bool, model: str|null, address: int,
 error: str|null}, level_g: float|null, tilt_deg: float|null (текущий угол от базы, null вне armed), siren: bool
-(звучит), events: AlarmEvent[] (новые первыми, ≤ 100), relay: {configured: bool, pending: int}}`
+(звучит), events: AlarmEvent[] (новые первыми, ≤ 100), relay: {configured: bool, pending: int}, hazard: {…},
+vision: {enabled, available, watching, people, error} ([vision.md](vision.md))}`
 
 | Метод | Путь | Ответ |
 |---|---|---|
@@ -130,8 +135,9 @@ error: str|null}, level_g: float|null, tilt_deg: float|null (текущий уг
 | POST | `/api/alarm/disarm` | `AlarmStatus` |
 | POST | `/api/alarm/silence` | `AlarmStatus` (сирена замолкает, охрана остаётся) |
 | POST | `/api/alarm/test` | `AlarmStatus` — событие `test` идёт всем путём (журнал → сервер → push), без сирены |
-| DELETE | `/api/alarm/events` | `AlarmStatus` |
-| POST | `/api/alarm/simulate` | только в `--mock`: `{"kind": "impact"|"tilt"|"move", "g": 0.5}` → как настоящее событие (если `armed`) |
+| GET | `/api/alarm/snapshot/{id}.jpg` | снимок камеры к событию журнала; 404 — нет |
+| DELETE | `/api/alarm/events` | `AlarmStatus` (и снимки) |
+| POST | `/api/alarm/simulate` | только в `--mock`: `{"kind": "impact"|"tilt"|"move"|"approach"|"face", "g": 0.5}` → как настоящее событие (если `armed`; камера — с учётом `settings.alarm.vision`) |
 
 Настройки — общим механизмом `settings` (как остальные разделы).
 
@@ -141,7 +147,7 @@ siren: bool, seq: int, last: {kind, ts, title}|null}` (`null`, если серв
 **Кнопки**: действие `"alarm"` («Alarm on/off») — переключает `off` ↔ `arming`/`armed` (из `triggered` — `off`).
 
 **Экран**: охрана не `off` — маленький значок в углу (`ARM 45` при обратном отсчёте, `ARMED`); `triggered` — крупная
-мигающая надпись по `last.kind` (`IMPACT` / `TILTED` / `MOVING`) 10 с после нового `seq`; переключение кнопкой —
+мигающая надпись по `last.kind` (`IMPACT` / `TILTED` / `MOVING` / `PERSON` / `FACE`) 10 с после нового `seq`; переключение кнопкой —
 вспышка `ALARM ON` / `ALARM OFF` (как вспышка режима радио).
 
 ## 5. Устройство → сервер
