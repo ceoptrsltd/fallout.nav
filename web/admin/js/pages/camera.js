@@ -13,7 +13,7 @@ import { banner, confirmDialog } from "../ui.js";
 const CAM_STATE = { starting: "starting", recording: "recording", stopped: "stopped", error: "error" };
 // applied by fnav-camera on the fly: no "recording restart" confirmation for these
 const LIVE_KEYS = ["live_bitrate_kbps", "max_exposure_ms_driving", "max_exposure_ms_parked"];
-const frameMs = () => Math.round(1000 / (store.settings?.camera?.fps || 15));
+const frameMs = () => Math.floor(1000 / (store.settings?.camera?.fps || 15));
 
 /** "125 ms · gain 16× · 3.4 lux · limit 125 ms (parked)" */
 function exposureText(c) {
