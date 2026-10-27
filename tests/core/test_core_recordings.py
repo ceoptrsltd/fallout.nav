@@ -91,7 +91,7 @@ async def test_recordings_api(data_dir):
         assert by["2026-10-19/2026-10-19_10-00-00.ts"]["protected"] is True
         assert by["2026-10-20/2026-10-20_16-40-00.ts"] | {} == {
             "path": "2026-10-20/2026-10-20_16-40-00.ts", "date": "2026-10-20", "start": "2026-10-20T16:40:00",
-            "size_bytes": 10240, "duration_s": None, "protected": False, "in_progress": False}
+            "size_bytes": 10240, "duration_s": None, "protected": False, "in_progress": False, "events": []}
         assert by["nosync/boot-abcd1234_0001.ts"]["start"] is None
 
         # скачивание целиком и по Range
@@ -316,3 +316,34 @@ async def test_button_short_press_toggles_video_output(data_dir):
         assert r.json()["on"] is True
         r = await c.post("/api/display/output", json={})  # без "on" — переключить
         assert r.json()["on"] is False
+
+
+def test_attach_events_marks_alarm_events_inside_recordings():
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from fnav.core.recordings import attach_events
+
+    t0 = datetime(2026, 10, 27, 22, 0, 0).timestamp()  # местное время, как в имени файла
+
+    def ev(i, dt, kind="approach", **data):
+        return SimpleNamespace(id=f"e{i}", kind=kind, title=kind.title(), ts=t0 + dt, data=data)
+
+    items = [
+        {"path": "2026-10-27/2026-10-27_22-10-00.ts", "start": "2026-10-27T22:10:00", "duration_s": None,
+         "in_progress": True},
+        {"path": "2026-10-27/2026-10-27_22-00-00.ts", "start": "2026-10-27T22:00:00", "duration_s": 600.0,
+         "in_progress": False},
+        {"path": "nosync/boot-1_0001.ts", "start": None, "duration_s": 60.0, "in_progress": False},
+    ]
+    events = [ev(1, 327.5, snapshot=True), ev(2, 601.0, kind="impact"), ev(3, 700.0), ev(4, 30.0, kind="test"),
+              ev(5, -100.0)]
+    out = attach_events(items, events, now=t0 + 720)
+    cur, done, nosync = out
+    assert [m["id"] for m in done["events"]] == ["e1", "e2"]  # e2 — на стыке (≤ 2 с после конца)
+    assert done["events"][0] == {"id": "e1", "kind": "approach", "title": "Approach", "ts": t0 + 327.5,
+                                 "offset_s": 327.5, "snapshot": True}
+    assert done["events"][1]["offset_s"] == 600.0  # не дальше конца записи
+    assert [m["id"] for m in cur["events"]] == ["e2", "e3"]  # e2 — и в следующей (стык); идущая — до «сейчас»
+    assert [m["offset_s"] for m in cur["events"]] == [1.0, 100.0]
+    assert nosync["events"] == []  # время неизвестно — без меток

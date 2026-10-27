@@ -18,3 +18,44 @@ export function playerKind({ vendor = "", nativeHls = false, mse = false } = {})
 }
 
 export const HLS_MIME = "application/vnd.apple.mpegurl";
+
+// ── alarm events inside a recording (GET /api/recordings → events[].offset_s) ──
+export const LEAD_S = 5; // a jump to an event starts this much earlier: what led to it is seen too
+
+/** Local start time (ms) of a segment from its file name ("…/2026-10-27_22-05-00.ts"); null — no time (nosync). */
+export function segmentStartMs(path) {
+  const m = String(path || "").match(/(\d{4})-(\d\d)-(\d\d)_(\d\d)-(\d\d)-(\d\d)\.ts$/);
+  if (!m) return null;
+  const [y, mo, d, hh, mi, ss] = m.slice(1).map(Number);
+  return new Date(y, mo - 1, d, hh, mi, ss).getTime();
+}
+
+/** Link that opens the recording in the player at the moment of an alarm event (ts — unix seconds). */
+export function recLink(path, ts) {
+  const t0 = segmentStartMs(path);
+  const off = t0 !== null && Number.isFinite(ts) ? Math.max(0, Math.round(ts - t0 / 1000)) : null;
+  return "#/recordings?play=" + encodeURIComponent(path) + (off !== null ? "&t=" + off : "");
+}
+
+/** {play, t} from "#/recordings?play=…&t=…"; null — no player link. */
+export function parseRecLink(hash) {
+  const q = String(hash || "").split("?")[1];
+  if (!q) return null;
+  const p = new URLSearchParams(q);
+  const play = p.get("play");
+  if (!play) return null;
+  const raw = p.get("t");
+  const t = raw === null || raw === "" ? NaN : Number(raw);
+  return { play, t: Number.isFinite(t) && t >= 0 ? t : null };
+}
+
+/** Where playback starts for an event at offset (s). */
+export function jumpTo(offset) {
+  return Math.max(0, (Number(offset) || 0) - LEAD_S);
+}
+
+/** Marker position 0…1 on a timeline of the given duration (s); null — duration unknown. */
+export function markPos(offset, duration) {
+  if (!(Number.isFinite(duration) && duration > 0)) return null;
+  return Math.min(1, Math.max(0, (Number(offset) || 0) / duration));
+}

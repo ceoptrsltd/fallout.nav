@@ -24,7 +24,7 @@ from fnav.core.controls import controls_info
 from fnav.core.games import GamesError
 from fnav.core.level import LevelError
 from fnav.core.radio import GENRES, RadioError
-from fnav.core.recordings import RecordingError, iter_file, parse_range
+from fnav.core.recordings import RecordingError, attach_events, iter_file, parse_range
 from fnav.core.runtime import REMOTE_TELEMETRY_EVERY, Core, CoreOptions
 from fnav.core.system import SystemError_
 from fnav.core.tiles import TileError
@@ -301,7 +301,8 @@ def _register_tiles(app: FastAPI, core: Core) -> None:
 def _register_recordings(app: FastAPI, core: Core) -> None:
     @app.get("/api/recordings")
     async def rec_list():
-        return await core.recordings.list(core.current_segment())
+        """Записи + метки событий охраны в них (переход к моменту срабатывания)."""
+        return attach_events(await core.recordings.list(core.current_segment()), core.alarm.events)
 
     @app.api_route("/api/recordings/file/{path:path}", methods=["GET", "HEAD"])
     async def rec_file(path: str, request: Request, download: int = 0):

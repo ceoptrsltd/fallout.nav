@@ -14,6 +14,7 @@ import {
   hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
+import { recLink } from "../rec-play.js";
 import * as push from "../push.js";
 
 const POLL_MS = 1500;
@@ -303,7 +304,7 @@ export function mount(root) {
           link || seg || snap ? h(".ex", null,
             link ? h("a", { href: link.href }, link.text) : null,
             snap ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); showSnapshot(ev); } }, "Snapshot") : null,
-            seg ? h("span", null, "Recording kept: ", h("a.mono", { href: "#/recordings" }, seg)) : null) : null),
+            seg ? h("span", null, "Recording kept: ", h("a.mono", { href: recLink(seg, ev.ts), title: "Watch from the moment of the event" }, seg)) : null) : null),
         h(".when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, isNum(ev.ts) ? fmtWhen(ev.ts, now) : "—"),
       ));
     }

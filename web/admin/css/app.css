@@ -693,3 +693,15 @@ tbody tr:hover { background: var(--panel2); }
   .lv-page .card { padding: 12px; }
   .lv-pv { padding: 6px; }
 }
+
+/* recordings: alarm events on a strip under the player, the list of them, the badge in the list */
+.rec-marks { position: relative; width: min(900px, 82vw); height: 12px; margin-top: 8px; background: #0b0d0a; border: 1px solid var(--line); border-radius: 3px; }
+.rec-mark { position: absolute; top: -4px; width: 8px; height: 18px; margin-left: -4px; padding: 0; border: 0; border-radius: 2px; background: var(--amber); box-shadow: 0 0 0 1px #000; cursor: pointer; }
+.rec-mark.k-bad { background: var(--red); }
+.rec-mark.k-plain { background: var(--text); }
+.rec-mark:hover, .rec-mark:focus-visible { transform: scaleY(1.25); outline: none; }
+.rec-evs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-width: min(900px, 82vw); }
+.rec-ev { gap: 6px; }
+.rec-ev.k-bad svg { color: var(--red); }
+.rec-ev.k-warn svg { color: var(--amber); }
+.rec-evbadge { cursor: pointer; border: 0; font: inherit; }

@@ -9,9 +9,10 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from datetime import datetime
 from pathlib import Path, PurePosixPath
+from typing import Any
 from urllib.parse import quote
 
 from fnav import paths
@@ -309,6 +310,34 @@ class Recordings:
     def newest(self) -> str | None:
         items = self._scan(None)
         return items[0]["path"] if items else None
+
+
+EVENT_MARGIN_S = 2.0  # имя файла — с точностью до секунды; событие на стыке сегментов попадёт в оба
+
+
+def attach_events(items: list[dict], events: Iterable[Any], now: float | None = None) -> list[dict]:
+    """Метки событий охраны в записях: offset_s = время события − начало сегмента (по имени файла, местное время).
+    Записи без времени (nosync) — без меток. Текущий сегмент — до «сейчас»."""
+    now = time.time() if now is None else now
+    evs = [e for e in events if e.kind != "test"]
+    for it in items:
+        marks: list[dict] = []
+        try:
+            t0 = datetime.fromisoformat(it["start"]).timestamp() if it.get("start") else None
+        except ValueError:
+            t0 = None
+        if t0 is not None:
+            dur = it.get("duration_s") or 0.0
+            if it.get("in_progress"):
+                dur = max(dur, now - t0)
+            for e in evs:
+                off = e.ts - t0
+                if -EVENT_MARGIN_S <= off <= dur + EVENT_MARGIN_S:
+                    marks.append({"id": e.id, "kind": e.kind, "title": e.title, "ts": e.ts,
+                                  "offset_s": round(min(max(off, 0.0), dur), 1),
+                                  "snapshot": bool((e.data or {}).get("snapshot"))})
+        it["events"] = sorted(marks, key=lambda m: m["offset_s"])
+    return items
 
 
 def _parse_start(name: str) -> datetime | None:

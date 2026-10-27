@@ -2,7 +2,8 @@
 import { h, icon, clear, fmtBytes, fmtDur, isNum } from "../dom.js";
 import { api, appUrl, encPath, errText } from "../api.js";
 import { loadHls } from "../vendor.js";
-import { hlsUrl, playerKind, HLS_MIME } from "../rec-play.js";
+import { hlsUrl, playerKind, HLS_MIME, jumpTo, markPos, parseRecLink } from "../rec-play.js";
+import { kindInfo } from "../alarm-fmt.js";
 import { modal, confirmDialog, toast, poll, badge, emptyState, banner } from "../ui.js";
 
 function fileUrl(path) { return appUrl("api/recordings/file/" + encPath(path)); }
@@ -11,6 +12,8 @@ function timeOf(r) {
   const m = r.path.match(/_(\d\d)-(\d\d)-(\d\d)\.ts$/);
   return m ? `${m[1]}:${m[2]}:${m[3]}` : r.path.split("/").pop();
 }
+const LEAD_TEXT = "a few seconds";
+const evClock = (e) => (Number.isFinite(e.ts) ? new Date(e.ts * 1000).toLocaleTimeString("en-GB") : "");
 function dayTitle(d) {
   if (!/^\d{4}-\d\d-\d\d$/.test(d || "")) return "Time not synchronized";
   const dt = new Date(d + "T00:00:00");
@@ -22,7 +25,7 @@ function dayTitle(d) {
  * index), so a click anywhere on the timeline loads only the ~3 s piece there. Safari / iPhone play it natively,
  * other browsers through hls.js (MSE).
  */
-export function openPlayer(rec) {
+export function openPlayer(rec, { at = null } = {}) {
   const video = h("video", { controls: true, autoplay: true, playsinline: true, style: { width: "min(900px, 82vw)", maxHeight: "68vh", background: "#000", display: "block" } });
   video.muted = true;
   video.playsInline = true;
@@ -31,9 +34,46 @@ export function openPlayer(rec) {
   let closed = false;
   let how = "";
   const fail = (text) => { status.textContent = text; status.className = "red"; };
+
+  // alarm events in this recording: markers on a strip under the video and a list; a click jumps a few s before
+  const evs = Array.isArray(rec.events) ? rec.events : [];
+  let pendingSeek = Number.isFinite(at) ? jumpTo(at) : null;
+  const seek = (t) => {
+    if (video.readyState >= 1) {
+      video.currentTime = t;
+      const p = video.play();
+      if (p && p.catch) p.catch(() => {});
+    } else pendingSeek = t;
+  };
+  video.addEventListener("loadedmetadata", () => {
+    if (pendingSeek !== null) { video.currentTime = pendingSeek; pendingSeek = null; }
+  });
+  const strip = evs.length ? h(".rec-marks", { title: "Alarm events in this recording" }, evs.map((e) => {
+    const ki = kindInfo(e.kind);
+    const b = h("button.rec-mark.k-" + (ki.kind || "plain"), { type: "button", title: `${evClock(e)} · ${e.title || ki.label}`, onclick: () => seek(jumpTo(e.offset_s)) });
+    b.dataset.off = String(e.offset_s);
+    return b;
+  })) : null;
+  const placeMarks = () => {
+    if (!strip) return;
+    const d = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : rec.duration_s;
+    for (const b of strip.children) {
+      const p = markPos(Number(b.dataset.off), d);
+      b.hidden = p === null;
+      if (p !== null) b.style.left = p * 100 + "%";
+    }
+  };
+  video.addEventListener("durationchange", placeMarks);
+  placeMarks();
+  const evList = evs.length ? h(".rec-evs", null, evs.map((e) => {
+    const ki = kindInfo(e.kind);
+    return h("button.btn.sm.rec-ev.k-" + (ki.kind || "plain"), { type: "button", title: `Jump to ${LEAD_TEXT} before the event`, onclick: () => seek(jumpTo(e.offset_s)) },
+      icon(ki.icon, 13), h("span.mono", null, evClock(e)), h("span", null, e.title || ki.label));
+  })) : null;
+
   const m = modal({
     title: `Recording ${rec.path}`,
-    body: [video, status,
+    body: [video, strip, evList, status,
       rec.in_progress ? h("div", { style: { marginTop: "8px" } }, banner("warn", "Recording is still in progress: the timeline grows while it is being written.")) : null,
     ],
     foot: [h("a.btn", { href: fileUrl(rec.path), download: rec.path.split("/").pop() }, icon("dl"), "Download"), h("button.btn", { onclick: () => m.close() }, "Close")],
@@ -71,7 +111,7 @@ export function openPlayer(rec) {
       } else {
         how = "HLS via hls.js";
         // backBufferLength: decoded 1440×1080 behind the playhead is freed (phones)
-        hls = new Hls({ backBufferLength: 30, maxBufferLength: 30 });
+        hls = new Hls({ backBufferLength: 30, maxBufferLength: 30, startPosition: pendingSeek ?? -1 });
         let recovered = false;
         hls.on(Hls.Events.ERROR, (_ev, d) => {
           if (!d.fatal) return;
@@ -109,6 +149,16 @@ export function mount(root) {
         // only the newest day is expanded by default
         const days = [...new Set(list.map((r) => r.date))];
         days.slice(1).forEach((d) => closedDays.add(d));
+        render();
+        // "#/recordings?play=<path>&t=<s>" (alarm log, dashboard): straight to the moment of the event
+        const link = parseRecLink(location.hash);
+        if (link) {
+          history.replaceState(null, "", "#/recordings");
+          const r = list.find((x) => x.path === link.play);
+          if (r) openPlayer(r, { at: link.t });
+          else toast("warn", "That recording is no longer on the device");
+        }
+        return;
       }
       render();
     } catch (e) {
@@ -151,6 +201,10 @@ export function mount(root) {
       h("span.num", null, isNum(r.duration_s) ? fmtDur(r.duration_s) : "—"),
       h("span", { style: { display: "flex", gap: "6px" } },
         r.in_progress ? badge("● recording", "rec") : null,
+        r.events && r.events.length ? h("button.badge.bad.rec-evbadge", {
+          type: "button", onclick: () => openPlayer(r, { at: r.events[0].offset_s }),
+          title: r.events.map((e) => `${evClock(e)} ${e.title}`).join("\n") + "\nClick to watch from the first one",
+        }, icon("alarm", 12), `${r.events.length} event${r.events.length === 1 ? "" : "s"}`) : null,
         r.protected ? h("span.badge.warn", null, icon("lock", 12), "protected") : null,
       ),
       h("span.btnrow", { style: { justifyContent: "flex-end" } },

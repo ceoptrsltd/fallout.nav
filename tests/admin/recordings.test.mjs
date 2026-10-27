@@ -27,3 +27,22 @@ test("playerKind: WebKit plays HLS itself, others use hls.js over MSE", () => {
   assert.equal(playerKind(), "none");
   assert.equal(HLS_MIME, "application/vnd.apple.mpegurl");
 });
+
+test("alarm events in recordings: segment start, deep link, jump and marker position", async () => {
+  const { segmentStartMs, recLink, parseRecLink, jumpTo, markPos, LEAD_S } = await import("../../web/admin/js/rec-play.js");
+  const path = "2026-10-27/2026-10-27_22-05-00.ts";
+  const t0 = new Date(2026, 9, 27, 22, 5, 0).getTime();
+  assert.equal(segmentStartMs(path), t0);
+  assert.equal(segmentStartMs("nosync/boot-abcd_0001.ts"), null);
+  const link = recLink(path, t0 / 1000 + 27.4);
+  assert.equal(link, "#/recordings?play=2026-10-27%2F2026-10-27_22-05-00.ts&t=27");
+  assert.deepEqual(parseRecLink(link), { play: path, t: 27 });
+  assert.deepEqual(parseRecLink("#/recordings?play=nosync%2Fa.ts"), { play: "nosync/a.ts", t: null });
+  assert.equal(recLink("nosync/a.ts", 123), "#/recordings?play=nosync%2Fa.ts");
+  assert.equal(parseRecLink("#/recordings"), null);
+  assert.equal(jumpTo(27), 27 - LEAD_S);
+  assert.equal(jumpTo(2), 0);
+  assert.equal(markPos(150, 600), 0.25);
+  assert.equal(markPos(700, 600), 1);
+  assert.equal(markPos(10, NaN), null);
+});
