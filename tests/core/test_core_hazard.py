@@ -1,4 +1,4 @@
-"""Аварийка через реле (docs/contracts/alarm.md, «Аварийка»): hold / pulse, продление, подтверждения, API."""
+"""Аварийка через RC-реле (docs/contracts/alarm.md, «Аварийка»): продление, подтверждения, аппаратный ШИМ, API."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from fnav.core.alarm import AlarmService, Detection, HazardLights
 from fnav.core.imu import ImuService
 from fnav.core.tracking import RelayConfig
 from fnav.models import AlarmSettings, GpsFix, HazardSettings
-from fnav.sensors.hazard import FakeHazard, GpioHazard, servo_duty
+from fnav.sensors.hazard import FakeHazard
 
 
 class Outputs:
@@ -40,14 +40,8 @@ async def until(cond, timeout: float = 3.0) -> None:
         await asyncio.sleep(0.01)
 
 
-def test_servo_duty_and_busy_pins():
-    assert servo_duty(1000) == pytest.approx(0.05) and servo_duty(2000) == pytest.approx(0.10)
-    with pytest.raises(RuntimeError, match="GPIO12 is taken"):
-        GpioHazard(HazardSettings(gpio=12))
-
-
 async def test_hold_flash_is_extended_then_released():
-    cfg = HazardSettings(enabled=True, mode="hold")
+    cfg = HazardSettings(enabled=True)
     outs = Outputs()
     hz = HazardLights(lambda: cfg, outs)
     hz.apply(cfg)  # включена — вывод открыт сразу (у RC-реле пошли импульсы «выкл»)
@@ -61,27 +55,6 @@ async def test_hold_flash_is_extended_then_released():
     assert outs.last.on  # 0.4 с с начала: без продления уже погасла бы
     await until(lambda: not hz.active)
     assert outs.last.history == [True, False] and not outs.last.closed
-
-
-async def test_pulse_mode_presses_on_and_off():
-    cfg = HazardSettings(enabled=True, mode="pulse", press_ms=100)
-    outs = Outputs()
-    hz = HazardLights(lambda: cfg, outs)
-    hz.flash(0.3)
-    await until(lambda: hz.lit)
-    await until(lambda: not hz.active)
-    # «нажали» (вкл) и «нажали» ещё раз (выкл): реле каждый раз замыкается на press_ms и отпускается
-    assert outs.last.history == [True, False, True, False] and not hz.lit and not outs.last.on
-
-
-async def test_stop_mid_press_releases_the_button():
-    cfg = HazardSettings(enabled=True, mode="pulse", press_ms=1000)
-    outs = Outputs()
-    hz = HazardLights(lambda: cfg, outs)
-    hz.flash(30)
-    await until(lambda: outs.made and outs.last.on)  # кнопка «нажата»
-    await asyncio.wait_for(hz.stop(), 5)
-    assert outs.last.on is False and not hz.active and not hz.lit
 
 
 async def test_test_works_disabled_and_reports_errors():
@@ -170,7 +143,7 @@ def test_hardware_pwm_steady_servo_pulses(tmp_path):
 
     chip, ch = fake_pwmchip(tmp_path)
     assert find_pwmchip(tmp_path) == chip
-    out = HardwarePwmHazard(HazardSettings(gpio=19, on_us=2000, off_us=1000), root=tmp_path, sleep=lambda s: None)
+    out = HardwarePwmHazard(HazardSettings(on_us=2000, off_us=1000), root=tmp_path, sleep=lambda s: None)
     assert (chip / "export").read_text() == ""  # канал уже был
     assert ch.joinpath("period").read_text() == "20000000" and ch.joinpath("duty_cycle").read_text() == "1000000"
     assert ch.joinpath("enable").read_text() == "1"
@@ -180,25 +153,8 @@ def test_hardware_pwm_steady_servo_pulses(tmp_path):
     assert ch.joinpath("duty_cycle").read_text() == "1000000" and ch.joinpath("enable").read_text() == "0"
 
 
-def test_hardware_pwm_needs_the_overlay_and_a_pwm_pin(tmp_path):
+def test_hardware_pwm_needs_the_overlay(tmp_path):
     from fnav.sensors.hazard import HardwarePwmHazard
 
     with pytest.raises(RuntimeError, match="dtoverlay=pwm,pin=19,func=2"):
-        HardwarePwmHazard(HazardSettings(gpio=19), root=tmp_path)
-    with pytest.raises(RuntimeError, match="no hardware PWM"):
-        HardwarePwmHazard(HazardSettings(gpio=21), root=tmp_path)
-
-
-def test_hardware_pwm_level_mode_is_a_steady_high_or_low(tmp_path):
-    from fnav.sensors.hazard import HardwarePwmHazard
-
-    _chip, ch = fake_pwmchip(tmp_path)
-    out = HardwarePwmHazard(HazardSettings(gpio=19, signal="level"), root=tmp_path, sleep=lambda s: None)
-    assert ch.joinpath("duty_cycle").read_text() == "0"
-    out.set(True)
-    assert ch.joinpath("duty_cycle").read_text() == "20000000"  # 100 %: постоянно высокий
-    low = HardwarePwmHazard(HazardSettings(gpio=19, signal="level", active_low=True), root=tmp_path,
-                            sleep=lambda s: None)
-    assert ch.joinpath("duty_cycle").read_text() == "20000000"  # выкл = высокий
-    low.set(True)
-    assert ch.joinpath("duty_cycle").read_text() == "0"
+        HardwarePwmHazard(HazardSettings(), root=tmp_path)

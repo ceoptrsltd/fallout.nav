@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logVal, roundG, impactToSlider, sliderToImpact,
   logTicks, fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, isIos, deviceName,
-  pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardFields, hazardStatus, silenceLabel,
+  pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardStatus, silenceLabel,
 } from "../../web/admin/js/alarm-fmt.js";
 
 const UA = {
@@ -165,14 +165,6 @@ test("pushErrorText: server answers and browser errors read well", () => {
   assert.match(pushErrorText(Object.assign(new Error("push service error"), { name: "AbortError" })), /push service: push service error/);
   assert.equal(pushErrorText(new Error("boom")), "boom");
   assert.equal(pushErrorText(null), "Unknown error");
-});
-
-test("hazard lights: mode-specific fields", () => {
-  assert.deepEqual(hazardFields({ signal: "servo", mode: "hold" }), { servo: true, level: false, press: false });
-  assert.deepEqual(hazardFields({ signal: "level", mode: "pulse" }), { servo: false, level: true, press: true });
-  assert.deepEqual(hazardFields({ signal: "level", mode: "hold" }), { servo: false, level: true, press: false });
-  assert.deepEqual(hazardFields(null), { servo: true, level: false, press: false }); // defaults: servo, hold
-  assert.deepEqual(hazardFields({ signal: "weird" }), { servo: true, level: false, press: false });
 });
 
 test("hazard lights: status line", () => {

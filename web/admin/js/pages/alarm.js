@@ -11,7 +11,7 @@ import { toast, banner, badge, confirmDialog, poll } from "../ui.js";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logTicks, impactToSlider, sliderToImpact,
   fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, pushErrorText, toUnix,
-  hazardFields, hazardStatus, silenceLabel,
+  hazardStatus, silenceLabel,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
 import * as push from "../push.js";
@@ -571,23 +571,6 @@ export function mount(root) {
     const f = (s) => hzForm.add(s);
     const int = (v) => (Number.isInteger(v) ? null : "Whole number");
     const P = "alarm.hazard.";
-    const rows = {
-      on: f({ path: P + "on_us", label: "Pulse “on”", type: "number", min: 500, max: 2500, step: 10, unit: "µs", validate: int }),
-      off: f({ path: P + "off_us", label: "Pulse “off”", type: "number", min: 500, max: 2500, step: 10, unit: "µs", validate: int,
-        help: "Pulse widths the RC switch takes for on and off (usually 2000 / 1000 µs; swap them if it works the other way round)." }),
-      low: f({ path: P + "active_low", label: "Active low", type: "switch", switchLabel: "the relay switches on with a low level" }),
-      press: f({ path: P + "press_ms", label: "Press length", type: "number", min: 100, max: 3000, step: 10, unit: "ms", validate: int,
-        help: "How long the relay “presses” the button to switch the hazard lights on, and again to switch them off." }),
-    };
-    // fields of the other signal / button type are hidden (their values are kept)
-    const showRows = () => {
-      const v = hazardFields({ signal: hzForm.get(P + "signal"), mode: hzForm.get(P + "mode") });
-      rows.on.hidden = rows.off.hidden = !v.servo;
-      rows.low.hidden = !v.level;
-      rows.press.hidden = !v.press;
-    };
-    const refresh0 = hzForm.refreshBar.bind(hzForm);
-    hzForm.refreshBar = () => { refresh0(); showRows(); };
     hzCard = h(".card.al-hzcard", null,
       h("h2", null, "Hazard lights"),
       h(".al-hzhead", null,
@@ -595,24 +578,15 @@ export function mount(root) {
         h(".grow"),
         hzTestBtn),
       hzResult,
-      h(".hint", null, "A relay in parallel with the hazard-lights button flashes them on an alarm. The test works even when this is off and the alarm is not armed."),
+      h(".hint", null, "The RC relay switch in parallel with the hazard-lights button: closed while the lights flash. The test works even when this is off and the alarm is not armed."),
       f({ path: P + "enabled", label: "On alarm", type: "switch", switchLabel: "Flash the hazard lights on alarm" }),
       f({ path: P + "seconds", label: "Flashing time", hint: "a new event starts it again", type: "number", min: 5, max: 900, step: 1, unit: "s", validate: int }),
       f({ path: P + "confirm", label: "Arm / Disarm", type: "switch", switchLabel: "Blink once on Arm, twice on Disarm" }),
-      f({ path: P + "signal", label: "Relay signal", type: "select",
-        options: [{ value: "servo", label: "RC switch — servo PWM (1000 µs off / 2000 µs on)" },
-                  { value: "level", label: "Plain relay module — logic input (3.3 V = on)" }] }),
-      rows.on, rows.off, rows.low,
-      f({ path: P + "mode", label: "Button type", type: "select",
-        options: [{ value: "hold", label: "Hold the relay while flashing" }, { value: "pulse", label: "Press the hazard button (push-on / push-off)" }],
-        help: "Hold: the relay stays closed all the time the lights flash. Press: for a button that switches the hazard lights on with one press and off with the next." }),
-      rows.press,
-      h("details.al-adv", null, h("summary", null, "Wiring"),
-        f({ path: P + "gpio", label: "GPIO (BCM)", hint: "pin 35 = GPIO19", type: "number", min: 4, max: 27, step: 1, validate: int,
-          help: "Relay signal to header pin 35 (GPIO19), ground to pin 39; an RC switch also takes +5 V from pin 4. Use a relay module with its own coil driver — never a bare coil on the GPIO." })),
+      f({ path: P + "on_us", label: "Pulse “on”", type: "number", min: 500, max: 2500, step: 10, unit: "µs", validate: int }),
+      f({ path: P + "off_us", label: "Pulse “off”", type: "number", min: 500, max: 2500, step: 10, unit: "µs", validate: int,
+        help: "Servo pulse widths the relay switch takes for on and off (usually 2000 / 1000 µs). Wiring: signal → pin 35 (GPIO19), − → pin 39, + → pin 4 (5 V)." }),
       hzForm.bar,
     );
-    showRows();
   }
 
   // ───── layout ─────

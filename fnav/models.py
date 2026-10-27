@@ -288,16 +288,11 @@ class BluetoothSettings(_Model):
 
 
 class HazardSettings(_Model):
-    """Аварийка через реле на её кнопку (docs/contracts/alarm.md, «Аварийка»)."""
+    """Аварийка: RC-реле параллельно её кнопке (с фиксацией), замкнуто, пока мигаем (docs/contracts/alarm.md)."""
 
     enabled: bool = False  # мигать аварийкой при тревоге
-    gpio: int = Field(19, ge=4, le=27)  # BCM; pin 35
-    signal: Literal["servo", "level"] = "servo"  # RC-реле (импульсы 50 Гц) / обычный вход
-    on_us: int = Field(2000, ge=500, le=2500)  # servo: импульс «вкл», мкс
-    off_us: int = Field(1000, ge=500, le=2500)  # servo: импульс «выкл», мкс
-    active_low: bool = False  # level: включается низким уровнем
-    mode: Literal["hold", "pulse"] = "hold"  # реле замкнуто всё время / «нажатие» кнопки вкл-выкл
-    press_ms: int = Field(400, ge=100, le=3000)  # pulse: длительность «нажатия»
+    on_us: int = Field(2000, ge=500, le=2500)  # импульс «вкл», мкс
+    off_us: int = Field(1000, ge=500, le=2500)  # импульс «выкл», мкс
     seconds: int = Field(30, ge=5, le=900)  # сколько мигать после события
     confirm: bool = False  # мигнуть 1 раз при Arm и 2 раза при Disarm
 

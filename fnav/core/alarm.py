@@ -376,10 +376,8 @@ class Siren:
 
 
 class HazardLights:
-    """Аварийка через реле на её кнопку (docs/contracts/alarm.md, «Аварийка»).
-
-    hold — реле замкнуто, пока мигаем; pulse — «нажатие» кнопки без фиксации: нажали — включилась, ещё раз —
-    выключилась (горит ли она, знаем только по своим нажатиям). Мигание длится до срока, новое событие его продлевает.
+    """Аварийка: RC-реле параллельно её кнопке (с фиксацией) замкнуто, пока мигаем (docs/contracts/alarm.md,
+    «Аварийка»). Мигание длится до срока, новое событие его продлевает.
     """
 
     def __init__(self, get_cfg: Callable[[], HazardSettings],
@@ -391,7 +389,7 @@ class HazardLights:
         self._out: HazardOutput | None = None
         self._key: tuple | None = None
         self.error: str | None = None
-        self.lit = False  # аварийка горит (по нашим нажатиям / реле замкнуто)
+        self.lit = False  # реле замкнуто — аварийка горит
         self._until = 0.0  # monotonic: когда погасить
         self._task: asyncio.Task | None = None  # мигание по тревоге / тест
         self._blink: asyncio.Task | None = None  # подтверждение Arm/Disarm
@@ -410,7 +408,7 @@ class HazardLights:
         try:
             self._out, self._key = self.open_output(cfg), key
             self.error = None
-            log.info("alarm: hazard relay on GPIO%d (%s, %s)", cfg.gpio, cfg.signal, cfg.mode)
+            log.info("alarm: hazard relay ready (pulses %d / %d us)", cfg.on_us, cfg.off_us)
         except Exception as e:  # noqa: BLE001 — нет gpiozero, вывод занят и т.п.
             if self.error != str(e):
                 log.warning("alarm: hazard relay unavailable: %s", e)
@@ -439,16 +437,8 @@ class HazardLights:
             out = self._output(cfg)
             if out is None or self.lit == on:
                 return
-            if cfg.mode == "hold":
-                out.set(on)
-                self.lit = on
-                return
-            out.set(True)  # «нажали»
+            out.set(on)
             self.lit = on
-            try:
-                await asyncio.sleep(cfg.press_ms / 1000)
-            finally:
-                out.set(False)  # «отпустили» — даже если нас отменили посреди нажатия
 
     def flash(self, seconds: float) -> None:
         """Мигать seconds (уже мигает — продлить до now + seconds)."""

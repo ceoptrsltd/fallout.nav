@@ -91,12 +91,6 @@ export function relayText(relay) {
 
 // ───── hazard lights (docs/contracts/alarm.md, «Аварийка») ─────
 
-/** Which mode-specific fields of settings.alarm.hazard apply: pulse widths (servo), active low (level), press length (pulse). */
-export function hazardFields(hz) {
-  const signal = hz && hz.signal === "level" ? "level" : "servo";
-  return { servo: signal === "servo", level: signal === "level", press: !!hz && hz.mode === "pulse" };
-}
-
 /** Status line from AlarmStatus.hazard {enabled, active, error}: {text, kind}, or null (device without it). */
 export function hazardStatus(hz) {
   if (!hz || typeof hz !== "object") return null;
