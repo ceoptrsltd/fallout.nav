@@ -195,7 +195,7 @@ def _clean(t: str) -> str:
 def _is_noise(t: str, station: RadioStation | None, md: dict) -> bool:
     """Не трек: пусто, адрес, имя файла потока (так mpv называет поток без метаданных), имя станции."""
     s = t.strip().lower()
-    if not s.strip(" -|.") or "://" in s or re.search(r"\.(mp3|aac|aacp|ogg|opus|m3u8?|pls|flac)(\?.*)?$", s):
+    if not s.strip(" -|.") or "://" in s or re.search(r"\.(mp3|aac|aacp|ogg|opus|m3u8?|pls|flac|wav)(\?.*)?$", s):
         return True
     names = {str(md.get("icy-name") or "").strip().lower()}
     if station:
@@ -473,6 +473,9 @@ class RadioService:
         self._lock = asyncio.Lock()
         self._ring: tuple[str | None, float, list[RadioStation]] | None = None  # (жанр, когда, станции) для step()
         self._back: list[RadioStation] = []  # random: откуда пришли — клавиша «назад» возвращает по очереди
+        # Тревога (сирена охраны): mpv отдан под звуковой файл. Команды радио в это время только меняют состояние,
+        # плеер не трогают; end_alert() возвращает то, что должно играть (станцию и громкость) или тишину.
+        self._alert: tuple[str, str, int] | None = None  # (файл, устройство, громкость)
         player.on_event(self._on_player)
 
     # ── жизненный цикл ──
@@ -629,7 +632,8 @@ class RadioService:
 
     async def set_volume(self, volume: int) -> RadioState:
         self.volume = max(0, min(100, int(volume)))
-        await self.player.set_volume(self.volume)
+        if self._alert is None:  # сирена звучит на своей громкости; радио получит новую после неё
+            await self.player.set_volume(self.volume)
         if self._vol_save:
             self._vol_save.cancel()
         self._vol_save = asyncio.create_task(self._save_volume_later(self.volume), name="radio-volume")
@@ -643,7 +647,8 @@ class RadioService:
     def apply_settings(self, s: RadioSettings) -> None:
         if s.volume != self.volume and (self._vol_save is None or self._vol_save.done()):
             self.volume = s.volume
-            asyncio.get_running_loop().create_task(self.player.set_volume(s.volume))
+            if self._alert is None:
+                asyncio.get_running_loop().create_task(self.player.set_volume(s.volume))
 
     def set_output(self, out: RadioOutput | None) -> None:
         """Колонка по умолчанию сменилась / подключилась / отключилась (от bluetooth.py)."""
@@ -655,6 +660,55 @@ class RadioService:
         if before != after:
             self._attempt = 0
             asyncio.get_running_loop().create_task(self._apply(), name="radio-output")
+
+    # ── тревога (сирена охраны, fnav/core/alarm.py) ──
+    @property
+    def alert_active(self) -> bool:
+        return self._alert is not None
+
+    async def play_alert(self, path: str, volume: int = 100) -> str | None:
+        """Звуковой файл по кругу на колонку вместо радио, громкость volume. None — звучит, иначе — почему нет.
+        Пока звучит, станция, громкость и колонка радио меняются только в состоянии; вернёт их end_alert()."""
+        async with self._lock:
+            if not (self.output and self.output.connected):
+                return "no Bluetooth speaker is connected"
+            if not self._player_ready:
+                return "the radio player (mpv) is not running"
+            self._cancel_timers()
+            device = "auto" if self._test_output else bluealsa_device(self.output.address)
+            self._alert = (path, device, max(0, min(100, int(volume))))
+            try:
+                await self.player.set_volume(self._alert[2])
+                await self.player.load(path, device)
+            except (ConnectionError, RuntimeError, TimeoutError, OSError) as e:
+                self._alert = None
+                await self.player.set_volume(self.volume)
+                return f"player: {e}"
+        log.info("radio: alert sound on %s", self.output.name or self.output.address)
+        return None
+
+    async def end_alert(self) -> None:
+        """Сирену выключили: громкость радио на место, станция — снова, если она должна играть, иначе тишина."""
+        if self._alert is None:
+            return
+        self._alert = None
+        self._attempt = 0
+        with contextlib.suppress(ConnectionError, RuntimeError, TimeoutError, OSError):
+            await self.player.set_volume(self.volume)
+        await self._apply()
+        log.info("radio: alert sound off (%s)", self.phase)
+
+    async def _replay_alert(self) -> None:
+        """Файл тревоги доиграл (или mpv перезапустился) — снова, пока тревогу не выключили."""
+        async with self._lock:
+            if self._alert is None or not self._player_ready:
+                return
+            path, device, volume = self._alert
+            try:
+                await self.player.set_volume(volume)
+                await self.player.load(path, device)
+            except (ConnectionError, RuntimeError, TimeoutError, OSError) as e:
+                log.warning("radio: cannot repeat the alert sound: %s", e)
 
     # ── машина состояний ──
     def _cancel_timers(self) -> None:
@@ -669,15 +723,17 @@ class RadioService:
             self.track = None
             if not self.want_play or self.station is None:
                 self.phase, self.error = "stopped", None
-                await self.player.halt()
+                if self._alert is None:
+                    await self.player.halt()
                 return
             if not (self.output and self.output.connected):
                 self.phase, self.error = "waiting_output", None  # без колонки поток не открываем (трафик)
-                await self.player.halt()
+                if self._alert is None:
+                    await self.player.halt()
                 return
             self.phase = "connecting"
-            if not self._player_ready:
-                return  # mpv ещё не поднялся: откроем по событию ready
+            if not self._player_ready or self._alert is not None:
+                return  # mpv ещё не поднялся / звучит сирена: откроем по событию ready / после end_alert()
             device = "auto" if self._test_output else bluealsa_device(self.output.address)
             try:
                 await self.player.load(self.station.url, device)
@@ -710,6 +766,17 @@ class RadioService:
 
     def _on_player(self, kind: str, value: Any) -> None:
         loop = asyncio.get_running_loop()
+        if self._alert is not None:  # звучит сирена: события плеера — её, не станции
+            if kind == "ready":
+                self._player_ready = bool(value)
+                if value:  # mpv перезапустился посреди тревоги — продолжить
+                    loop.create_task(self._replay_alert(), name="radio-alert")
+            elif kind == "ended":
+                if value == "eof":  # доиграл — по кругу; ошибка (колонка пропала и т.п.) — не долбим mpv
+                    loop.create_task(self._replay_alert(), name="radio-alert")
+                else:
+                    log.warning("radio: alert sound failed: %s", value)
+            return
         if kind == "ready":
             self._player_ready = bool(value)
             if value and self.want_play:

@@ -246,7 +246,7 @@ class RadioSettings(_Model):
 
 # действия клавиш мини-клавиатуры (fnav/core/keypad.py); "none" — клавиша ничего не делает
 KeypadAction = Literal["none", "station_prev", "station_next", "radio_toggle", "shuffle", "favorite", "volume_down",
-                       "volume_up", "view_toggle", "video_toggle", "protect"]
+                       "volume_up", "view_toggle", "video_toggle", "protect", "alarm"]
 
 
 class KeypadSettings(_Model):
@@ -287,6 +287,46 @@ class BluetoothSettings(_Model):
     auto_connect: bool = True  # переподключать колонку по умолчанию каждые 30 с
 
 
+class AlarmSettings(_Model):
+    """Охрана: датчик удара MPU-6050, наклон, сдвиг по GPS (docs/contracts/alarm.md)."""
+
+    impact_g: float = Field(0.15, ge=0.02, le=2.0)  # порог удара, g
+    tilt_enabled: bool = True
+    tilt_deg: float = Field(3.0, ge=0.5, le=45)  # порог наклона, °
+    move_enabled: bool = True
+    move_m: int = Field(100, ge=20, le=5000)  # порог сдвига по GPS, м
+    siren: bool = True  # сирена через колонку Bluetooth
+    siren_s: int = Field(30, ge=5, le=300)
+    arm_delay_s: int = Field(60, ge=0, le=600)  # задержка постановки на охрану
+    push_cooldown_s: int = Field(60, ge=0, le=3600)  # push одного вида не чаще
+    notify_offline: bool = False  # сервер шлёт push, если устройство на охране пропало из сети
+    sensor_bus: int = Field(1, ge=0, le=30)  # шина I2C (общая с компасом)
+    sensor_address: Literal[104, 105] = 104  # 0x68 (AD0 → GND) или 0x69
+
+
+LevelAxis = Literal["x+", "x-", "y+", "y-", "z+", "z-"]
+
+
+class LevelCalibration(_Model):
+    """Калибровка уровня (docs/contracts/level.md): векторы в осях датчика, нормированы."""
+
+    up: list[float] = Field(min_length=3, max_length=3)
+    forward: list[float] = Field(min_length=3, max_length=3)
+    method: Literal["single", "two_point"] = "single"
+    forward_source: Literal["axis", "driving"] = "axis"
+    axis: LevelAxis | None = "x+"
+    ts: float = 0.0
+
+
+class LevelSettings(_Model):
+    """Уровень: крен и тангаж по MPU-6050, подкладки под колёса (docs/contracts/level.md)."""
+
+    show_on_screen: bool = True  # виджет на экране вместо спидометра, когда машина стоит
+    wheelbase_m: float = Field(3.5, ge=1.5, le=7.0)
+    track_m: float = Field(1.7, ge=1.0, le=3.0)
+    calibration: LevelCalibration | None = None
+
+
 class Settings(_Model):
     version: int = 1
     display: DisplaySettings = DisplaySettings()
@@ -302,6 +342,8 @@ class Settings(_Model):
     radio: RadioSettings = RadioSettings()
     bluetooth: BluetoothSettings = BluetoothSettings()
     keypad: KeypadSettings = KeypadSettings()
+    alarm: AlarmSettings = AlarmSettings()
+    level: LevelSettings = LevelSettings()
 
 
 # ───────────────────────────── Датчики ─────────────────────────────
@@ -532,6 +574,100 @@ class BtState(_Model):
     error: str | None = None
 
 
+# ───────────────────────────── Охрана и уровень (MPU-6050) ─────────────────────────────
+
+AlarmStateName = Literal["off", "arming", "armed", "triggered"]
+AlarmKind = Literal["impact", "tilt", "move", "test"]
+
+
+class AlarmEvent(_Model):
+    """Событие охраны: журнал, push (через fnav-relay), телеметрия (docs/contracts/alarm.md §4)."""
+
+    id: str  # uuid4 hex
+    ts: float  # unix-время
+    kind: AlarmKind
+    title: str
+    body: str
+    url: str = "#/alarm"  # относительно каталога админки
+    data: dict = {}  # peak_g / tilt_deg / distance_m, lat, lon; segment — защищённая запись камеры
+
+
+class AlarmSensor(_Model):
+    ok: bool = False
+    model: str | None = None  # "MPU-6050", клон — с WHO_AM_I
+    address: int = 104
+    error: str | None = None
+
+
+class AlarmRelay(_Model):
+    configured: bool = False
+    pending: int = 0  # событий в outbox
+
+
+class AlarmStatus(_Model):
+    state: AlarmStateName = "off"
+    armed_at: float | None = None
+    arm_in_s: int | None = None  # обратный отсчёт в arming
+    sensor: AlarmSensor = AlarmSensor()
+    level_g: float | None = None  # максимум |a − g| за интервал телеметрии
+    tilt_deg: float | None = None  # текущий угол от базы наклона (null вне armed)
+    siren: bool = False  # звучит
+    events: list[AlarmEvent] = []  # новые первыми, ≤ 100
+    relay: AlarmRelay = AlarmRelay()
+
+
+class AlarmLast(_Model):
+    kind: AlarmKind
+    ts: float
+    title: str
+
+
+class AlarmTelemetry(_Model):
+    state: AlarmStateName = "off"
+    arm_in_s: int | None = None
+    level_g: float | None = None
+    sensor_ok: bool = False
+    siren: bool = False
+    seq: int = 0  # +1 на каждое событие журнала
+    last: AlarmLast | None = None
+
+
+class WheelsCm(_Model):
+    """Сколько подложить под колесо, см (самое высокое — 0)."""
+
+    fl: float
+    fr: float
+    rl: float
+    rr: float
+
+
+class LevelWizard(_Model):
+    two_point_step: Literal[0, 1] = 0  # 1 — первый замер two_point сделан, ждём второй
+    learning: bool = False  # учим «вперёд» по разгонам/торможениям
+    learn_s: float = 0.0
+    learn_spread_deg: float | None = None
+
+
+class LevelStatus(_Model):
+    sensor_ok: bool = False
+    calibrated: bool = False
+    pitch_deg: float | None = None  # > 0 — перед выше зада
+    roll_deg: float | None = None  # > 0 — правый борт выше левого
+    still: bool = False
+    raw: list[float] | None = None  # сглаженный вектор, g, оси датчика
+    wheels_cm: WheelsCm | None = None
+    calibration: LevelCalibration | None = None
+    wizard: LevelWizard = LevelWizard()
+
+
+class LevelTelemetry(_Model):
+    sensor_ok: bool = False
+    calibrated: bool = False
+    pitch_deg: float | None = None
+    roll_deg: float | None = None
+    wheels_cm: WheelsCm | None = None
+
+
 class Telemetry(_Model):
     type: Literal["telemetry"] = "telemetry"
     t: float  # unix-время сервера, с
@@ -545,4 +681,6 @@ class Telemetry(_Model):
     system: SystemStatus = SystemStatus()
     radio: RadioStatus | None = None
     speed_limit: SpeedLimit | None = None
+    alarm: AlarmTelemetry | None = None
+    level: LevelTelemetry | None = None
     errors: list[str] = []

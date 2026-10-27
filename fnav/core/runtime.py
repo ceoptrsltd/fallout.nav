@@ -14,12 +14,15 @@ from pathlib import Path
 import httpx
 
 from fnav import paths
+from fnav.core.alarm import AlarmService
 from fnav.core.auth import AuthManager
 from fnav.core.bluetooth import create_bluetooth
 from fnav.core.camera import CAMERA_URL, WHEP_URL, CameraService, CameraUnavailable
 from fnav.core.config import SettingsStore
 from fnav.core.games import GamesService
+from fnav.core.imu import ImuService
 from fnav.core.keypad import KeypadService
+from fnav.core.level import LevelService
 from fnav.core.navlogic import NavLogic
 from fnav.core.radio import MOCK_STATION, Player, create_radio
 from fnav.core.recordings import Recordings
@@ -36,6 +39,7 @@ from fnav.models import (
     CalibrationStatus,
     CameraStatus,
     CompassCalibration,
+    LevelCalibration,
     SensorSnapshot,
     Settings,
     Telemetry,
@@ -126,7 +130,8 @@ class Core:
                                     transport=opts.local_transport)
         self.system = SystemService(mock=opts.mock)
         self.video = VideoOutput(mock=opts.mock)
-        self.tracking = TrackService(paths.data_dir() / "track_outbox.db", opts.relay or RelayConfig.from_env(),
+        relay = opts.relay or RelayConfig.from_env()
+        self.tracking = TrackService(paths.data_dir() / "track_outbox.db", relay,
                                      lambda: (self.auth.password_hash, self.auth.session_secret),
                                      transport=opts.relay_transport)
         self.bt = create_bluetooth(opts.mock, paths.data_dir(), lambda: self.store.get().bluetooth)
@@ -142,6 +147,13 @@ class Core:
                                   self._resume_radio_after_game, lambda lvl, text: self.ws.toast(text, lvl),
                                   mock=opts.mock, prepare_audio=self._audio_for_game,
                                   audio_ok=lambda: bool((o := self.bt.output()) and o.connected))
+        # MPU-6050: один поток чтения на охрану и уровень
+        self.imu = ImuService(lambda: self.store.get().alarm, mock=opts.mock)
+        self.alarm = AlarmService(paths.data_dir(), lambda: self.store.get().alarm, self.imu, relay,
+                                  get_fix=lambda: self.hub.snapshot().gps, protect=self.camera.protect_current,
+                                  radio=self.radio, transport=opts.relay_transport)
+        self.level = LevelService(self.imu, lambda: self.store.get().level, self._save_level_calibration,
+                                  get_fix=lambda: self.hub.snapshot().gps)
         self.keypad = KeypadService({
             "station_prev": lambda: self.radio.step(-1),
             "station_next": lambda: self.radio.step(1),
@@ -153,6 +165,7 @@ class Core:
             "radio_toggle": self._keypad_radio_toggle,
             "volume_down": lambda: self._keypad_volume(-1),
             "volume_up": lambda: self._keypad_volume(1),
+            "alarm": self._keypad_alarm,
         }, get_bindings=lambda: self.store.get().keypad)
         self.hub: SensorHub = self._make_hub(s)
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
@@ -205,6 +218,13 @@ class Core:
             await self.radio.start(demo=MOCK_STATION if self.mock else None)
         except Exception:
             log.exception("radio/bluetooth start")
+        try:
+            await self.alarm.start(background=bg)
+            await self.level.start(background=bg)
+            if bg:
+                self.imu.start()
+        except Exception:
+            log.exception("alarm/level start")
         await self._refresh_slow()
         if bg:
             self._tasks += [
@@ -222,8 +242,9 @@ class Core:
     async def stop(self) -> None:
         await cancel_tasks(*self._tasks)
         self._tasks.clear()
-        for closer in (self.speedlimits.stop, self.weather.stop, self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop, self.hub.stop, self.camera.stop,
-                       self.tiles.stop):
+        for closer in (self.imu.stop, self.alarm.stop, self.level.stop, self.speedlimits.stop, self.weather.stop,
+                       self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop,
+                       self.hub.stop, self.camera.stop, self.tiles.stop):
             try:
                 await closer()
             except Exception:
@@ -245,9 +266,17 @@ class Core:
             self.radio.apply_settings(s.radio)
         except Exception:
             log.exception("radio/bluetooth apply_settings")
+        try:
+            self.imu.apply_settings(s.alarm)
+            self.alarm.apply_settings(s.alarm)
+        except Exception:
+            log.exception("alarm apply_settings")
 
     async def _save_radio_volume(self, volume: int) -> None:
         await self.store.patch({"radio": {"volume": volume}})
+
+    async def _save_level_calibration(self, cal: LevelCalibration | None) -> None:
+        await self.store.patch({"level": {"calibration": cal.model_dump(mode="json") if cal else None}})
 
     # ── игры: радио на паузе, пока идёт игра ──
     async def _audio_for_game(self) -> None:
@@ -300,6 +329,8 @@ class Core:
             system=self.system.status,
             radio=self.radio.status(),
             speed_limit=self.speedlimits.status(),
+            alarm=self.alarm.telemetry(),
+            level=self.level.telemetry(),
             errors=errors,
         )
 
@@ -507,6 +538,12 @@ class Core:
             await self.radio.stop_playback()
         else:
             await self.radio.resume()
+
+    async def _keypad_alarm(self) -> None:
+        """Клавиша «Alarm on/off»: off → arming/armed, иначе → off (и сирена молчит). Экран показывает вспышку
+        ALARM ON / ALARM OFF по смене Telemetry.alarm.state."""
+        on = await self.alarm.toggle()
+        self._beep("short" if on else "double")
 
     async def _keypad_volume(self, direction: int) -> None:
         if not self.games.running:

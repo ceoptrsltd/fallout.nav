@@ -78,6 +78,16 @@
 - **Автокалибровка по GPS-курсу** (на ходу, `settings.compass.auto_calibrate`): хаб сам собирает точки и вызывает `on_calibration_update(cal)`; fnav-core сохраняет `cal` в `settings.compass.calibration`. Состояние — `Telemetry.compass_cal` (`AutoCalStatus`).
   `POST /api/compass/calibration/reset-auto` — сбросить накопленные точки (сохранённую калибровку не трогает).
 
+## Охрана и уровень (MPU-6050)
+
+Полностью — в отдельных контрактах, здесь только перечень:
+
+- **Охрана** — [alarm.md](alarm.md) §4: `GET /api/alarm`, `POST /api/alarm/arm|disarm|silence|test`,
+  `DELETE /api/alarm/events`, `POST /api/alarm/simulate` (только `--mock`, иначе 404). Настройки — `settings.alarm`,
+  телеметрия — `Telemetry.alarm`, клавиша — действие `"alarm"`.
+- **Уровень** — [level.md](level.md): `GET /api/level`, `POST /api/level/calibration/level|forward`,
+  `DELETE /api/level/calibration`. Настройки и калибровка — `settings.level`, телеметрия — `Telemetry.level`.
+
 ## Система
 
 - `GET /api/system/status` → `{"system": SystemStatus, "disk": DiskStatus, "services": {"fnav-camera":"active",...}, "version":"..."}`.

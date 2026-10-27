@@ -65,6 +65,8 @@ ACTIONS: list[dict[str, str]] = [
      "hint": "Switches to the other view; press again to go back to automatic switching by speed"},
     {"id": "video_toggle", "title": "Video output on / off", "hint": "Turns the picture on the car monitor on or off"},
     {"id": "protect", "title": "Protect recording", "hint": "The current recording is never deleted to free space"},
+    {"id": "alarm", "title": "Alarm on/off",
+     "hint": "Arms the alarm (after the arming delay) or turns it off; also stops the siren"},
     {"id": "none", "title": "Nothing", "hint": "The key is not used"},
 ]
 

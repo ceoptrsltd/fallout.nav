@@ -22,6 +22,7 @@ from fnav.core.camera import CameraUnavailable, ClosingStreamingResponse, rewrit
 from fnav.core.config import SettingsError
 from fnav.core.controls import controls_info
 from fnav.core.games import GamesError
+from fnav.core.level import LevelError
 from fnav.core.radio import GENRES, RadioError
 from fnav.core.recordings import RecordingError, iter_file, parse_range
 from fnav.core.runtime import REMOTE_TELEMETRY_EVERY, Core, CoreOptions
@@ -145,6 +146,8 @@ def create_app(opts: CoreOptions | None = None) -> FastAPI:
     _register_radio(app, core)
     _register_bluetooth(app, core)
     _register_games(app, core)
+    _register_alarm(app, core)
+    _register_level(app, core)
     _register_static(app)
     return app
 
@@ -649,6 +652,97 @@ def _register_games(app: FastAPI, core: Core) -> None:
     @app.get("/api/controls")
     async def controls():
         return controls_info(bool(core.keypad.fds), core.store.get().keypad)
+
+
+# ───────────────────────── охрана (docs/contracts/alarm.md) ─────────────────────────
+
+
+class SimulateBody(BaseModel):
+    kind: Literal["impact", "tilt", "move"]
+    g: float = Field(0.5, gt=0, le=16)
+
+
+def _register_alarm(app: FastAPI, core: Core) -> None:
+    async def status() -> dict:
+        await core.alarm.poll()
+        return core.alarm.status().model_dump(mode="json")
+
+    @app.get("/api/alarm")
+    async def alarm_status():
+        return await status()
+
+    @app.post("/api/alarm/arm")
+    async def alarm_arm():
+        await core.alarm.arm()
+        return await status()
+
+    @app.post("/api/alarm/disarm")
+    async def alarm_disarm():
+        await core.alarm.disarm()
+        return await status()
+
+    @app.post("/api/alarm/silence")
+    async def alarm_silence():
+        await core.alarm.silence()
+        return await status()
+
+    @app.post("/api/alarm/test")
+    async def alarm_test():
+        await core.alarm.test()
+        return await status()
+
+    @app.delete("/api/alarm/events")
+    async def alarm_clear():
+        await core.alarm.clear_events()
+        return await status()
+
+    if core.mock:
+        @app.post("/api/alarm/simulate")
+        async def alarm_simulate(body: SimulateBody):
+            """Только --mock: событие как от датчика / GPS (если охрана включена)."""
+            await core.alarm.simulate(body.kind, body.g)
+            return await status()
+
+
+# ───────────────────────── уровень (docs/contracts/level.md) ─────────────────────────
+
+
+class LevelBody(BaseModel):
+    method: Literal["single", "two_point"]
+    step: Literal[1, 2] | None = None
+
+
+class ForwardBody(BaseModel):
+    axis: Literal["x+", "x-", "y+", "y-", "z+", "z-"] | None = None
+    learn: bool | None = None
+
+
+def _register_level(app: FastAPI, core: Core) -> None:
+    @app.exception_handler(LevelError)
+    async def _level_err(_r: Request, e: LevelError):
+        return _err(e.status, e.detail)
+
+    @app.get("/api/level")
+    async def level_status():
+        return core.level.status().model_dump(mode="json")
+
+    @app.post("/api/level/calibration/level")
+    async def level_zero(body: LevelBody):
+        if body.method == "two_point" and body.step is None:
+            return _err(422, "Invalid request: step (1 or 2) is required for two_point")
+        return (await core.level.calibrate_level(body.method, body.step)).model_dump(mode="json")
+
+    @app.post("/api/level/calibration/forward")
+    async def level_forward(body: ForwardBody):
+        if (body.axis is None) == (body.learn is None):
+            return _err(422, "Invalid request: give either axis or learn")
+        if body.axis is not None:
+            return (await core.level.set_forward_axis(body.axis)).model_dump(mode="json")
+        return (await core.level.set_learning(bool(body.learn))).model_dump(mode="json")
+
+    @app.delete("/api/level/calibration")
+    async def level_reset():
+        return (await core.level.reset()).model_dump(mode="json")
 
 
 # ───────────────────────── статика ─────────────────────────

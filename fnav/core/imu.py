@@ -1,0 +1,102 @@
+"""Один поток чтения MPU-6050 на всех потребителей: охрана (fnav/core/alarm.py) и уровень (fnav/core/level.py).
+
+Датчик открывается один раз (шина и адрес — settings.alarm.sensor_bus / sensor_address). Потребители подписываются
+subscribe(cb): cb(samples, dt) вызывается в потоке чтения ~10 раз в секунду с пачкой отсчётов (g, оси датчика) —
+считать там же и быстро, в event loop отдавать только готовое.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Callable
+
+from fnav.models import AlarmSettings
+from fnav.sensors.mpu6050 import RATE_HZ, AccelReader, AccelSource, FakeAccel, Vec, open_mpu6050
+
+log = logging.getLogger("fnav.core.imu")
+
+Consumer = Callable[[list[Vec], float], None]
+SourceOpener = Callable[[int, int], AccelSource]
+
+
+class ImuService:
+    def __init__(self, get_settings: Callable[[], AlarmSettings], mock: bool = False,
+                 open_source: SourceOpener | None = None, retry_s: float = 10.0) -> None:
+        self.get_settings = get_settings
+        self.fake: FakeAccel | None = None
+        if open_source is None:
+            if mock:
+                self.fake = FakeAccel()
+                open_source = self._open_fake
+            else:
+                open_source = open_mpu6050
+        self._open = open_source
+        self.retry_s = retry_s
+        s = get_settings()
+        self._cfg = (s.sensor_bus, s.sensor_address)
+        self.address = s.sensor_address
+        self.rate_hz = RATE_HZ
+        self.ok = False
+        self.model: str | None = None
+        self.error: str | None = None
+        self._consumers: list[Consumer] = []
+        self._reader: AccelReader | None = None
+
+    def _open_fake(self, _bus: int, address: int) -> AccelSource:
+        assert self.fake is not None
+        self.fake.address = address
+        return self.fake
+
+    @property
+    def running(self) -> bool:
+        return self._reader is not None and self._reader.is_alive()
+
+    def subscribe(self, cb: Consumer) -> None:
+        self._consumers.append(cb)
+
+    def start(self) -> None:
+        if self._reader is not None:
+            return
+        self._reader = AccelReader(lambda: self._open(*self._cfg), self.feed, self._on_state, retry_s=self.retry_s)
+        self._reader.start()
+
+    async def stop(self) -> None:
+        r, self._reader = self._reader, None
+        if r is not None:
+            r.stop()
+            await asyncio.to_thread(r.join, 3.0)
+        self.ok = False
+
+    def apply_settings(self, s: AlarmSettings) -> None:
+        cfg = (s.sensor_bus, s.sensor_address)
+        if cfg == self._cfg:
+            return
+        self._cfg = cfg
+        self.address = s.sensor_address
+        log.info("imu: sensor moved to 0x%02X on I2C-%d", s.sensor_address, s.sensor_bus)
+        if self._reader is not None:
+            self._reader.request_reinit()
+
+    # ── из потока чтения ──
+    def _on_state(self, src: AccelSource | None, error: str | None) -> None:
+        was = (self.ok, self.error)
+        if src is not None:
+            self.ok, self.model, self.address, self.error = True, src.model, src.address, None
+            self.rate_hz = src.rate_hz
+        else:
+            self.ok, self.error = False, error
+        if (self.ok, self.error) != was:
+            if self.ok:
+                log.info("imu: %s at 0x%02X", self.model, self.address)
+            else:
+                log.warning("imu: %s (retrying every %.0f s)", error, self.retry_s)
+
+    def feed(self, samples: list[Vec]) -> None:
+        """Пачка отсчётов → всем потребителям (поток чтения; тесты зовут напрямую)."""
+        dt = 1.0 / self.rate_hz
+        for cb in self._consumers:
+            try:
+                cb(samples, dt)
+            except Exception:
+                log.exception("imu consumer")
