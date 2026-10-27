@@ -312,7 +312,7 @@ class VisionSettings(_Model):
     near_line: float = Field(0.6, ge=0.2, le=1.0)  # ближняя линия, доля высоты кадра сверху (над капотом)
     approach_hold_s: float = Field(2.0, ge=0, le=30)  # столько у линии — тревога (прохожие не успевают)
     face: bool = True  # крупное лицо у центра кадра
-    face_min: float = Field(0.08, ge=0.02, le=0.5)  # ширина лица — доля ширины кадра (≈ человек в 1–1,5 м)
+    face_min: float = Field(0.06, ge=0.02, le=0.5)  # ширина лица — доля ширины кадра (широкий объектив: 0.06 ≈ 1,3 м)
     face_hold_s: float = Field(3.0, ge=0.5, le=30)
 
 
