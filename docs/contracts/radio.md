@@ -93,7 +93,9 @@ BtState = {
 ```
 RadioSettings:     volume: int 0..100 = 60;  resume_on_boot: bool = True;
                    mode: "order" | "random" | "favorites" = "order" — следующая станция с клавиатуры (клавиши 1/2):
-                   по списку жанра / случайная из него / по избранному (пустое — как order); клавиша 6 переключает
+                   по списку жанра / случайная из всего каталога (любой жанр и страна; radio-browser
+                   order=random пачками по 50, недавно звучавшие пропускаются; каталог недоступен — из списка жанра;
+                   «назад» — по истории) / по избранному (пустое — как order); клавиша 6 переключает
                    по кругу, избранное пропускает, пока оно пустое. Старое shuffle: true читается как "random".
 BluetoothSettings: enabled: bool = True (адаптер включать при старте);  auto_connect: bool = True
 DisplaySettings:   radio_panel: bool = True  (плашка радио на экране)

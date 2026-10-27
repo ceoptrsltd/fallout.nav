@@ -425,28 +425,57 @@ async def test_step_random(tmp_path):
     settings = RadioSettings(mode="random")
     svc = _svc(tmp_path, CtlPlayer(), settings)
     await svc.start()
-    stations = [RadioStation(uuid=str(i), name=f"S{i}", url=f"http://x/{i}") for i in range(8)]
+    catalogue = [RadioStation(uuid=f"r{i}", name=f"R{i}", url=f"http://r/{i}", tags=t)
+                 for i, t in enumerate(["jazz", "rock", "news", "pop", "metal", "ambient"] * 10)]
+    calls: list[int] = []
 
-    async def by_tag(tag):
-        return list(stations)
+    async def random_batch(limit=50):  # radio-browser order=random: весь каталог, любой жанр
+        calls.append(limit)
+        return catalogue[len(calls) * 7 % 20:][:limit]
 
-    svc.directory.by_tag = by_tag
-    await svc.play(stations[0], "jazz")
+    svc.directory.random = random_batch
+    jazz = RadioStation(uuid="j0", name="Jazz 0", url="http://j/0", tags="jazz")
+    await svc.play(jazz, "jazz")
     assert svc.status().mode == "random"
     path = [svc.station.uuid]
-    for _ in range(4):
-        path.append((await svc.step(1)).station.uuid)
-    # forward: never the current one, and not one of the recently heard (half of the list)
-    assert len(set(path)) == len(path)
+    for _ in range(5):
+        st = await svc.step(1)
+        path.append(st.station.uuid)
+        assert st.genre is None  # не привязана к жанру, из которого пришли
+    assert len(set(path)) == len(path) and all(u.startswith("r") for u in path[1:])
+    assert calls == [50]  # одна пачка на много нажатий
     # back: retraces the random path, then random again once the history is used up
     for want in reversed(path[:-1]):
         assert (await svc.step(-1)).station.uuid == want
     assert (await svc.step(-1)).station.uuid != path[0]
     # in order again
     settings.mode = "order"
-    cur = int(svc.station.uuid)
-    assert (await svc.step(1)).station.uuid == str((cur + 1) % 8)
+    stations = [RadioStation(uuid=str(i), name=f"S{i}", url=f"http://x/{i}") for i in range(8)]
+
+    async def by_tag(tag):
+        return list(stations)
+
+    svc.directory.by_tag = by_tag
+    await svc.play(stations[3], "jazz")
+    assert (await svc.step(1)).station.uuid == "4"
     assert svc.status().mode == "order"
+
+
+async def test_step_random_without_catalogue_uses_the_genre_list(tmp_path):
+    svc = _svc(tmp_path, CtlPlayer(), RadioSettings(mode="random"))
+    await svc.start()
+    stations = [RadioStation(uuid=str(i), name=f"S{i}", url=f"http://x/{i}") for i in range(6)]
+
+    async def nothing(limit=50):
+        return None
+
+    async def by_tag(tag):
+        return list(stations)
+
+    svc.directory.random, svc.directory.by_tag = nothing, by_tag
+    await svc.play(stations[0], "jazz")
+    st = await svc.step(1)
+    assert st.station.uuid in {"1", "2", "3", "4", "5"} and st.genre == "jazz"
 
 
 def test_old_shuffle_setting_becomes_random_mode():

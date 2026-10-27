@@ -31,6 +31,8 @@ USER_AGENT = "fallout.nav/1.0 (car radio)"
 FALLBACK_MIRROR = "all.api.radio-browser.info"
 RETRY_PAUSE_S = 0.7
 LIMIT_TAG, LIMIT_NAME, LIMIT_TOP = 60, 100, 30
+RANDOM_BATCH = 50  # режим random: столько случайных станций всего каталога за запрос
+RANDOM_POOL_S = 1800.0  # пачку не держим дольше (проверки «работает ли» в каталоге обновляются)
 RECENT_MAX = 12
 FAVORITES_MAX = 100
 BACKOFF_S = (2.0, 4.0, 8.0, 16.0, 30.0)
@@ -122,9 +124,11 @@ class RadioDirectory:
             log.warning("radio: mirror lookup failed (%s), using %s", e, FALLBACK_MIRROR)
         return FALLBACK_MIRROR
 
-    async def search(self, criteria: dict[str, str], limit: int) -> list[RadioStation] | None:
+    async def search(self, criteria: dict[str, str], limit: int,
+                     random_order: bool = False) -> list[RadioStation] | None:
         """Один поиск; None — каталог не ответил и со второй попытки."""
-        q = {**criteria, "hidebroken": "true", "order": "clickcount", "reverse": "true", "limit": str(limit)}
+        order = {"order": "random"} if random_order else {"order": "clickcount", "reverse": "true"}
+        q = {**criteria, "hidebroken": "true", **order, "limit": str(limit)}
         for attempt in range(2):
             host = self.mirror or await self._pick_mirror()
             self.mirror = host
@@ -144,6 +148,10 @@ class RadioDirectory:
         if tag in SPEECH_TAGS:
             c["language"] = "english"
         return await self.search(c, LIMIT_TAG)
+
+    async def random(self, limit: int = RANDOM_BATCH) -> list[RadioStation] | None:
+        """Случайные станции всего каталога: любой жанр, любая страна (только не помеченные неработающими)."""
+        return await self.search({}, limit, random_order=True)
 
     async def by_name(self, name: str) -> list[RadioStation] | None:
         return await self.search({"name": name}, LIMIT_NAME)
@@ -474,6 +482,7 @@ class RadioService:
         self._lock = asyncio.Lock()
         self._ring: tuple[str | None, float, list[RadioStation]] | None = None  # (жанр, когда, станции) для step()
         self._back: list[RadioStation] = []  # random: откуда пришли — клавиша «назад» возвращает по очереди
+        self._pool: tuple[float, list[RadioStation]] | None = None  # random: (когда, случайные станции каталога)
         # Тревога (сирена охраны): mpv отдан под звуковой файл. Команды радио в это время только меняют состояние,
         # плеер не трогают; end_alert() возвращает то, что должно играть (станцию и громкость) или тишину.
         self._alert: tuple[str, str, int] | None = None  # (файл, устройство, громкость)
@@ -596,31 +605,55 @@ class RadioService:
     async def step(self, delta: int) -> RadioState:
         """Соседняя станция (клавиши мини-клавиатуры): по списку жанра, из которого выбрана текущая,
         иначе — по недавним. Список запоминается на 10 минут: порядок не скачет от нажатия к нажатию.
-        settings.radio.mode: "random" — вперёд случайная станция списка (не из недавно звучавших), назад — та, что
+        settings.radio.mode: "random" — вперёд случайная станция всего каталога (любой жанр и страна, не из недавно звучавших;
+        каталог недоступен — из списка жанра), назад — та, что
         играла перед ней; "favorites" — по избранному по порядку (пустое избранное — как "order")."""
         cur = self.station
         mode = self.get_settings().mode
         lst = list(self.favorites) if mode == "favorites" else []
         if not lst:
             mode = "random" if mode == "random" else "order"
-            lst = await self._step_list()
-        if not lst:
+            if mode == "order":
+                lst = await self._step_list()
+        if not lst and mode == "order":
             raise RadioError(409, "No stations to switch to")
         if mode == "random":
             if delta < 0 and self._back:
                 return await self.play(self._back.pop(), self.genre)
-            others = [s for s in lst if cur is None or _key(s) != _key(cur)] or lst
-            heard = {_key(s) for s in self.recent[:len(lst) // 2]}
-            nxt = random.choice([s for s in others if _key(s) not in heard] or others)
+            nxt, genre = await self._random_station(), None  # из всего каталога — вне жанра
+            if nxt is None:  # каталог не ответил: из списка жанра / недавних
+                lst = lst or await self._step_list()
+                if not lst:
+                    raise RadioError(409, "No stations to switch to")
+                others = [s for s in lst if cur is None or _key(s) != _key(cur)] or lst
+                heard = {_key(s) for s in self.recent[:len(lst) // 2]}
+                nxt, genre = random.choice([s for s in others if _key(s) not in heard] or others), self.genre
             if cur is not None:
                 self._back = (self._back + [cur])[-RECENT_MAX:]
-            return await self.play(nxt, self.genre)
+            return await self.play(nxt, genre)
         idx = next((i for i, s in enumerate(lst) if cur is not None and _key(s) == _key(cur)), -1)
         if idx >= 0:
             nxt = lst[(idx + delta) % len(lst)]
         else:  # текущей нет в списке (другой режим, другой жанр): вперёд — с начала, назад — с конца
             nxt = lst[0] if delta > 0 else lst[-1]
         return await self.play(nxt, self.genre)
+
+    async def _random_station(self) -> RadioStation | None:
+        """Следующая из пачки случайных станций каталога (пачка кончилась или устарела — новая). None — каталог молчит."""
+        cur = self.station
+        heard = {_key(s) for s in self.recent} | ({_key(cur)} if cur else set())
+        for _ in range(2):
+            pool = self._pool
+            if pool is None or time.monotonic() - pool[0] > RANDOM_POOL_S or not pool[1]:
+                got = await self.directory.random()
+                if not got:
+                    return None
+                pool = self._pool = (time.monotonic(), list(got))
+            while pool[1]:
+                s = pool[1].pop()
+                if _key(s) not in heard and s.url:
+                    return s
+        return None
 
     async def _step_list(self) -> list[RadioStation]:
         cur = self.station

@@ -39,7 +39,7 @@ export function mount(root) {
   const meta = h(".np-meta");
   const hint = h(".np-hint");
   const playBtn = h("button.btn.primary.np-play", { type: "button", onclick: () => togglePlay() });
-  // as keypad keys 1 / 2: in order / at random (back = along the stations heard) / through the favorites
+  // as keypad keys 1 / 2: in order / at random from the whole catalogue (back = along the stations heard) / favorites
   const prevBtn = h("button.btn.np-step", { type: "button", "aria-label": "Previous station", onclick: () => step(-1) }, icon("prev"));
   const nextBtn = h("button.btn.np-step", { type: "button", "aria-label": "Next station", onclick: () => step(1) }, icon("next"));
   const volIn = h("input", { type: "range", min: 0, max: 100, step: 1, value: 60, "aria-label": "Volume" });
@@ -115,7 +115,7 @@ export function mount(root) {
 
     const mode = (store.settings && store.settings.radio && store.settings.radio.mode)
       || (store.telemetry && store.telemetry.radio && store.telemetry.radio.mode) || null;
-    const how = mode === "random" ? "at random" : mode === "favorites" ? "through the favorites" : "in order";
+    const how = mode === "random" ? "at random, any genre" : mode === "favorites" ? "through the favorites" : "in order";
     prevBtn.title = mode === "random" ? "Previous station: back along the stations you heard" : `Previous station (${how})`;
     nextBtn.title = `Next station (${how})`;
 
