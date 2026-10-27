@@ -1,15 +1,21 @@
-"""Записи регистратора: список, длительность (по PTS MPEG-TS), защита, удаление, безопасные пути."""
+"""Записи регистратора: список, длительность (по PTS MPEG-TS), HLS-плейлист, защита, удаление, безопасные пути."""
 
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
+import threading
+import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 from fnav import paths
+from fnav.camera.tsindex import KeyIndex, chunks, sidecar_path, update_index
 
 _DIR_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 _FILE_RE = re.compile(r"^[A-Za-z0-9_\-.]{1,128}\.ts$")
@@ -18,6 +24,7 @@ _DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TS_PACKET = 188
 _PROBE_BYTES = 256 * 1024
 IN_PROGRESS_MTIME_S = 3.0
+_INDEX_CACHE = 32  # индексов ключевых кадров в памяти (LRU)
 
 
 class RecordingError(Exception):
@@ -53,6 +60,31 @@ def resolve(root: Path, rel: str) -> Path:
 
 def lock_path(f: Path) -> Path:
     return f.with_name(f.name + ".lock")
+
+
+# ── HLS ──
+
+
+def hls_playlist(parts: list[tuple[int, int, float]], uri: str, *, live: bool) -> str:
+    """Плейлист HLS из кусков одного файла (EXT-X-BYTERANGE, версия 4).
+
+    Всегда EVENT: запись только дописывается. Идёт запись — без ENDLIST (плеер перечитывает и видит новое),
+    закончена — с ENDLIST (обычный VOD). START=0: и идущую запись смотрим с начала."""
+    target = max(1, math.ceil(max((d for _, _, d in parts), default=1.0)))
+    out = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:4",
+        f"#EXT-X-TARGETDURATION:{target}",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:EVENT",
+        "#EXT-X-INDEPENDENT-SEGMENTS",
+        "#EXT-X-START:TIME-OFFSET=0",
+    ]
+    for off, length, dur in parts:
+        out += [f"#EXTINF:{max(dur, 0.001):.3f},", f"#EXT-X-BYTERANGE:{length}@{off}", uri]
+    if not live:
+        out.append("#EXT-X-ENDLIST")
+    return "\n".join(out) + "\n"
 
 
 # ── длительность по PTS ──
@@ -123,14 +155,14 @@ class Recordings:
     def __init__(self, root: Path | None = None):
         self._root = root
         self._dur_cache: dict[str, tuple[int, float, float | None]] = {}
+        self._idx_cache: OrderedDict[str, KeyIndex] = OrderedDict()
+        self._idx_lock = threading.Lock()
 
     @property
     def root(self) -> Path:
         return self._root or paths.recordings_dir()
 
     def _scan(self, current: str | None) -> list[dict]:
-        import time
-
         root = self.root
         items: list[tuple[float, dict]] = []
         if not root.is_dir():
@@ -175,6 +207,9 @@ class Recordings:
         for k in list(self._dur_cache):
             if k not in seen:
                 del self._dur_cache[k]
+        with self._idx_lock:
+            for k in [k for k in self._idx_cache if k not in seen]:
+                del self._idx_cache[k]
         items.sort(key=lambda t: t[0], reverse=True)
         return [x for _, x in items]
 
@@ -202,6 +237,30 @@ class Recordings:
             raise RecordingError(404, "Recording not found")
         return p
 
+    def index(self, rel: str) -> KeyIndex:
+        """Индекс ключевых кадров (кэш по размеру и mtime; растущий файл — дочитывается)."""
+        p = self.file(rel)
+        with self._idx_lock:
+            try:
+                idx = update_index(p, self._idx_cache.get(rel))
+            except OSError:
+                raise RecordingError(404, "Recording not found") from None
+            self._idx_cache[rel] = idx
+            self._idx_cache.move_to_end(rel)
+            while len(self._idx_cache) > _INDEX_CACHE:
+                self._idx_cache.popitem(last=False)
+        return idx
+
+    def _hls(self, rel: str, current: str | None) -> str:
+        idx = self.index(rel)
+        live = rel == current or (time.time() - idx.mtime_ns / 1e9) < IN_PROGRESS_MTIME_S
+        # относительно плейлиста …/hls/ДАТА/ИМЯ.ts.m3u8 → …/file/ДАТА/ИМЯ.ts (и через префикс /fnadmin/)
+        uri = "../../file/" + "/".join(quote(x) for x in safe_rel_path(rel).parts)
+        return hls_playlist(chunks(idx, live=live), uri, live=live)
+
+    async def hls(self, rel: str, current: str | None = None) -> str:
+        return await asyncio.to_thread(self._hls, rel, current)
+
     async def protect(self, rel: str, protected: bool) -> bool:
         p = self.file(rel)
         lk = lock_path(p)
@@ -220,8 +279,6 @@ class Recordings:
 
     async def delete(self, rel: str, *, current: str | None, force: bool) -> None:
         p = self.file(rel)
-        import time
-
         st = p.stat()
         if rel == current or (time.time() - st.st_mtime) < IN_PROGRESS_MTIME_S:
             raise RecordingError(409, "Cannot delete: this file is being recorded")
@@ -231,11 +288,14 @@ class Recordings:
 
         def _do() -> None:
             p.unlink()
-            try:
-                lk.unlink()
-            except FileNotFoundError:
-                pass
+            for extra in (lk, sidecar_path(p)):
+                try:
+                    extra.unlink()
+                except FileNotFoundError:
+                    pass
             self._dur_cache.pop(rel, None)
+            with self._idx_lock:
+                self._idx_cache.pop(rel, None)
             d = p.parent
             today = datetime.now().strftime("%Y-%m-%d")
             if d.name != today:

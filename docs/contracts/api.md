@@ -53,12 +53,21 @@
 
 ## Записи
 
-Файлы: `{recordings_dir}/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS.ts`, защищено = рядом `…ts.lock`. Подробно — `camera.md`.
+Файлы: `{recordings_dir}/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS.ts`, защищено = рядом `…ts.lock`, индекс ключевых кадров — `…ts.idx`. Подробно — `camera.md`.
 
 - `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","date":"2026-10-20","start":"2026-10-20T16:40:00","size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool}]` (новые сверху).
 - `GET /api/recordings/file/{path}` — отдача файла с поддержкой `Range` (`video/mp2t`).
+- `GET /api/recordings/hls/{path}.m3u8` (`…/2026-10-20/2026-10-20_16-40-00.ts.m3u8`) — плейлист HLS по записи
+  (`application/vnd.apple.mpegurl`, `Cache-Control: no-cache`) для перемотки в любое место без докачки:
+  `EXT-X-VERSION:4`, `PLAYLIST-TYPE:EVENT`, `EXT-X-START:TIME-OFFSET=0`; куски ~3 с (≤ 3 МБ) —
+  `EXT-X-BYTERANGE` того же `.ts` по относительному адресу `../../file/{path}` (работает и под `/fnadmin/`),
+  каждый начинается с PAT/PMT и ключевого кадра, `EXTINF` — точно по PTS. Запись закончена — `EXT-X-ENDLIST`;
+  идёт запись — без него, только законченные куски (плеер перечитывает, старые куски не меняются).
+  Ключевые кадры — из `.ts.idx` регистратора или поиском по файлу (camera.md). Не MPEG-TS — плейлист без кусков.
+  Админка: Safari и iPhone — `video.src = m3u8` (свой HLS), остальные — hls.js (`web/admin/vendor/`).
 - `POST /api/recordings/protect` `{"path":"...","protected":true}`; `POST /api/recordings/protect-current`.
-- `DELETE /api/recordings/file/{path}` — запрещено для `in_progress` (`409`) и защищённых без `?force=1`.
+- `DELETE /api/recordings/file/{path}` — запрещено для `in_progress` (`409`) и защищённых без `?force=1`;
+  вместе с записью удаляются `.lock` и индекс `.ts.idx`.
 - Защита от выхода за каталог (`..`, абсолютные пути) обязательна.
 
 ## Камера (прокси к fnav-camera `127.0.0.1:8081`)

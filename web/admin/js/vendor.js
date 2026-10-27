@@ -39,3 +39,4 @@ export function loadVendorCss(path) {
 }
 
 export const loadMpegts = () => loadVendorScript("mpegts.js", "mpegts");
+export const loadHls = () => loadVendorScript("hls.light.min.js", "Hls");

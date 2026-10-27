@@ -1,7 +1,8 @@
-// Recordings: list by day, in-browser .ts playback (local mpegts.js), download, protect, delete.
+// Recordings: list by day, in-browser playback (HLS over the .ts: native or local hls.js), download, protect, delete.
 import { h, icon, clear, fmtBytes, fmtDur, isNum } from "../dom.js";
 import { api, appUrl, encPath, errText } from "../api.js";
-import { loadMpegts } from "../vendor.js";
+import { loadHls } from "../vendor.js";
+import { hlsUrl, playerKind, HLS_MIME } from "../rec-play.js";
 import { modal, confirmDialog, toast, poll, badge, emptyState, banner } from "../ui.js";
 
 function fileUrl(path) { return appUrl("api/recordings/file/" + encPath(path)); }
@@ -16,45 +17,76 @@ function dayTitle(d) {
   return dt.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 }
 
+/**
+ * Player: an HLS playlist over the .ts itself (byte ranges from keyframes, fnav-core builds it from the keyframe
+ * index), so a click anywhere on the timeline loads only the ~3 s piece there. Safari / iPhone play it natively,
+ * other browsers through hls.js (MSE).
+ */
 export function openPlayer(rec) {
-  const video = h("video", { controls: true, autoplay: true, style: { width: "min(900px, 82vw)", maxHeight: "68vh", background: "#000", display: "block" } });
+  const video = h("video", { controls: true, autoplay: true, playsinline: true, style: { width: "min(900px, 82vw)", maxHeight: "68vh", background: "#000", display: "block" } });
   video.muted = true;
+  video.playsInline = true;
   const status = h(".dim", { style: { marginTop: "8px", fontSize: "12.5px" } }, "Loading player…");
-  let player = null;
+  let hls = null;
   let closed = false;
+  let how = "";
+  const fail = (text) => { status.textContent = text; status.className = "red"; };
   const m = modal({
     title: `Recording ${rec.path}`,
     body: [video, status,
-      rec.in_progress ? h("div", { style: { marginTop: "8px" } }, banner("warn", "Recording is still in progress: the file is being appended to, playback may stop at the last loaded point.")) : null,
+      rec.in_progress ? h("div", { style: { marginTop: "8px" } }, banner("warn", "Recording is still in progress: the timeline grows while it is being written.")) : null,
     ],
     foot: [h("a.btn", { href: fileUrl(rec.path), download: rec.path.split("/").pop() }, icon("dl"), "Download"), h("button.btn", { onclick: () => m.close() }, "Close")],
     onClose: () => {
       closed = true;
-      if (player) { try { player.pause(); player.unload(); player.detachMediaElement(); player.destroy(); } catch { /* */ } player = null; }
+      if (hls) { try { hls.destroy(); } catch { /* */ } hls = null; }
+      video.pause();
       video.removeAttribute("src");
+      try { video.load(); } catch { /* */ }
     },
+  });
+  video.addEventListener("loadedmetadata", () => {
+    if (status.className !== "red") status.textContent = `${video.videoWidth}×${video.videoHeight} · H.264 · ${how} · click anywhere on the timeline to jump there`;
+  });
+  video.addEventListener("error", () => {
+    if (hls || closed) return; // hls.js reports its own errors
+    const e = video.error;
+    fail("Playback error" + (e ? ` (${e.code}${e.message ? ": " + e.message : ""})` : "") + ": download the file and open it in VLC");
   });
   (async () => {
     try {
-      const mpegts = await loadMpegts();
-      if (closed) return;
-      if (!mpegts.isSupported()) throw new Error("this browser has no MSE support: download the file and open it in VLC");
-      player = mpegts.createPlayer({ type: "mpegts", url: fileUrl(rec.path), isLive: false, hasAudio: false }, { enableWorker: false, lazyLoadMaxDuration: 120, seekType: "range" });
-      player.on(mpegts.Events.ERROR, (type, detail, info) => {
-        console.warn("mpegts error", type, detail, info);
-        status.textContent = "Playback error: " + type + " / " + detail + (info && info.msg ? " — " + info.msg : "");
-        status.className = "red";
-      });
-      video.addEventListener("loadedmetadata", () => {
-        if (status.className !== "red") status.textContent = `${video.videoWidth}×${video.videoHeight} · H.264 via MSE · seeking works within the loaded part`;
-      });
-      player.attachMediaElement(video);
-      player.load();
-      const p = player.play();
+      const url = hlsUrl(rec.path);
+      const mse = !!(window.MediaSource || window.ManagedMediaSource);
+      let kind = playerKind({ vendor: navigator.vendor, nativeHls: video.canPlayType(HLS_MIME) !== "", mse });
+      let Hls = null;
+      if (kind === "hlsjs") {
+        Hls = await loadHls();
+        if (closed) return;
+        if (!Hls.isSupported()) kind = video.canPlayType(HLS_MIME) ? "native" : "none";
+      }
+      if (kind === "none") throw new Error("this browser cannot play HLS video: download the file and open it in VLC");
+      if (kind === "native") {
+        how = "native HLS";
+        video.src = url;
+      } else {
+        how = "HLS via hls.js";
+        // backBufferLength: decoded 1440×1080 behind the playhead is freed (phones)
+        hls = new Hls({ backBufferLength: 30, maxBufferLength: 30 });
+        let recovered = false;
+        hls.on(Hls.Events.ERROR, (_ev, d) => {
+          if (!d.fatal) return;
+          console.warn("hls.js error", d);
+          if (d.type === Hls.ErrorTypes.MEDIA_ERROR && !recovered) { recovered = true; hls.recoverMediaError(); return; }
+          const code = d.response && d.response.code;
+          fail("Playback error: " + d.details + (code ? ` (HTTP ${code})` : ""));
+        });
+        hls.loadSource(url);
+        hls.attachMedia(video);
+      }
+      const p = video.play();
       if (p && p.catch) p.catch(() => {});
     } catch (e) {
-      status.textContent = "Could not play: " + (e.message || e);
-      status.className = "red";
+      fail("Could not play: " + (e.message || e));
     }
   })();
 }

@@ -731,6 +731,26 @@ async def get_recording(path: str, request: Request):
     return Response(data, headers=headers, media_type="video/mp2t")
 
 
+@app.get("/api/recordings/hls/{path:path}")
+async def recording_hls(path: str):
+    """The playlist fnav-core would build (same code), over the one sample file every recording serves."""
+    from urllib.parse import quote
+
+    from fnav.camera.tsindex import chunks, update_index
+    from fnav.core.recordings import hls_playlist
+
+    if not path.endswith(".m3u8"):
+        raise HTTPException(404, "Not found")
+    rel = path[:-5]
+    _find(rel)
+    if not sample_ts or not sample_ts.exists():
+        raise HTTPException(503, "Sample video not available")
+    idx = await asyncio.to_thread(update_index, sample_ts)
+    uri = "../../file/" + "/".join(quote(x) for x in rel.split("/"))
+    return Response(hls_playlist(chunks(idx, live=False), uri, live=False),
+                    media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-cache"})
+
+
 @app.post("/api/recordings/protect")
 async def protect(request: Request):
     b = await request.json()

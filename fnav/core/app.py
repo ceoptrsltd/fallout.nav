@@ -324,6 +324,14 @@ def _register_recordings(app: FastAPI, core: Core) -> None:
         return StreamingResponse(iter_file(f, start, length), status_code=status, headers=headers,
                                  media_type="video/mp2t")
 
+    # HLS по записи: куски EXT-X-BYTERANGE от ключевого кадра → перемотка в любое место без докачки
+    @app.get("/api/recordings/hls/{path:path}")
+    async def rec_hls(path: str):
+        if not path.endswith(".m3u8"):
+            raise RecordingError(404, "Not found")
+        text = await core.recordings.hls(path[:-5], core.current_segment())
+        return Response(text, media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-cache"})
+
     @app.delete("/api/recordings/file/{path:path}")
     async def rec_delete(path: str, force: int = 0):
         await core.recordings.delete(path, current=core.current_segment(), force=bool(force))

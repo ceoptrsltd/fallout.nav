@@ -8,6 +8,9 @@
   * при создании файла/каталога — fsync каталога (иначе запись каталога может не попасть на диск);
   * очередь от кодера к писателю — обычно пустая (писатель успевает), задержка ≪ 1 кадра.
 Итого после обрыва питания теряется ≤ fsync_interval_s + время fsync + 1 кадр.
+
+Рядом с сегментом — индекс ключевых кадров ``<сегмент>.ts.idx`` (tsindex.py): строка на каждый ключевой кадр
+после его записи, без fsync (после сбоя короче — fnav-core дочитает недостающее поиском по файлу).
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .h264 import AccessUnitFixer
+from .tsindex import SidecarWriter
 from .tsmux import PTS_START, TsMuxer, pts_from_us
 
 log = logging.getLogger("fnav.camera.recorder")
@@ -220,6 +224,7 @@ class Recorder:
         self._fixer = AccessUnitFixer()
         self._mux: TsMuxer | None = None
         self._seg: SegmentFile | None = None
+        self._idx: SidecarWriter | None = None  # индекс ключевых кадров сегмента (поток писателя)
         self._seg_lock = threading.Lock()
         self._seg_first_ts: int | None = None
         self._seg_frames = 0
@@ -380,9 +385,12 @@ class Recorder:
                 self._open_segment(item.ts_us)
             assert self._seg is not None and self._mux is not None and self._seg_first_ts is not None
             pts = PTS_START + pts_from_us(item.ts_us - self._seg_first_ts)
+            offset = self._seg.size
             self._seg.write(self._mux.mux(au, pts, keyframe=key))
             self._seg_frames += 1
             self.frames_written += 1
+            if key:
+                self._index_add(offset, pts)
         except OSError as e:
             log.error("recorder write error: %s", e)
             self.write_error = f"Recording write error: {e}"
@@ -397,6 +405,11 @@ class Recorder:
         seg = SegmentFile(path)
         mux = TsMuxer()
         seg.write(mux.tables())
+        try:
+            self._idx = SidecarWriter(path)
+        except OSError as e:
+            log.warning("keyframe index not written for %s: %s", path.name, e)
+            self._idx = None
         with self._seg_lock:
             self._seg = seg
             self._mux = mux
@@ -421,6 +434,7 @@ class Recorder:
             self._mux = None
             rel = self.segment_rel
             self.segment_rel = None
+        self._index_close()
         if seg is None:
             return
         try:
@@ -430,6 +444,24 @@ class Recorder:
         except OSError as e:
             log.error("segment close error %s: %s", rel, e)
         self._seg_first_ts = None
+
+    # ── индекс ключевых кадров (только поток писателя) ──
+    def _index_add(self, offset: int, pts: int) -> None:
+        if self._idx is None:
+            return
+        try:
+            self._idx.add(offset, pts)
+        except OSError as e:  # индекс необязателен: запись видео не прерываем
+            log.warning("keyframe index write failed: %s", e)
+            self._index_close()
+
+    def _index_close(self) -> None:
+        idx, self._idx = self._idx, None
+        if idx is not None:
+            try:
+                idx.close()
+            except OSError:
+                pass
 
     # ── fsync ──
     def _sync_loop(self) -> None:

@@ -138,4 +138,5 @@ Map imagery © Esri and its data providers (Esri, Maxar, Earthstar Geographics a
 ## License
 
 MIT — see [LICENSE](LICENSE). Third‑party parts keep their own licenses: fonts in `web/display/ui/fonts/`
-(SIL OFL 1.1, see `LICENSES.md` there) and `web/admin/vendor/mpegts.js` (Apache‑2.0).
+(SIL OFL 1.1, see `LICENSES.md` there), `web/admin/vendor/mpegts.js` (Apache‑2.0) and
+`web/admin/vendor/hls.light.min.js` (hls.js 1.7.3, Apache‑2.0).

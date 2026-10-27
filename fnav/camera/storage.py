@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .tsindex import sidecar_path
 from .tsmux import repair_ts
 
 log = logging.getLogger("fnav.camera.storage")
@@ -30,6 +31,14 @@ def lock_path(ts: Path) -> Path:
 
 def is_protected(ts: Path) -> bool:
     return lock_path(ts).exists()
+
+
+def remove_sidecar(ts: Path) -> None:
+    """Индекс ключевых кадров удаляется вместе с записью."""
+    try:
+        sidecar_path(ts).unlink()
+    except OSError:
+        pass
 
 
 def list_recordings(root: Path) -> list[Path]:
@@ -124,6 +133,7 @@ def cleanup(
                 if cur is not None and p.resolve() == cur:
                     continue
                 p.unlink()
+                remove_sidecar(p)
                 res.deleted.append(p)
                 total -= size
                 log.info("cleanup: deleted %s (%.1f MB)", p.relative_to(root).as_posix(), size / 1e6)
@@ -152,6 +162,7 @@ def repair_latest(root: Path, count: int = 3) -> list[tuple[Path, int, int]]:
         if after == 0 and not is_protected(p):
             try:
                 p.unlink()
+                remove_sidecar(p)
                 log.warning("repair: %s has no frames, removed", p)
             except OSError:
                 pass

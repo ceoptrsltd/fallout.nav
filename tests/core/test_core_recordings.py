@@ -6,8 +6,10 @@ import pytest
 from core_helpers import FakeUpstream, login, make_opts, running_app
 
 from fnav import paths
+from fnav.camera.tsindex import SidecarWriter, sidecar_path
+from fnav.camera.tsmux import PTS_START, TsMuxer
 from fnav.core.mockcam import _demo_ts
-from fnav.core.recordings import RecordingError, parse_range, safe_rel_path, ts_duration
+from fnav.core.recordings import RecordingError, hls_playlist, parse_range, safe_rel_path, ts_duration
 from fnav.models import CameraStatus
 
 CURRENT = "2026-10-20/2026-10-20_16-50-00.ts"
@@ -145,6 +147,132 @@ async def test_recordings_api(data_dir):
         r = await c.post("/api/recordings/protect-current")
         assert r.json()["segment"] == CURRENT
         assert (root / (CURRENT + ".lock")).exists()
+
+
+SPS_IDR = b"\x00\x00\x00\x01\x67\x42\x00\x1e\x00\x00\x00\x01\x65"
+SLICE = b"\x00\x00\x00\x01\x41"
+
+
+def write_rec(path, seconds: int, *, sidecar: bool, end: bool = True) -> list[int]:
+    """Запись как у регистратора: 15 кадров/с, ключевой раз в секунду, PAT/PMT перед ним (+ .ts.idx).
+    Возвращает смещения ключевых кадров."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mux = TsMuxer()
+    side = SidecarWriter(path) if sidecar else None
+    keys = []
+    with open(path, "wb") as f:
+        f.write(mux.tables())
+        for i in range(seconds * 15):
+            key = i % 15 == 0
+            pts = PTS_START + i * 6000
+            if key:
+                keys.append(f.tell())
+                if side:
+                    side.add(f.tell(), pts)
+            au = (SPS_IDR if key else SLICE) + bytes([i & 0xFF]) * (3000 if key else 700)
+            f.write(mux.mux(au, pts, keyframe=key))
+        if end:
+            f.write(mux.end_marker())
+    if side:
+        side.close()
+    return keys
+
+
+def parse_m3u8(text: str) -> tuple[dict, list[tuple[float, int, int, str]]]:
+    """→ (теги, [(длительность, смещение, длина, адрес)])."""
+    tags, parts, dur, rng = {}, [], 0.0, (0, 0)
+    for line in text.splitlines():
+        if line.startswith("#EXTINF:"):
+            dur = float(line[8:].rstrip(","))
+        elif line.startswith("#EXT-X-BYTERANGE:"):
+            n, o = line[17:].split("@")
+            rng = (int(n), int(o))
+        elif line.startswith("#"):
+            k, _, v = line.partition(":")
+            tags[k] = v
+        elif line:
+            parts.append((dur, rng[1], rng[0], line))
+    return tags, parts
+
+
+def test_hls_playlist_text():
+    text = hls_playlist([(0, 1128, 3.0), (1128, 564, 2.5)], "../../file/d/a.ts", live=False)
+    assert text.splitlines() == [
+        "#EXTM3U", "#EXT-X-VERSION:4", "#EXT-X-TARGETDURATION:3", "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:EVENT", "#EXT-X-INDEPENDENT-SEGMENTS", "#EXT-X-START:TIME-OFFSET=0",
+        "#EXTINF:3.000,", "#EXT-X-BYTERANGE:1128@0", "../../file/d/a.ts",
+        "#EXTINF:2.500,", "#EXT-X-BYTERANGE:564@1128", "../../file/d/a.ts",
+        "#EXT-X-ENDLIST",
+    ]
+    assert text.endswith("#EXT-X-ENDLIST\n")
+    live = hls_playlist([(0, 1128, 3.4)], "x.ts", live=True).splitlines()
+    assert "#EXT-X-ENDLIST" not in live and "#EXT-X-TARGETDURATION:4" in live
+    assert "#EXT-X-TARGETDURATION:1" in hls_playlist([], "x.ts", live=True).splitlines()
+
+
+async def test_recordings_hls(data_dir):
+    root = paths.recordings_dir()
+    closed = "2026-10-20/2026-10-20_16-40-00.ts"
+    old = "2026-10-19/2026-10-19_10-00-00.ts"  # записан до появления .ts.idx
+    keys = write_rec(root / closed, 20, sidecar=True)
+    write_rec(root / old, 7, sidecar=False)
+    live_keys = write_rec(root / CURRENT, 10, sidecar=True, end=False)
+    t_old = time.time() - 3600
+    for rel in (closed, old, CURRENT):
+        os.utime(root / rel, (t_old, t_old))
+    cam = FakeUpstream(camera_handler)
+    async with running_app(make_opts(local_transport=cam.transport)) as c:
+        url = f"/api/recordings/hls/{closed}.m3u8"
+        assert (await c.get(url)).status_code == 401
+        await login(c)
+        r = await c.get(url)
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"] == "application/vnd.apple.mpegurl"
+        assert r.headers["cache-control"] == "no-cache"
+        tags, parts = parse_m3u8(r.text)
+        assert tags["#EXT-X-VERSION"] == "4" and tags["#EXT-X-PLAYLIST-TYPE"] == "EVENT"
+        assert "#EXT-X-ENDLIST" in tags and tags["#EXT-X-TARGETDURATION"] == "3"
+        data = (root / closed).read_bytes()
+        assert [d for d, *_ in parts] == [3.0] * 6 + [2.0]
+        assert [o for _, o, _, _ in parts] == [0, *keys[3:20:3]]
+        assert parts[-1][1] + parts[-1][2] == len(data)
+        # относительный адрес куска → файл записи (и под префиксом удалённого доступа тоже)
+        uri = parts[0][3]
+        assert uri == "../../file/2026-10-20/2026-10-20_16-40-00.ts"
+        relayed = httpx.URL(f"https://example.org/fnadmin/api/recordings/hls/{closed}.m3u8").join(uri)
+        assert str(relayed) == f"https://example.org/fnadmin/api/recordings/file/{closed}"
+        file_url = str(httpx.URL(f"http://testserver{url}").join(uri))
+        for _, off, n, _ in [*parts[:3], parts[-1]]:
+            rr = await c.get(file_url, headers={"Range": f"bytes={off}-{off + n - 1}"})
+            assert rr.status_code == 206 and rr.content == data[off:off + n]
+            assert rr.content[:3] == b"\x47\x40\x00"  # каждый кусок начинается с PAT
+
+        # старая запись без .ts.idx — индекс поиском по файлу
+        tags, parts = parse_m3u8((await c.get(f"/api/recordings/hls/{old}.m3u8")).text)
+        assert [d for d, *_ in parts] == [3.0, 3.0, 1.0] and "#EXT-X-ENDLIST" in tags
+
+        # идёт запись: без ENDLIST, только законченные куски; файл вырос — плейлист дописан
+        cur_url = f"/api/recordings/hls/{CURRENT}.m3u8"
+        tags, parts = parse_m3u8((await c.get(cur_url)).text)
+        assert "#EXT-X-ENDLIST" not in tags
+        assert [(d, o) for d, o, _, _ in parts] == [(3.0, 0), (3.0, live_keys[3]), (3.0, live_keys[6])]
+        write_rec(root / CURRENT, 13, sidecar=True, end=False)
+        _, parts2 = parse_m3u8((await c.get(cur_url)).text)
+        assert parts2[:3] == parts and len(parts2) == 4
+
+        # ошибки
+        assert (await c.get(f"/api/recordings/hls/{closed}")).status_code == 404
+        assert (await c.get("/api/recordings/hls/2026-10-20/none.ts.m3u8")).status_code == 404
+        assert (await c.get("/api/recordings/hls/..%2Fsecret.ts.m3u8")).status_code in (400, 404)
+        (root / "2026-10-20/2026-10-20_17-00-00.ts").write_bytes(bytes(1000))  # не MPEG-TS
+        r = await c.get("/api/recordings/hls/2026-10-20/2026-10-20_17-00-00.ts.m3u8")
+        assert r.status_code == 200 and "#EXTINF" not in r.text
+
+        # удаление записи убирает и её индекс
+        assert sidecar_path(root / closed).exists()
+        assert (await c.delete(f"/api/recordings/file/{closed}")).status_code == 200
+        assert not sidecar_path(root / closed).exists()
+        assert (await c.get(url)).status_code == 404
 
 
 async def test_protect_current_unavailable_non_mock(data_dir):
