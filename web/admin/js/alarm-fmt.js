@@ -29,6 +29,22 @@ export function roundG(g) {
   return Number(g.toPrecision(2));
 }
 
+// impact threshold from the vibration meter: a click / drag position and the − / + steps
+export const IMPACT_STEPS = [0.02, 0.025, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5,
+  0.6, 0.8, 1, 1.2, 1.5, 2];
+
+/** Meter position 0…1 → impact threshold (two significant digits, within the limits). */
+export function thresholdAt(p) {
+  return Math.min(IMPACT_MAX, Math.max(IMPACT_MIN, roundG(logVal(p, METER_MIN, METER_MAX))));
+}
+
+/** Next / previous step from g (dir +1 / −1); off-ladder values go to the nearest step in that direction. */
+export function stepThreshold(g, dir) {
+  const v = typeof g === "number" && Number.isFinite(g) ? g : 0.15;
+  if (dir > 0) return IMPACT_STEPS.find((x) => x > v + 1e-9) ?? IMPACT_MAX;
+  return [...IMPACT_STEPS].reverse().find((x) => x < v - 1e-9) ?? IMPACT_MIN;
+}
+
 /** impact_g → slider position 0…steps. */
 export function impactToSlider(g, steps = SLIDER_STEPS) {
   return Math.round(logPos(Math.min(IMPACT_MAX, Math.max(IMPACT_MIN, g)), IMPACT_MIN, IMPACT_MAX) * steps);

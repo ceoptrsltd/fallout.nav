@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logVal, roundG, impactToSlider, sliderToImpact,
   logTicks, fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, isIos, deviceName,
-  pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardStatus, silenceLabel, visionStatus,
+  pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, IMPACT_STEPS,
 } from "../../web/admin/js/alarm-fmt.js";
 
 const UA = {
@@ -204,4 +204,18 @@ test("camera watch: status line and event kinds", () => {
   assert.equal(visionStatus({ enabled: true, available: true, watching: true, people: 3 }).kind, "warn");
   assert.equal(kindInfo("approach").label, "Person approaching");
   assert.equal(kindInfo("face").kind, "bad");
+});
+
+test("vibration meter sets the impact threshold: position and steps", () => {
+  assert.equal(thresholdAt(0), IMPACT_MIN); // below the lowest threshold — the lowest
+  assert.equal(thresholdAt(1), IMPACT_MAX);
+  assert.equal(thresholdAt(logPos(0.05, METER_MIN, METER_MAX)), 0.05);
+  assert.equal(thresholdAt(logPos(0.123, METER_MIN, METER_MAX)), 0.12); // two significant digits
+  assert.equal(stepThreshold(0.025, 1), 0.03);
+  assert.equal(stepThreshold(0.025, -1), 0.02);
+  assert.equal(stepThreshold(0.045, 1), 0.05); // off the ladder → the next step
+  assert.equal(stepThreshold(0.045, -1), 0.04);
+  assert.equal(stepThreshold(2, 1), IMPACT_MAX);
+  assert.equal(stepThreshold(0.02, -1), IMPACT_MIN);
+  assert.ok(IMPACT_STEPS.every((x, i) => i === 0 || x > IMPACT_STEPS[i - 1]));
 });

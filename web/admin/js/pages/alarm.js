@@ -6,12 +6,12 @@
 import { h, icon, clear, isNum } from "../dom.js";
 import { api, appUrl, errText } from "../api.js";
 import { SettingsForm } from "../form.js";
-import { store, on } from "../store.js";
+import { store, on, applySettings } from "../store.js";
 import { toast, banner, badge, confirmDialog, modal, poll } from "../ui.js";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logTicks, impactToSlider, sliderToImpact,
   fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, pushErrorText, toUnix,
-  hazardStatus, silenceLabel, visionStatus,
+  hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
 import * as push from "../push.js";
@@ -148,18 +148,26 @@ export function mount(root) {
   const thrMark = h("b.al-thr", { title: "Impact threshold" });
   const peakMark = h("b.al-peak", { title: "Peak" });
   const meterMsg = h(".al-meter-msg", { hidden: true }, "No sensor");
-  const meter = h(".al-meter", null, h(".al-track", null, fill, thrMark, peakMark, meterMsg),
+  // the impact threshold is set right here: click / drag on the scale, arrow keys, − / +
+  const track = h(".al-track.adj", { role: "slider", tabindex: 0, "aria-label": "Impact threshold",
+    title: "Click or drag to set the impact threshold" }, fill, thrMark, peakMark, meterMsg);
+  const meter = h(".al-meter", null, track,
     h(".al-ticks", null, logTicks([0.01, 0.03, 0.1, 0.3, 1], METER_MIN, METER_MAX)
       .map((t) => h("span", { style: { left: t.p * 100 + "%" } }, t.label))));
   const nowV = h("b.mono");
   const peakV = h("b.mono");
   const peakAgo = h("span.dim");
   const thrV = h("b.mono.amber");
+  const thrState = h("span.dim");
+  let thrPending = null; // being set on the meter, not saved yet
+  let thrSaving = false;
+  const canSetThr = () => !!settings() && !thrSaving;
   const tiltV = h("b.mono");
   const tiltOf = h("span.dim");
   const tiltBar = h(".progress.al-tiltbar", null, h("i"));
 
   function threshold() {
+    if (thrPending !== null) return thrPending;
     const v = form && form.fields.has("alarm.impact_g") ? form.get("alarm.impact_g") : settings() && settings().impact_g;
     return isNum(v) ? v : null;
   }
@@ -184,7 +192,69 @@ export function mount(root) {
     peakV.textContent = peak ? fmtG(peak.g) : "—";
     peakAgo.textContent = peak && nowS() - peak.at >= 1 ? ` (${Math.round(nowS() - peak.at)} s ago)` : "";
     thrV.textContent = thr ? fmtG(thr) : "—";
+    thrState.textContent = thrSaving ? " saving…" : thrPending !== null ? " (release to save)" : "";
+    track.setAttribute("aria-valuenow", thr ? String(thr) : "");
+    track.setAttribute("aria-valuetext", thr ? fmtG(thr) : "not set");
   }
+
+  // ── impact threshold on the meter ──
+  async function saveThreshold(v) {
+    const saved = settings() && settings().impact_g;
+    if (v === saved) { thrPending = null; renderMeter(); return; }
+    thrPending = v;
+    thrSaving = true;
+    renderMeter();
+    try {
+      applySettings(await api.patch("/api/settings", { alarm: { impact_g: v } }));
+      toast("ok", `Impact threshold ${fmtG(v)}`);
+    } catch (e) {
+      toast("error", errText(e));
+    } finally {
+      thrPending = null;
+      thrSaving = false;
+      if (!stopped) renderMeter();
+    }
+  }
+  const thrAt = (e) => {
+    const r = track.getBoundingClientRect();
+    return thresholdAt((e.clientX - r.left) / r.width);
+  };
+  let dragging = false;
+  track.addEventListener("pointerdown", (e) => {
+    if (!canSetThr() || e.button !== 0) return;
+    dragging = true;
+    track.setPointerCapture(e.pointerId);
+    thrPending = thrAt(e);
+    renderMeter();
+  });
+  track.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    thrPending = thrAt(e);
+    renderMeter();
+  });
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    if (thrPending !== null) saveThreshold(thrPending);
+  };
+  track.addEventListener("pointerup", endDrag);
+  track.addEventListener("pointercancel", () => { dragging = false; thrPending = null; renderMeter(); });
+  const stepThr = (dir) => {
+    if (!canSetThr()) return;
+    thrPending = stepThreshold(threshold(), dir);
+    renderMeter();
+    saveSoon();
+  };
+  let saveTimer = null;
+  const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => thrPending !== null && saveThreshold(thrPending), 700); };
+  track.addEventListener("keydown", (e) => {
+    const dir = e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : 0;
+    if (!dir) return;
+    e.preventDefault();
+    stepThr(dir);
+  });
+  const thrMinus = h("button.btn.sm.al-thrbtn", { type: "button", title: "Lower threshold: more sensitive", onclick: () => stepThr(-1) }, "−");
+  const thrPlus = h("button.btn.sm.al-thrbtn", { type: "button", title: "Higher threshold: less sensitive", onclick: () => stepThr(1) }, "+");
 
   function renderTilt() {
     const s = settings();
@@ -686,10 +756,10 @@ export function mount(root) {
         h(".al-nums", null,
           h("span", null, "Now ", nowV),
           h("span", null, "Peak ", peakV, peakAgo),
-          h("span", null, "Threshold ", thrV)),
+          h("span.al-thrset", null, "Threshold ", thrMinus, thrV, thrPlus, thrState)),
         h(".sep"),
         h(".al-tilt", null, h("span", null, "Tilt ", tiltV, tiltOf), tiltBar),
-        h(".hint", null, "Live from the shock sensor: the strongest jolt of every moment, in g on a log scale. The amber mark is the impact threshold."))),
+        h(".hint", null, "Live from the shock sensor: the strongest jolt of every moment, in g on a log scale. The amber mark is the impact threshold: click or drag on the scale (or use − / +) to set it — knock on the body and put it above what wind and passing trucks give."))),
     h(".grid.g2", null,
       h(".card", null,
         h(".card-head.al-evhead", null, h("h2", null, "Events ", evCount), testBtn, clearBtn),
@@ -732,6 +802,7 @@ export function mount(root) {
     stopped = true;
     stopPoll();
     clearInterval(tick);
+    clearTimeout(saveTimer);
     offTel();
     offConn();
     offSet();

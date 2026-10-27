@@ -576,6 +576,10 @@ tbody tr:hover { background: var(--panel2); }
 .al-rng .al-ticks span:last-child { transform: translateX(-100%); margin-left: 8px; }
 .al-nums { display: flex; flex-wrap: wrap; gap: 4px 20px; margin-top: 8px; color: var(--dim); }
 .al-nums b { color: var(--text); font-weight: 500; }
+.al-track.adj { cursor: ew-resize; touch-action: none; }
+.al-track.adj:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.al-thrset { display: inline-flex; align-items: center; gap: 6px; }
+.al-thrbtn { min-width: 26px; padding: 0 6px; line-height: 20px; font-family: var(--mono); }
 .al-tilt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; color: var(--dim); }
 .al-tilt b { color: var(--text); font-weight: 500; }
 .al-tiltbar { flex: 1 1 140px; max-width: 260px; }
