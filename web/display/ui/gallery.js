@@ -314,6 +314,8 @@ function makeState(cfg, now) {
       camera: { state: "recording", recording: o.recording ?? true },
       system: { internet: o.internet ?? true, time_synced: o.timeSynced ?? true },
       radio: typeof cfg.radio === "function" ? cfg.radio(now) : cfg.radio ?? null,
+      alarm: typeof cfg.alarm === "function" ? cfg.alarm(now) : cfg.alarm ?? null,
+      level: typeof cfg.level === "function" ? cfg.level(now) : cfg.level ?? null,
       errors: [],
     },
     settings: {
@@ -328,6 +330,7 @@ function makeState(cfg, now) {
         screen: { w_mm: 92, h_mm: 69 },
         radio_panel: true,
       },
+      level: { show_on_screen: true },
     },
     view: {
       mode: cfg.mode ?? "map",
@@ -367,6 +370,53 @@ const RADIO_VIEWS = [
   [{ radio: { ...RADIO, station: "Radio Paradise - Main Mix (EU) 320k AAC", track: LONG }, cond: "all" }, "<b>Everything down</b> + long station name (fits, then ellipsis)"],
   [{ radio: RADIO, bg: "cam", mode: "camera" }, "<b>Camera mode</b> with the radio"],
   [{ radio: RADIO, style: "v2", orient: "north_up" }, "<b>v2 compass, north up</b>"],
+];
+
+// ── охрана (docs/contracts/alarm.md §4) и уровень (docs/contracts/level.md) ─────────────────────
+
+const AL = (state, seq = 3, extra = {}) => ({ state, arm_in_s: null, level_g: 0.004, sensor_ok: true, siren: false, seq, last: null, ...extra });
+/** Цикл охраны с периодом 24 с: выкл → постановка (отсчёт) → на охране → удар (seq+1) → снова на охране. */
+function alarmCycle(kind) {
+  return (now) => {
+    const k = Math.floor(now / 24);
+    const t = now % 24;
+    const seq = 3 + k; // каждый цикл — новое событие
+    if (t < 3) return AL("off", seq - 1);
+    if (t < 8) return AL("arming", seq - 1, { arm_in_s: Math.ceil(8 - t) });
+    if (t < 11) return AL("armed", seq - 1);
+    if (t < 21) return AL("triggered", seq, { siren: true, last: { kind, ts: 0, title: kind } });
+    return AL("armed", seq);
+  };
+}
+const ALARM_VIEWS = [
+  [{ alarm: alarmCycle("impact"), radio: RADIO }, "<b>Alarm cycle</b> (24 s): off → <b>ALARM ON</b> flash in the radio line → ARM n countdown → ARMED → impact: <b>IMPACT</b> banner 10 s, ALARM blinks in the indicators"],
+  [{ alarm: alarmCycle("tilt"), override: { speedMps: 0 } }, "<b>Without the radio</b>: ALARM ON / OFF on its own plate in place of the weather/radio; <b>TILTED</b>"],
+  [{ alarm: alarmCycle("move"), style: "v2", orient: "north_up" }, "<b>MOVING</b> with the v2 compass (top centre): the banner goes below it"],
+];
+
+// уровень: колёса — как считает fnav-core (база 3.5 м, колея 1.7 м, шаг 0.5 см)
+function wheelsCm(p, r, wb = 3.5, tr = 1.7) {
+  const t = (d) => Math.tan(d * DEG);
+  const hh = { fl: (wb / 2) * t(p) - (tr / 2) * t(r), fr: (wb / 2) * t(p) + (tr / 2) * t(r), rl: -(wb / 2) * t(p) - (tr / 2) * t(r), rr: -(wb / 2) * t(p) + (tr / 2) * t(r) };
+  const top = Math.max(...Object.values(hh));
+  return Object.fromEntries(Object.entries(hh).map(([k, v]) => [k, Math.round((top - v) * 200) / 2]));
+}
+const LV = (p, r, extra = {}) => ({ sensor_ok: true, calibrated: true, pitch_deg: p, roll_deg: r, wheels_cm: wheelsCm(p, r), ...extra });
+/** Медленно «выравниваемся»: углы плавно идут к нулю и обратно (период 20 с), с дрожанием датчика. */
+const levelling = (now) => {
+  const k = Math.max(0, Math.cos((now * Math.PI) / 10));
+  const p = 2.6 * k + 0.03 * Math.sin(now * 7);
+  const r = -1.7 * k + 0.03 * Math.cos(now * 5);
+  return LV(Math.round(p * 10) / 10, Math.round(r * 10) / 10);
+};
+const STILL = { speedMps: 0 };
+const LEVEL_VIEWS = [
+  [{ level: levelling, override: STILL }, "<b>Levelling</b>: nose up + right side low, the angles go to zero and back (20 s) — <b>LEVEL</b> frame when both ≤ 0.3°"],
+  [{ level: LV(0.1, -0.2), override: STILL, radio: RADIO }, "<b>Level</b> with the radio playing"],
+  [{ level: LV(-7.5, 9.3), override: STILL }, "<b>Big tilt</b>: nose down 7.5°, right high 9.3° (silhouettes saturate at 22°)"],
+  [{ level: LV(2.1, 0.4, { calibrated: false }), override: STILL }, "<b>Not calibrated</b>: UNCAL tag"],
+  [{ level: LV(1.8, -1.2, { sensor_ok: false, pitch_deg: null, roll_deg: null, wheels_cm: null }), override: STILL }, "<b>No sensor</b>: the speedometer stays"],
+  [{ level: LV(1.8, -1.2) }, "<b>Driving</b> (speed varies): the speedometer; shows 3 s after the van stops, gone at once above 3 km/h"],
 ];
 
 // ── холсты ───────────────────────────────────────────────────────────────
@@ -542,6 +592,11 @@ async function main() {
 
   const rh = document.getElementById("radio");
   for (const [cfg, cap] of RADIO_VIEWS) addView(rh, { style: "v1", orient: "heading_up", cond: "ok", ...cfg }, cap);
+
+  const ah = document.getElementById("alarm");
+  for (const [cfg, cap] of ALARM_VIEWS) addView(ah, { style: "v1", orient: "heading_up", cond: "ok", ...cfg }, cap);
+  const lh = document.getElementById("level");
+  for (const [cfg, cap] of LEVEL_VIEWS) addView(lh, { style: "v1", orient: "heading_up", cond: "ok", ...cfg }, cap);
 
   sizeViews();
   renderCalibrator(document.getElementById("calibrator"), { onChange: sizeViews });

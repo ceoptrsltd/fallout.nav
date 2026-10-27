@@ -7,8 +7,11 @@
 // строка, если трек не помещается.
 // radio.mode (клавиша 6: следующая станция по порядку / случайная / по избранному) — значок справа от станции
 // (стрелки / звезда); после переключения режим на 2.5 с показывается в строке трека. radio.fav_seq (удержание
-// клавиши 6: станцию в избранное) — там же «FAVORITE SAVED» / «ALREADY SAVED».
+// клавиши 6: станцию в избранное) — там же «FAVORITE SAVED» / «ALREADY SAVED». Переключение охраны (alarm.js) —
+// там же «ALARM ON» / «ALARM OFF»; из нескольких вспышек показывается последняя. Без плашки радио вспышка охраны
+// рисуется своей плашкой на этом же месте (drawAlarmFlash).
 
+import { FLASH_S as ALARM_FLASH_S, alarmFlashFor, drawFlashPlate, flashText, lockSprite, newestFlash } from "./alarm.js";
 import { SPEED_BOX } from "./speed.js";
 import { INDICATOR_ROW, indicatorsWidth } from "./status.js";
 import {
@@ -539,16 +542,18 @@ export function drawRadio(ctx, state, safe, liftPx = 0) {
   }
   if (modeIcon) blit(ctx, modeSprite(p.mode), tx1 - 24, Math.round(y + STATION_Y - 10));
 
-  // строка трека: громкость, режим или «в избранное» (после изменения, последнее из них) / NO SPEAKER / TUNING /
-  // трек
+  // строка трека: громкость, режим, «в избранное» или охрана (после изменения, последнее из них) / NO SPEAKER /
+  // TUNING / трек
   const yc = y + TRACK_Y;
-  const flashes = [
-    [p.volumeT0, VOLUME_S, () => drawVolume(ctx, tx0, yc, tx1 - tx0, p.volume), typeof p.volume === "number"],
-    [p.modeT0, MODE_S, () => drawMode(ctx, tx0, yc, tx1 - tx0, p.mode), true],
-    [p.favT0, FAV_S, () => drawFavorite(ctx, tx0, yc, tx1 - tx0, p.favAdded), true],
-  ].filter(([t0, dur, , ok]) => ok && t0 >= 0 && now - t0 < dur);
-  if (flashes.length) {
-    flashes.reduce((a, b) => (b[0] > a[0] ? b : a))[2]();
+  const af = alarmFlashFor(ctx, now);
+  const flash = newestFlash([
+    typeof p.volume === "number" && { t0: p.volumeT0, dur: VOLUME_S, draw: () => drawVolume(ctx, tx0, yc, tx1 - tx0, p.volume) },
+    { t0: p.modeT0, dur: MODE_S, draw: () => drawMode(ctx, tx0, yc, tx1 - tx0, p.mode) },
+    { t0: p.favT0, dur: FAV_S, draw: () => drawFavorite(ctx, tx0, yc, tx1 - tx0, p.favAdded) },
+    af && { t0: af.t0, dur: ALARM_FLASH_S, draw: () => drawFlash(ctx, tx0, yc, tx1 - tx0, lockSprite(!af.on), flashText(af.on)) },
+  ], now);
+  if (flash) {
+    flash.draw();
   } else if (radio.state === "waiting_output") {
     drawNoSpeaker(ctx, tx0 - 2, yc);
   } else if (radio.state === "connecting") {
@@ -601,6 +606,18 @@ function drawTrackLine(ctx, p, now, tx0, tx1, yc, wipe, barX) {
   } else {
     draw(p.track, p.trackT0, tx0, tx1, null);
   }
+}
+
+/**
+ * Вспышка ALARM ON / ALARM OFF, когда плашки радио нет: своя плашка того же размера на месте радио (вместо погоды
+ * на 2.5 с). Вызывать после drawRadio (вернул null). Возвращает прямоугольник или null.
+ */
+export function drawAlarmFlash(ctx, state, safe, liftPx = 0) {
+  const f = alarmFlashFor(ctx, state?.now ?? 0);
+  if (!f) return null;
+  const r = radioRect(safe, indicatorsWidth(ctx), liftPx);
+  drawFlashPlate(ctx, r, f, plateSprite(r.w, r.h, { chamfer: 9 }));
+  return r;
 }
 
 /** Для отладки/тестов: сбросить анимационное состояние холста. */

@@ -1,12 +1,14 @@
 // Shell: menu, status bar, routing, notifications from WS events.
 import { h, icon, clear, fmt, kmh, isNum, compassWord } from "./dom.js";
-import { api, goLogin, errText } from "./api.js";
+import { api, goLogin, errText, ROOT } from "./api.js";
+import { registerSw } from "./push.js";
 import { store, start, on } from "./store.js";
 import { toast, banner } from "./ui.js";
 import { openPreview } from "./preview.js";
 
 const PAGES = [
   { id: "dashboard", title: "Dashboard", icon: "dash", load: () => import("./pages/dashboard.js") },
+  { id: "alarm", title: "Alarm", icon: "alarm", load: () => import("./pages/alarm.js") },
   { id: "tracking", title: "Tracking", icon: "track", load: () => import("./pages/tracking.js") },
   { id: "camera", title: "Camera", icon: "cam", load: () => import("./pages/camera.js") },
   { id: "recordings", title: "Recordings", icon: "rec", load: () => import("./pages/recordings.js") },
@@ -14,6 +16,7 @@ const PAGES = [
   { id: "bluetooth", title: "Bluetooth", icon: "bt", load: () => import("./pages/bluetooth.js") },
   { id: "nav", title: "Navigation", icon: "nav", load: () => import("./pages/nav.js") },
   { id: "compass", title: "Compass", icon: "compass", load: () => import("./pages/compass.js") },
+  { id: "level", title: "Level", icon: "level", load: () => import("./pages/level.js") },
   { id: "gps", title: "GPS", icon: "gps", load: () => import("./pages/gps.js") },
   { id: "controls", title: "Controls", icon: "keys", load: () => import("./pages/controls.js") },
   { id: "system", title: "System", icon: "sys", load: () => import("./pages/system.js") },
@@ -142,6 +145,23 @@ function setOffline(v) {
 }
 // the device came back (WS delivers telemetry again) — hide the banner
 on("conn", (o) => { if (o && store.offline) setOffline(false); });
+
+// ───── service worker: push notifications (docs/contracts/alarm.md §7), only in a secure context ─────
+registerSw();
+if (window.isSecureContext && "serviceWorker" in navigator) {
+  // a click on a notification while the admin is open: sw.js focuses this window and sends the page to open
+  navigator.serviceWorker.addEventListener("message", (ev) => {
+    const m = ev.data;
+    if (!m || m.type !== "fnav-open" || typeof m.url !== "string") return;
+    let u;
+    try { u = new URL(m.url, location.href); } catch { return; }
+    if (u.origin !== location.origin || !u.pathname.startsWith(ROOT + "admin/")) return;
+    const isIndex = (p) => p === ROOT + "admin/" || p === ROOT + "admin/index.html";
+    if (isIndex(u.pathname) && isIndex(location.pathname)) {
+      if (location.hash !== u.hash) location.hash = u.hash;
+    } else location.href = u.href;
+  });
+}
 
 // ───── startup ─────
 (async function init() {

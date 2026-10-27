@@ -11,6 +11,13 @@ clients get no auth exemption there, and with --offline (or POST /api/_mock/offl
 server itself answers works (api/tracking/*, login/logout/session with "offline": true).
 The tracking journal is a few weeks of simulated driving; POST /api/_mock/tracking-down → 503.
 
+Alarm, level and push (docs/contracts/alarm.md, level.md) are fake state machines:
+    POST /api/alarm/simulate {"kind": "impact"|"tilt"|"move", "g": 0.5}   an event (when armed), a jolt on the meter
+    POST /api/_mock/park {"on": true|false}       stop / drive on (speed 0: the level widget on the screen)
+    POST /api/_mock/alarm {"sensor": false, "relay": false}, /api/_mock/level {"sensor": false, "rocking": true}
+    POST /api/_mock/push {"status": 503|404|null}  api/push/* answer like a server without push support
+Push subscriptions are kept in memory; nothing is really sent (test → "sent").
+
 Telemetry comes from fnav.mock.sensors.MockSensorHub; settings live in memory (fnav.models.Settings).
 """
 
@@ -22,6 +29,7 @@ import contextlib
 import io
 import itertools
 import json
+import math
 import queue
 import random
 import re
@@ -442,6 +450,8 @@ def build_telemetry() -> dict:
     )
     out = tel.model_dump(mode="json")
     out["radio"] = radio.compact()  # radio.md §5 (added as a dict: the model may not have the field yet)
+    out["alarm"] = alarm.compact()  # alarm.md §4
+    out["level"] = level.compact()  # level.md
     return out
 
 
@@ -1418,6 +1428,555 @@ async def change_password(request: Request):
         return err(422, "New password must be at least 6 characters")
     PASSWORD = b["new"]
     return {"ok": True}
+
+
+# ── alarm (docs/contracts/alarm.md): state machine, fake shock sensor, event log ──
+ALARM_SIM_KINDS = ("impact", "tilt", "move")
+
+
+class FakeAlarm:
+    """off → arming (arm_delay_s) → armed → (event) → triggered (siren + 30 s after the last event) → armed."""
+
+    def __init__(self) -> None:
+        self.state = "off"
+        self.armed_at: float | None = None
+        self.arm_until = 0.0
+        self.events: list[dict] = []  # newest first (journal: last 200)
+        self.seq = 0
+        self.last: dict | None = None
+        self.siren_until = 0.0
+        self.last_event = 0.0
+        self.spike = (0.0, 0.0)  # (g, at) — a knock on the meter, decays in ~1 s
+        self.next_bump = time.time() + 5
+        self.sensor_ok = True
+        self.relay_configured = True
+        self.pending = 0
+        self.sent_at = 0.0
+        now = time.time()
+        for ago, kind, data in ((26 * 3600, "test", {}), (50 * 3600, "impact", {"peak_g": 0.31}),
+                                (50 * 3600 - 40, "tilt", {"tilt_deg": 4.1})):
+            self.events.append(self._event(kind, data, now - ago))
+        self.events.sort(key=lambda e: e["ts"], reverse=True)
+
+    @staticmethod
+    def cfg():
+        return settings.alarm
+
+    def tick(self) -> None:
+        now = time.time()
+        if self.state == "arming" and now >= self.arm_until:
+            self.state, self.armed_at = "armed", now
+        if self.state == "triggered" and now > max(self.siren_until, self.last_event + 30):
+            self.state = "armed"
+        if self.pending and now - self.sent_at > 2:  # "sent" to the server
+            self.pending = 0
+
+    def arm_in(self) -> int | None:
+        return max(0, math.ceil(self.arm_until - time.time())) if self.state == "arming" else None
+
+    def siren(self) -> bool:
+        return self.state in ("armed", "triggered") and time.time() < self.siren_until
+
+    def level_g(self) -> float | None:
+        if not self.sensor_ok:
+            return None
+        now = time.time()
+        if now >= self.next_bump:  # wind, a passing truck: small jolts, below any sane threshold
+            self.next_bump = now + 6 + random.random() * 12
+            if now - self.spike[1] > 2:
+                self.spike = (0.015 + random.random() * 0.05, now)
+        base = 0.002 + random.random() * 0.004
+        g, at = self.spike
+        # level_g is the maximum over the telemetry interval: the jolt itself is caught by the next packet
+        decay = g if now - at < 0.12 else g * math.exp(-(now - at - 0.12) / 0.3) if now - at < 3 else 0.0
+        return round(max(base, decay * (0.85 + random.random() * 0.15)), 4)
+
+    def tilt_deg(self) -> float | None:
+        if self.state not in ("armed", "triggered") or not self.sensor_ok:
+            return None
+        return round(abs(0.35 + 0.25 * math.sin(time.time() / 23)), 2)
+
+    def arm(self) -> None:
+        if self.state != "off":
+            return
+        delay = self.cfg().arm_delay_s
+        if delay <= 0:
+            self.state, self.armed_at = "armed", time.time()
+        else:
+            self.state, self.arm_until = "arming", time.time() + delay
+
+    def disarm(self) -> None:
+        self.state, self.armed_at, self.siren_until = "off", None, 0.0
+
+    @staticmethod
+    def _event(kind: str, data: dict, ts: float | None = None) -> dict:
+        ts = time.time() if ts is None else ts
+        hm = datetime.fromtimestamp(ts).strftime("%H:%M")
+        title, body = {
+            "impact": ("Impact detected", f"Hit {data.get('peak_g', 0):.2f} g at {hm}"),
+            "tilt": ("Van tilted", f"Tilted {data.get('tilt_deg', 0):.1f}° at {hm}"),
+            "move": ("Van is moving", f"{data.get('distance_m', 0):.0f} m from the parking spot at {hm}"),
+            "test": ("Test alarm", f"Alarm notifications work ({hm})"),
+        }[kind]
+        return {"id": secrets.token_hex(16), "ts": round(ts, 3), "kind": kind, "title": title, "body": body,
+                "url": "#/tracking" if kind == "move" else "#/alarm", "data": data}
+
+    def fire(self, kind: str, data: dict) -> None:
+        """A real event (not test): log, protect the current recording, siren, outbox, push."""
+        now = time.time()
+        cur = next((r for r in recordings if r["in_progress"]), None)
+        if cur:
+            cur["protected"] = True
+            data = {**data, "segment": cur["path"].split("/")[-1]}
+        ev = self._event(kind, data, now)
+        self._log(ev)
+        self.seq += 1
+        self.last = {"kind": kind, "ts": ev["ts"], "title": ev["title"]}
+        self.state, self.last_event = "triggered", now
+        c = self.cfg()
+        if c.siren and bt.output_connected():
+            self.siren_until = now + c.siren_s
+
+    def test(self) -> None:
+        self._log(self._event("test", {}))
+
+    def _log(self, ev: dict) -> None:
+        self.events.insert(0, ev)
+        del self.events[200:]
+        if self.relay_configured:
+            self.pending += 1
+            self.sent_at = time.time()
+            for s in push_subs:  # as if fnav-relay delivered it
+                s["last_ok"] = round(time.time() + 1, 3)
+
+    def simulate(self, kind: str, g: float) -> None:
+        c = self.cfg()
+        if kind == "impact" and self.sensor_ok:
+            self.spike = (g, time.time())  # seen on the meter in any state
+        if self.state not in ("armed", "triggered"):
+            return
+        if kind == "impact":
+            if self.sensor_ok and g >= c.impact_g:
+                self.fire("impact", {"peak_g": round(g, 3)})
+        elif kind == "tilt":
+            if self.sensor_ok and c.tilt_enabled:
+                self.fire("tilt", {"tilt_deg": round(c.tilt_deg + 1.0, 1)})
+        elif c.move_enabled:
+            gps = hub.snapshot().gps
+            self.fire("move", {"distance_m": c.move_m + 50, "lat": gps.lat, "lon": gps.lon})
+
+    def status(self) -> dict:
+        self.tick()
+        c = self.cfg()
+        return {
+            "state": self.state, "armed_at": self.armed_at, "arm_in_s": self.arm_in(),
+            "sensor": {"ok": self.sensor_ok, "model": "MPU-6050" if self.sensor_ok else None, "address": c.sensor_address,
+                       "error": None if self.sensor_ok else "I2C bus 1, 0x68: [Errno 121] Remote I/O error"},
+            "level_g": self.level_g(), "tilt_deg": self.tilt_deg(), "siren": self.siren(), "events": self.events[:100],
+            "relay": {"configured": self.relay_configured, "pending": self.pending},
+        }
+
+    def compact(self) -> dict:
+        self.tick()
+        return {"state": self.state, "arm_in_s": self.arm_in(), "level_g": self.level_g(), "sensor_ok": self.sensor_ok,
+                "siren": self.siren(), "seq": self.seq, "last": self.last}
+
+
+# ── push (docs/contracts/alarm.md §6): what fnav-relay answers under /fnadmin/api/push/; nothing is really sent ──
+PUSH_PUBLIC_KEY = "BKv6h1WxfR0q3cBTKnOKOLQC7Pz5_JHornNVyAQFRL-1ehYb1YkzD--Ryn4QOrP6oIU_Q7SZioFOjZZgqvzwkp8"
+push_subs: list[dict] = []
+push_ids = itertools.count(1)
+PUSH_DOWN: int | None = None  # POST /api/_mock/push {"status": 503|404} → every api/push/* answers that
+
+
+def _push_guard() -> JSONResponse | None:
+    if PUSH_DOWN == 503:
+        return err(503, "Push needs python3-cryptography on the server")
+    if PUSH_DOWN:
+        return err(PUSH_DOWN, "Not found")
+    return None
+
+
+def _host(url: str) -> str:
+    m = re.match(r"^https?://([^/:]+)", url or "")
+    return m.group(1) if m else ""
+
+
+# ── level (docs/contracts/level.md): fake tilt of the van, sensor mounted a bit crooked, calibration flow ──
+LEVEL_AXES = {"x+": (1.0, 0.0, 0.0), "x-": (-1.0, 0.0, 0.0), "y+": (0.0, 1.0, 0.0), "y-": (0.0, -1.0, 0.0),
+              "z+": (0.0, 0.0, 1.0), "z-": (0.0, 0.0, -1.0)}
+
+
+def _v_unit(v):
+    n = math.sqrt(sum(x * x for x in v)) or 1.0
+    return tuple(x / n for x in v)
+
+
+def _v_dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _v_cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+class FakeLevel:
+    """The van stands on a slope (pitch 1.3°, roll −0.8° as it faces now); the board is x forward, y left, z up,
+    glued 2° / 1.5° crooked. A two-point step 1 "turns the van around": the slope flips, the crooked mount stays."""
+
+    def __init__(self) -> None:
+        self.sensor_ok = True
+        self.rocking = False
+        self.slope = (1.3, -0.8)  # pitch, roll of the parking spot as the van faces it, °
+        self.mount = (2.0, -1.5)  # board tilt about the van's lateral and longitudinal axes, °
+        self.step1: tuple | None = None
+        self.measuring = False
+        self.learning = False
+        self.learn_s = 0.0
+        self.learn_t = 0.0
+
+    def raw(self) -> tuple[float, float, float] | None:
+        if not self.sensor_ok:
+            return None
+        t = time.time()
+        p = math.radians(self.slope[0] + 0.03 * math.sin(t / 7))
+        r = math.radians(self.slope[1] + 0.02 * math.sin(t / 5))
+        x, y, z = _v_unit((math.tan(p), -math.tan(r), 1.0))  # "up" in board axes: x = F, y = −R (left), z = U
+        mp, mr = math.radians(self.mount[0]), math.radians(self.mount[1])
+        x, z = x * math.cos(mp) - z * math.sin(mp), x * math.sin(mp) + z * math.cos(mp)
+        y, z = y * math.cos(mr) - z * math.sin(mr), y * math.sin(mr) + z * math.cos(mr)
+        speed = hub.snapshot().gps.speed_mps or 0.0
+        n = 0.0006 + (0.02 if speed > 0.5 else 0.0) + (0.01 if self.rocking else 0.0)
+        return tuple(round(v + random.gauss(0, n), 5) for v in (x, y, z))
+
+    def still(self) -> bool:
+        return self.sensor_ok and not self.rocking and (hub.snapshot().gps.speed_mps or 0.0) < 0.3
+
+    def basis(self):
+        cal = settings.level.calibration
+        if cal is not None:
+            up, fwd = _v_unit(cal.up), cal.forward
+        else:  # not calibrated: the board axis nearest to gravity is "up", x+ is forward
+            a = self.raw() or (0.0, 0.0, 1.0)
+            i = max(range(3), key=lambda k: abs(a[k]))
+            up = tuple((1.0 if a[i] > 0 else -1.0) if k == i else 0.0 for k in range(3))
+            fwd = LEVEL_AXES["x+"] if i != 0 else LEVEL_AXES["y+"]
+        d = _v_dot(fwd, up)
+        f = _v_unit(tuple(fv - d * uv for fv, uv in zip(fwd, up)))
+        return f, _v_cross(f, up), up
+
+    def angles(self) -> tuple[float | None, float | None]:
+        a = self.raw()
+        if a is None:
+            return None, None
+        f, r, u = self.basis()
+        af, ar, au = _v_dot(a, f), _v_dot(a, r), _v_dot(a, u)
+        return (round(math.degrees(math.atan2(af, math.hypot(ar, au))), 2),
+                round(math.degrees(math.atan2(ar, math.hypot(af, au))), 2))
+
+    @staticmethod
+    def wheels(pitch, roll) -> dict | None:
+        if pitch is None or roll is None:
+            return None
+        lv = settings.level
+        x, y = lv.wheelbase_m / 2, lv.track_m / 2
+        hs = {k: sx * x * math.tan(math.radians(pitch)) + sy * y * math.tan(math.radians(roll))
+              for k, sx, sy in (("fl", 1, -1), ("fr", 1, 1), ("rl", -1, -1), ("rr", -1, 1))}
+        top = max(hs.values())
+        return {k: round((top - v) * 100 * 2) / 2 for k, v in hs.items()}
+
+    def tick(self) -> None:
+        """Forward learning: while the van drives (the mock route speeds up and brakes), seconds accumulate."""
+        now = time.time()
+        if self.learning:
+            if (hub.snapshot().gps.speed_mps or 0) > 1.4 and self.learn_t:
+                self.learn_s = min(5.0, self.learn_s + (now - self.learn_t) * 0.35)
+            if self.learn_s >= 5.0:
+                self.learning = False
+                self.save_forward((1.0, 0.0, 0.0), "driving", None)
+        self.learn_t = now
+
+    def spread(self) -> float | None:
+        return None if self.learn_s < 1 else round(max(3.0, 14.0 - self.learn_s * 2.2), 1)
+
+    @staticmethod
+    def save_forward(fwd, source: str, axis: str | None) -> None:
+        cal = settings.level.calibration
+        data = settings.model_dump(mode="json")
+        data["level"]["calibration"] = {**cal.model_dump(mode="json"), "forward": list(fwd), "forward_source": source,
+                                        "axis": axis, "ts": round(time.time(), 3)}
+        apply_settings(Settings.model_validate(data))
+
+    @staticmethod
+    def save_up(up, method: str) -> None:
+        cal = settings.level.calibration
+        if cal is not None and abs(_v_dot(_v_unit(cal.forward), up)) < 0.9:
+            fwd, src, axis = list(cal.forward), cal.forward_source, cal.axis
+        else:
+            axis = "x+" if abs(up[0]) < 0.9 else "y+"
+            fwd, src = list(LEVEL_AXES[axis]), "axis"
+        data = settings.model_dump(mode="json")
+        data["level"]["calibration"] = {"up": [round(v, 6) for v in up], "forward": fwd, "method": method,
+                                        "forward_source": src, "axis": axis, "ts": round(time.time(), 3)}
+        apply_settings(Settings.model_validate(data))
+
+    def status(self) -> dict:
+        self.tick()
+        pitch, roll = self.angles()
+        cal = settings.level.calibration
+        return {"sensor_ok": self.sensor_ok, "calibrated": cal is not None, "pitch_deg": pitch, "roll_deg": roll,
+                "still": self.still(), "raw": self.raw(), "wheels_cm": self.wheels(pitch, roll),
+                "calibration": cal.model_dump(mode="json") if cal else None,
+                "wizard": {"two_point_step": 1 if self.step1 else 0, "learning": self.learning,
+                           "learn_s": round(self.learn_s, 2), "learn_spread_deg": self.spread() if self.learning else None}}
+
+    def compact(self) -> dict:
+        pitch, roll = self.angles()
+        return {"sensor_ok": self.sensor_ok, "calibrated": settings.level.calibration is not None,
+                "pitch_deg": pitch, "roll_deg": roll, "wheels_cm": self.wheels(pitch, roll)}
+
+
+alarm = FakeAlarm()
+level = FakeLevel()
+
+
+@app.get("/api/alarm")
+async def alarm_status():
+    return alarm.status()
+
+
+@app.post("/api/alarm/arm")
+async def alarm_arm():
+    alarm.arm()
+    return alarm.status()
+
+
+@app.post("/api/alarm/disarm")
+async def alarm_disarm():
+    alarm.disarm()
+    return alarm.status()
+
+
+@app.post("/api/alarm/silence")
+async def alarm_silence():
+    alarm.siren_until = 0.0
+    return alarm.status()
+
+
+@app.post("/api/alarm/test")
+async def alarm_test():
+    alarm.test()
+    return alarm.status()
+
+
+@app.delete("/api/alarm/events")
+async def alarm_clear():
+    alarm.events.clear()
+    return alarm.status()
+
+
+@app.post("/api/alarm/simulate")
+async def alarm_simulate(request: Request):
+    """{"kind": "impact"|"tilt"|"move", "g": 0.5} — as from the sensor / GPS (an event only when armed)."""
+    b = await request.json() if (await request.body()) else {}
+    kind, g = b.get("kind", "impact"), b.get("g", 0.5)
+    if kind not in ALARM_SIM_KINDS or isinstance(g, bool) or not isinstance(g, (int, float)) or not 0 < g <= 16:
+        return err(422, "kind must be impact, tilt or move; 0 < g <= 16")
+    alarm.simulate(kind, float(g))
+    return alarm.status()
+
+
+@app.post("/api/_mock/alarm")
+async def mock_alarm(request: Request):
+    """{"sensor": false} — the shock sensor stops answering; {"relay": false} — no server link."""
+    b = await request.json() if (await request.body()) else {}
+    if "sensor" in b:
+        alarm.sensor_ok = bool(b["sensor"])
+    if "relay" in b:
+        alarm.relay_configured = bool(b["relay"])
+    return alarm.status()
+
+
+@app.get("/api/push/key")
+async def push_key():
+    return _push_guard() or {"public_key": PUSH_PUBLIC_KEY}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request):
+    if (r := _push_guard()) is not None:
+        return r
+    b = await request.json()
+    sub = b.get("subscription") if isinstance(b, dict) else None
+    endpoint = sub.get("endpoint") if isinstance(sub, dict) else None
+    keys = sub.get("keys") if isinstance(sub, dict) else None
+    if not isinstance(endpoint, str) or not endpoint.startswith("https://") or not isinstance(keys, dict) \
+            or not keys.get("p256dh") or not keys.get("auth"):
+        return err(400, "Invalid subscription")
+    name = " ".join(str(b.get("name") or "").split())[:64]
+    for s in push_subs:
+        if s["endpoint"] == endpoint:
+            s.update(name=name, last_error=None)
+            return {"ok": True, "id": s["id"]}
+    s = {"id": next(push_ids), "endpoint": endpoint, "name": name, "created": round(time.time(), 3), "last_ok": None,
+         "last_error": None, "host": _host(endpoint)}
+    push_subs.append(s)
+    return {"ok": True, "id": s["id"]}
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request):
+    if (r := _push_guard()) is not None:
+        return r
+    endpoint = (await request.json()).get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint:
+        return err(400, "Field 'endpoint' is required")
+    push_subs[:] = [s for s in push_subs if s["endpoint"] != endpoint]
+    return {"ok": True}
+
+
+@app.get("/api/push/subscriptions")
+async def push_list():
+    if (r := _push_guard()) is not None:
+        return r
+    keys = ("id", "name", "created", "last_ok", "last_error", "host")
+    return {"subscriptions": [{k: s[k] for k in keys} for s in push_subs]}
+
+
+@app.delete("/api/push/subscriptions/{sid}")
+async def push_delete(sid: int):
+    if (r := _push_guard()) is not None:
+        return r
+    n = len(push_subs)
+    push_subs[:] = [s for s in push_subs if s["id"] != sid]
+    return {"ok": True} if len(push_subs) < n else err(404, "Subscription not found")
+
+
+@app.post("/api/push/test")
+async def push_test(request: Request):
+    if (r := _push_guard()) is not None:
+        return r
+    endpoint = (await request.json()).get("endpoint")
+    targets = [s for s in push_subs if endpoint is None or s["endpoint"] == endpoint]
+    if endpoint is not None and not targets:
+        return err(404, "Subscription not found")
+    for s in targets:
+        s["last_ok"], s["last_error"] = round(time.time(), 3), None
+    return {"ok": True, "sent": len(targets), "failed": 0, "errors": []}
+
+
+@app.post("/api/_mock/push")
+async def mock_push(request: Request):
+    """{"status": 503} — the server has no push support; 404 — an old server; null — back to normal."""
+    global PUSH_DOWN
+    b = await request.json() if (await request.body()) else {}
+    PUSH_DOWN = b.get("status") or None
+    return {"ok": True, "status": PUSH_DOWN}
+
+
+@app.get("/api/level")
+async def level_status():
+    return level.status()
+
+
+@app.post("/api/level/calibration/level")
+async def level_zero(request: Request):
+    b = await request.json()
+    method, step = b.get("method"), b.get("step")
+    if method not in ("single", "two_point") or (method == "two_point" and step not in (1, 2)):
+        return err(422, "Invalid request: method single, or two_point with step 1 or 2")
+    if not level.sensor_ok:
+        return err(503, "Level sensor is not connected")
+    if method == "two_point" and step == 2 and level.step1 is None:
+        return err(409, "Take the first measurement (step 1) first")
+    if level.measuring:
+        return err(409, "A measurement is already in progress")
+    level.measuring = True
+    try:
+        samples = []
+        for _ in range(15):  # the average of 3 s; the van must stay still all the time
+            await asyncio.sleep(0.2)
+            a = level.raw()
+            if a is None:
+                return err(503, "Level sensor is not connected")
+            if not level.still():
+                return err(409, "The van is moving or rocking. Keep still and try again")
+            samples.append(a)
+    finally:
+        level.measuring = False
+    a = tuple(sum(s[k] for s in samples) / len(samples) for k in range(3))
+    if method == "two_point" and step == 1:
+        level.step1 = a
+        level.slope = (-level.slope[0], -level.slope[1])  # the driver turns the van around on the same spot
+        return level.status()
+    if method == "two_point":
+        up = _v_unit(tuple(x + y for x, y in zip(level.step1, a)))
+        level.step1 = None
+    else:
+        up = _v_unit(a)
+    level.save_up(up, method)
+    return level.status()
+
+
+@app.post("/api/level/calibration/forward")
+async def level_forward(request: Request):
+    b = await request.json()
+    axis, learn = b.get("axis"), b.get("learn")
+    if (axis is None) == (learn is None) or (axis is not None and axis not in LEVEL_AXES):
+        return err(422, "Invalid request: give either axis or learn")
+    if learn is False:
+        level.learning = False
+        return level.status()
+    cal = settings.level.calibration
+    if cal is None:
+        return err(409, "Calibrate the level first")
+    if axis is not None:
+        if abs(_v_dot(LEVEL_AXES[axis], _v_unit(cal.up))) >= 0.9:
+            return err(409, f"Axis {axis} points up or down: choose the one that points forward")
+        level.learning = False
+        level.save_forward(LEVEL_AXES[axis], "axis", axis)
+        return level.status()
+    if not level.sensor_ok:
+        return err(503, "Level sensor is not connected")
+    level.learning, level.learn_s, level.learn_t = True, 0.0, time.time()
+    return level.status()
+
+
+@app.delete("/api/level/calibration")
+async def level_reset():
+    level.step1, level.learning = None, False
+    data = settings.model_dump(mode="json")
+    data["level"]["calibration"] = None
+    apply_settings(Settings.model_validate(data))
+    return level.status()
+
+
+@app.post("/api/_mock/level")
+async def mock_level(request: Request):
+    """{"sensor": false} — no sensor; {"rocking": true} — calibration answers 409."""
+    b = await request.json() if (await request.body()) else {}
+    if "sensor" in b:
+        level.sensor_ok = bool(b["sensor"])
+    if "rocking" in b:
+        level.rocking = bool(b["rocking"])
+    return level.status()
+
+
+PARK_SPEEDUP: float | None = None
+
+
+@app.post("/api/_mock/park")
+async def mock_park(request: Request):
+    """{"on": true} — the van stops where it is (speed 0: the level widget, a parked alarm); false — drives on."""
+    global PARK_SPEEDUP
+    b = await request.json() if (await request.body()) else {}
+    if b.get("on", True):
+        if PARK_SPEEDUP is None:
+            PARK_SPEEDUP = hub._speedup
+        hub._speedup, hub._speed = 0.0, 0.0
+    elif PARK_SPEEDUP is not None:
+        hub._speedup, PARK_SPEEDUP = PARK_SPEEDUP, None
+    return {"ok": True, "parked": PARK_SPEEDUP is not None}
 
 
 # ── dev helpers ──

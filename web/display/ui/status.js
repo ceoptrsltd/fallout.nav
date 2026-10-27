@@ -1,6 +1,7 @@
-// Индикаторы (GPS, REC, сеть) и крупные предупреждения (NO GPS, NO LINK).
+// Индикаторы (GPS, REC, сеть, охрана) и крупные предупреждения (NO GPS, NO LINK).
 
-import { C, blinkOn, blit, chamferPath, fontLabel, fontNum, fontStencil, hazardSprite, outlinedText, plateSprite, textWidth } from "./theme.js";
+import { alarmIndicator, drawLock } from "./alarm.js";
+import { C, blinkOn, blit, chamferPath, fontLabel, fontNum, fontStencil, hazardSprite, outlinedText, plateSprite, sprite, textWidth } from "./theme.js";
 
 const ROW_H = 36;
 const FONT = () => fontLabel(25);
@@ -85,16 +86,28 @@ export function indicatorsWidth(ctx) {
 /** Высота строк индикаторов и зазор между ними. */
 export const INDICATOR_ROW = { h: ROW_H, gap: 6 };
 
+/** Светлая («инверсная») плашка строки — для мигания сработавшей охраны. */
+function invPlate(w, h) {
+  return sprite("row-inverse", w, h, (c) => {
+    chamferPath(c, 1.5, 1.5, w - 3, h - 3, 6);
+    c.fillStyle = C.hazard;
+    c.fill();
+    c.lineWidth = 3;
+    c.strokeStyle = C.dark;
+    c.stroke();
+  });
+}
+
 /** Строка-индикатор справа: (xr — правый край, y — верх). Возвращает ширину. */
-function row(ctx, xr, y, text, iconW, drawIcon, { dim = false, font = FONT(), minW = 0 } = {}) {
+function row(ctx, xr, y, text, iconW, drawIcon, { dim = false, font = FONT(), minW = 0, invert = false } = {}) {
   const w = Math.max(minW, rowWidth(ctx, text, iconW, font));
   const x = Math.round(xr - w);
-  blit(ctx, plateSprite(w, ROW_H, { chamfer: 6, rivets: false }), x, y);
+  blit(ctx, invert ? invPlate(w, ROW_H) : plateSprite(w, ROW_H, { chamfer: 6, rivets: false }), x, y);
   if (drawIcon) drawIcon(x + 14 + iconW / 2, y + ROW_H / 2);
   outlinedText(ctx, text, x + w - 14, y + ROW_H / 2, font, {
     align: "right",
-    fill: dim ? C.inkDim : C.ink,
-    lw: 4,
+    fill: invert ? C.dark : dim ? C.inkDim : C.ink,
+    lw: invert ? 0 : 4,
   });
   return w;
 }
@@ -147,6 +160,17 @@ export function drawIndicators(ctx, state, safe) {
   // интернет: показываем только когда точно нет (null = неизвестно — молчим)
   if (v.internet === false) {
     row(ctx, xr, y, "NO NET", 24, (x, yy) => iconAntennaOff(ctx, x, yy));
+    y -= ROW_H + 6;
+  }
+
+  // охрана (alarm.js): ARM 45 / ARMED / ALARM — сработала: мигает инверсией (светлая плашка, тёмные буквы)
+  const al = alarmIndicator(t.alarm);
+  if (al) {
+    const inv = al.kind === "triggered" && blinkOn(now, 2, 0.5);
+    row(ctx, xr, y, al.text, 22, (x, yy) => drawLock(ctx, x, yy, 22, false, inv ? C.dark : C.ink, inv ? C.hazard : C.shadow), {
+      invert: inv,
+      minW: al.kind === "arming" ? rowWidth(ctx, "ARM 88", 22) : 0, // отсчёт не «дышит» шириной
+    });
     y -= ROW_H + 6;
   }
   return { x: xr - 200, y, w: 200, h: safe.y + safe.h - y };

@@ -1,9 +1,11 @@
 // HUD fallout.nav — единая точка входа для рендера экрана (агент B).
 // Контракт: docs/contracts/display.md («API компонентов C»).
 
+import { drawAlarmBanner, updateAlarm } from "./alarm.js";
 import { drawClock } from "./clock.js";
 import { compassStyles, drawCompass } from "./compass.js";
-import { drawRadio } from "./radio.js";
+import { drawLevel } from "./level.js";
+import { drawAlarmFlash, drawRadio } from "./radio.js";
 import { SPEED_BOX, drawSpeed } from "./speed.js";
 import { drawIndicators, drawWarnings } from "./status.js";
 import { clearSprites, safeRect, setting } from "./theme.js";
@@ -12,6 +14,7 @@ import { drawVehicle } from "./vehicle.js";
 import { drawWeather, drawWind } from "./weather.js";
 
 export { compassStyles, drawRadio, drawTrail, drawVehicle };
+export { LEVEL_BOX, drawLevelPanel } from "./level.js";
 
 const FONTS = [
   { family: "FnavRusso", file: "RussoOne-Regular.ttf", descriptors: { weight: "400" } },
@@ -60,9 +63,11 @@ export function loadUi() {
  * Раскладка (768×576, heading_up — машина в нижней трети по центру):
  *   часы — слева вверху (display.show_clock); компас — вверху (v1/v3 справа, v2 по центру);
  *   предупреждения — колонкой слева под часами;
- *   скорость — слева внизу; индикаторы — справа внизу; радио (когда играет, иначе погода) — внизу между ними;
- *   ветер (state.weather) — струйки вокруг машины, под всеми плашками.
- *   Центральная полоса над машиной (дорога впереди) свободна.
+ *   скорость — слева внизу (машина стоит — на её месте уровень, ui/level.js); индикаторы — справа внизу
+ *   (с охраной — строка ARM/ARMED/ALARM); радио (когда играет, иначе погода; переключили охрану — 2.5 с вспышка
+ *   ALARM ON/OFF) — внизу между ними; ветер (state.weather) — струйки вокруг машины, под всеми плашками.
+ *   Центральная полоса над машиной (дорога впереди) свободна; сработала охрана — 10 с крупная плашка
+ *   IMPACT / TILTED / MOVING над машиной, поверх всего (машина стоит, дорога не нужна).
  * view.attribution — внизу по центру подпись источников карты (демо/удалённо): радио поднимается над ней.
  */
 export function drawHud(ctx, state) {
@@ -72,6 +77,7 @@ export function drawHud(ctx, state) {
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
 
+  updateAlarm(ctx, state); // раз за кадр: вспышки и плашка охраны (alarm.js) читают это состояние
   drawWind(ctx, state); // под всеми плашками
   const style = setting(state, "display.compass_style", "v1");
   const cr = drawCompass(ctx, state, safe, style);
@@ -85,9 +91,11 @@ export function drawHud(ctx, state) {
   }
   drawWarnings(ctx, state, safe, yTop);
 
-  drawSpeed(ctx, state, Math.round(safe.x), Math.round(safe.y + safe.h - SPEED_BOX.h));
+  if (!drawLevel(ctx, state, safe)) drawSpeed(ctx, state, Math.round(safe.x), Math.round(safe.y + safe.h - SPEED_BOX.h));
   drawIndicators(ctx, state, safe);
   const lift = state?.view?.attribution ? 17 : 0;
-  if (!drawRadio(ctx, state, safe, lift)) drawWeather(ctx, state, safe, lift); // радио выключено — погода
+  // радио выключено — вспышка охраны своей плашкой, иначе погода
+  if (!drawRadio(ctx, state, safe, lift) && !drawAlarmFlash(ctx, state, safe, lift)) drawWeather(ctx, state, safe, lift);
+  drawAlarmBanner(ctx, state, safe, [cr, clock]);
   ctx.restore();
 }

@@ -84,6 +84,11 @@ const ICONS = {
   keys: "M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z",
   vol: "M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z",
   search: "M15.5 14h-.8l-.3-.3A6.5 6.5 0 1 0 9.5 16a6.5 6.5 0 0 0 4.2-1.6l.3.3v.8l5 5 1.5-1.5-5-5zm-6 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9z",
+  // siren: dome with a highlight, base, three rays
+  alarm: "M4 18h16v3H4v-3zm2-1v-5a6 6 0 0 1 12 0v5H6zm3-4.5h1.5a1.5 1.5 0 0 1 1.5-1.5V9.5a3 3 0 0 0-3 3zM11 1h2v3h-2V1zM3.5 4.9l1.4-1.4L7 5.6 5.6 7 3.5 4.9zm17 0L18.4 7 17 5.6l2.1-2.1 1.4 1.4z",
+  // spirit level: bar with a window and the bubble in it
+  level: "M3 8h18a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2zm5 2v4h8v-4H8zm4 .6a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8z",
+  bell: "M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6v-5a6 6 0 0 0-4.5-5.8V4.5a1.5 1.5 0 0 0-3 0v.7A6 6 0 0 0 6 11v5l-2 2v1h16v-1l-2-2z",
 };
 
 export function icon(name, size) {

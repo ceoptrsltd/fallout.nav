@@ -93,6 +93,21 @@
     indicators, below the car — the road ahead, the compass and the warnings stay clear. Tuner dial with a needle
     (each station has its own spot), station name, track title (marquee when long).</p>
   <div class="grid" id="radio"></div>
+
+  <h2>Alarm</h2>
+  <p class="muted note">While the alarm is on, the indicator stack gets a padlock row: <code>ARM 45</code> during the
+    arm delay, <code>ARMED</code>, <code>ALARM</code> (inverted blink) when triggered. A new event shows a big blinking
+    <b>IMPACT / TILTED / MOVING</b> banner for 10 s. Switching the alarm on/off flashes <b>ALARM ON / OFF</b> for 2.5 s
+    in the radio line (the newest flash wins) or on its own plate when the radio is off. Stills:
+    <a href="alarm-level-preview.html">alarm-level-preview.html</a>.</p>
+  <div class="grid" id="alarm"></div>
+
+  <h2>Level</h2>
+  <p class="muted note">When the van has stood still for 3 s (below 1 km/h; gone at once above 3 km/h) the speedometer
+    gives way to the level: side view (pitch) and rear view (roll), tilted by an exaggerated angle against the
+    horizon marks, signed degrees and which side is higher; below — how much to raise each wheel, cm (top view, nose up),
+    or <b>LEVEL</b> when both angles are within 0.3°. <code>UNCAL</code> — not calibrated yet.</p>
+  <div class="grid" id="level"></div>
 </main>
 <script type="module" src="./gallery.js"></script>
 </body>

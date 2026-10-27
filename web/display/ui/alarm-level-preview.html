@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>fallout.nav — alarm and level states</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #16170f; color: #e7ecd6; font: 14px/1.4 system-ui, sans-serif; }
+  figure { margin: 0 0 18px; }
+  figcaption { padding: 4px 6px; color: #a6ab96; }
+  canvas { display: block; width: 768px; height: 576px; }
+  body.bw canvas { filter: grayscale(1); }
+  body.ntsc canvas { height: 480px; width: 720px; }  /* as the CRT gets it: 768x576 squeezed into 720x480 */
+</style>
+</head>
+<body>
+<!--
+  Deterministic stills of the alarm (docs/contracts/alarm.md §4) and the level widget (docs/contracts/level.md)
+  for design review and screenshots: every case is rendered once at fixed times, no animation loop.
+  ?case=<id> — only one case; ?bw=1 — grayscale (monochrome CRT); ?ntsc=1 — 720x480 squeeze as on the device;
+  ?bg=cam — "camera" background for all cases (no network needed).
+-->
+<div id="out"></div>
+<script type="module">
+import { drawHud, drawVehicle, loadUi } from "./index.js";
+import { DEFAULT_SETTINGS } from "../map/defaults.js";
+import { esriTileUrl } from "../map/esri.js";
+
+const W = 768, H = 576;
+const q = new URLSearchParams(location.search);
+document.body.classList.toggle("bw", q.get("bw") === "1");
+document.body.classList.toggle("ntsc", q.get("ntsc") === "1");
+
+const R = { state: "playing", station: "Wasteland FM", track: "Sally Chrome - Atomic Sunset", genre: "Oldies",
+            volume: 60, output: "Boombox", output_connected: true };
+const WX = { type: "weather", temp_c: 12.6, feels_c: 9, code: 2, is_day: true, wind_ms: 6.3, gust_ms: 11, wind_from_deg: 225,
+             days: [{ weekday: "MON", code: 61, t_max: 10.1, t_min: 7.9 }, { weekday: "TUE", code: 0, t_max: 16.3, t_min: 5.2 }],
+             stale: false };
+
+// alarm telemetry
+const A = (state, seq = 3, extra = {}) => ({ state, arm_in_s: null, level_g: 0.004, sensor_ok: true, siren: false, seq, last: null, ...extra });
+const OFF = A("off");
+const ARMED = A("armed");
+const hit = (kind, title) => A("triggered", 4, { siren: true, last: { kind, ts: 1761140000, title } });
+
+// level telemetry (wheel raises as fnav-core computes them: wheelbase 3.5 m, track 1.7 m, step 0.5 cm)
+function wheels(p, r, wb = 3.5, tr = 1.7) {
+  const t = (d) => Math.tan((d * Math.PI) / 180);
+  const hh = { fl: (wb / 2) * t(p) - (tr / 2) * t(r), fr: (wb / 2) * t(p) + (tr / 2) * t(r),
+               rl: -(wb / 2) * t(p) - (tr / 2) * t(r), rr: -(wb / 2) * t(p) + (tr / 2) * t(r) };
+  const top = Math.max(...Object.values(hh));
+  return Object.fromEntries(Object.entries(hh).map(([k, v]) => [k, Math.round((top - v) * 200) / 2]));
+}
+const L = (p, r, extra = {}) => ({ sensor_ok: true, calibrated: true, pitch_deg: p, roll_deg: r, wheels_cm: wheels(p, r), ...extra });
+
+// steps: [[time, {radio, alarm, level, speed}], …] drawn in order on the same canvas; the last one is shown.
+// speed — km/h (default 48); the level widget needs < 1 km/h for 3 s.
+const S = (o) => o;
+const still = (level, o = {}) => [[0, S({ level, speed: 0, ...o })], [3.5, S({ level, speed: 0, ...o })]];
+const CASES = [
+  // alarm
+  ["arming", "Arming: countdown in the indicator stack (ARM 45)", [[0, S({ radio: R, alarm: A("arming", 3, { arm_in_s: 45 }) })]]],
+  ["armed", "Armed: ARMED, padlock", [[0, S({ radio: R, alarm: ARMED })]]],
+  ["impact", "Impact: banner 0.2 s after the new seq (light phase)", [[0, S({ alarm: ARMED, speed: 0 })], [5, S({ alarm: hit("impact", "Impact detected"), speed: 0 })], [5.2, S({ alarm: hit("impact", "Impact detected"), speed: 0 })]], { weather: WX }],
+  ["impact-inv", "Impact: banner, inverse phase (0.5 s)", [[0, S({ alarm: ARMED, speed: 0 })], [5, S({ alarm: hit("impact"), speed: 0 })], [5.5, S({ alarm: hit("impact"), speed: 0 })]], { weather: WX }],
+  ["tilted", "Tilt event: TILTED", [[0, S({ alarm: ARMED })], [5, S({ alarm: hit("tilt", "Van tilted") })], [5.2, S({ alarm: hit("tilt") })]]],
+  ["moving", "GPS movement: MOVING", [[0, S({ alarm: ARMED })], [5, S({ alarm: hit("move", "Van is moving") })], [5.2, S({ alarm: hit("move") })]]],
+  ["banner-v2", "v2 compass (top centre): the banner goes below it", [[0, S({ alarm: ARMED })], [5, S({ alarm: hit("impact") })], [5.2, S({ alarm: hit("impact") })]], { style: "v2", orient: "north_up" }],
+  ["banner-gone", "11 s later: banner gone, the indicator says ALARM (inverted blink phase)", [[0, S({ alarm: ARMED })], [5, S({ alarm: hit("impact") })], [16.1, S({ alarm: hit("impact") })]]],
+  ["no-banner-on-load", "Triggered already when the screen starts: no banner (seq not new), only ALARM", [[0, S({ alarm: hit("impact") })], [0.6, S({ alarm: hit("impact") })]]],
+  ["flash-on-radio", "Alarm switched on while the radio plays: ALARM ON in the track line", [[0, S({ radio: R, alarm: OFF })], [3, S({ radio: R, alarm: OFF })], [3.01, S({ radio: R, alarm: A("arming", 3, { arm_in_s: 60 }) })], [3.6, S({ radio: R, alarm: A("arming", 3, { arm_in_s: 59 }) })]]],
+  ["flash-off-radio", "Alarm switched off while the radio plays: ALARM OFF", [[0, S({ radio: R, alarm: ARMED })], [3, S({ radio: R, alarm: ARMED })], [3.01, S({ radio: R, alarm: OFF })], [3.6, S({ radio: R, alarm: OFF })]]],
+  ["flash-newest", "Volume changed, then the alarm toggled 0.5 s later: the newest flash (ALARM ON) wins", [[0, S({ radio: R, alarm: OFF })], [3, S({ radio: R, alarm: OFF })], [3.01, S({ radio: { ...R, volume: 85 }, alarm: OFF })], [3.5, S({ radio: { ...R, volume: 85 }, alarm: ARMED })], [3.8, S({ radio: { ...R, volume: 85 }, alarm: ARMED })]]],
+  ["flash-on", "Radio off: ALARM ON on its own plate in the radio's place (instead of the weather)", [[0, S({ alarm: OFF })], [3, S({ alarm: OFF })], [3.01, S({ alarm: A("arming", 3, { arm_in_s: 60 }) })], [3.6, S({ alarm: A("arming", 3, { arm_in_s: 59 }) })]], { weather: WX }],
+  ["flash-off", "Radio off: ALARM OFF", [[0, S({ alarm: ARMED })], [3, S({ alarm: ARMED })], [3.01, S({ alarm: OFF })], [3.6, S({ alarm: OFF })]], { weather: WX }],
+  ["flash-over", "3 s after the toggle: the weather is back", [[0, S({ alarm: ARMED })], [3, S({ alarm: ARMED })], [3.01, S({ alarm: OFF })], [6.2, S({ alarm: OFF })]], { weather: WX }],
+  ["armed-camera", "Armed, camera mode, everything else down", [[0, S({ alarm: ARMED, radio: R })]], { camera: true, down: true }],
+  // level
+  ["level", "Level: both angles ≤ 0.3° — LEVEL frame instead of the wheels", still(L(0.2, -0.1)), { weather: WX }],
+  ["level-noseup", "Nose up 1.8°, right side low 1.2°: raise the rear and right wheels", still(L(1.8, -1.2)), { weather: WX }],
+  ["level-noseup-radio", "Same with the radio playing and the alarm armed", still(L(1.8, -1.2), { radio: R, alarm: ARMED })],
+  ["level-small", "Small tilt: 0.4° / 0.6° (exaggerated so it shows)", still(L(-0.4, 0.6)), { weather: WX }],
+  ["level-big", "Big tilt: nose down 7.5°, right high 9.3°", still(L(-7.5, 9.3)), { weather: WX }],
+  ["level-uncal", "Not calibrated: UNCAL tag", still(L(2.1, 0.4, { calibrated: false })), { weather: WX }],
+  ["level-wait", "Stopped only 2 s: still the speedometer", [[0, S({ level: L(1.8, -1.2), speed: 0 })], [2, S({ level: L(1.8, -1.2), speed: 0 })]], { weather: WX }],
+  ["level-nosensor", "No sensor: the speedometer stays", still(L(1.8, -1.2, { sensor_ok: false, pitch_deg: null, roll_deg: null, wheels_cm: null })), { weather: WX }],
+  ["level-moving", "Moving 20 km/h: the speedometer", [[0, S({ level: L(1.8, -1.2), speed: 0 })], [3.5, S({ level: L(1.8, -1.2), speed: 0 })], [4, S({ level: L(1.8, -1.2), speed: 20 })]], { weather: WX }],
+  ["level-down", "Level + no GPS / no link (warnings column)", still(L(1.2, 2.4)), { down: true, weather: WX }],
+  ["level-camera", "Level in camera mode", still(L(-1.4, -0.8)), { camera: true }],
+];
+
+function state(now, step, o = {}) {
+  const down = !!o.down;
+  const kmh = step.speed ?? 48;
+  return {
+    now,
+    telemetry: { gps: { fix: down ? "none" : "3d", sats_used: down ? 0 : 11, sats_visible: down ? 3 : 19 }, heading: { deg: down ? null : 40, source: down ? "none" : "gps" },
+                 display: { mode: o.camera ? "camera" : "map", orientation: o.orient ?? "heading_up" }, camera: { recording: !down },
+                 system: { internet: !down }, radio: step.radio ?? null, alarm: step.alarm ?? null, level: step.level ?? null,
+                 errors: [], speed_limit: null },
+    weather: o.weather ?? null,
+    settings: { display: { ...DEFAULT_SETTINGS.display, compass_style: o.style ?? "v1", orientation: o.orient ?? "heading_up" }, level: { show_on_screen: true } },
+    view: { mode: o.camera ? "camera" : "map", orientation: o.orient ?? "heading_up", bearingDeg: o.orient === "north_up" ? 0 : 40, headingDeg: down ? null : 40,
+            compassHeadingDeg: down ? null : 40, vehicleHeadingDeg: down ? null : 40, headingSource: down ? "none" : "gps",
+            speedMps: down ? null : kmh / 3.6, zoom: 18, hasFix: !down, connected: !down, internet: !down, recording: !down,
+            vehicleX: W / 2, vehicleY: o.orient === "north_up" ? H / 2 : H * 0.67 },
+    canvas: { w: W, h: H, safe: { x: W * 0.05, y: H * 0.05, w: W * 0.9, h: H * 0.9 }, pxPerMm: W / 92 },
+  };
+}
+
+// background: real Esri imagery around the Las Vegas Strip (z17), or a "camera" gradient
+function lonLatTile(lat, lon, z) {
+  const n = 2 ** z, x = ((lon + 180) / 360) * n;
+  const r = (lat * Math.PI) / 180, y = ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n;
+  return { x, y };
+}
+async function satBackground() {
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d"); g.fillStyle = "#2a3020"; g.fillRect(0, 0, W, H);
+  const z = 17, t = lonLatTile(36.1147, -115.1728, z);
+  const x0 = Math.floor(t.x) - 2, y0 = Math.floor(t.y) - 2, ox = (t.x - Math.floor(t.x)) * 256, oy = (t.y - Math.floor(t.y)) * 256;
+  const jobs = [];
+  for (let i = 0; i < 5; i++) for (let j = 0; j < 4; j++) {
+    for (const layer of ["imagery", "transport"]) {
+      const url = esriTileUrl(DEFAULT_SETTINGS, layer, z, x0 + i, y0 + j);
+      if (!url) continue;
+      jobs.push(new Promise((res) => { const im = new Image(); im.crossOrigin = "anonymous"; im.onload = () => res({ im, i, j, layer }); im.onerror = () => res(null); im.src = url; }));
+    }
+  }
+  const got = (await Promise.all(jobs)).filter(Boolean).sort((a, b) => (a.layer === "imagery" ? -1 : 1));
+  for (const { im, i, j } of got) g.drawImage(im, i * 256 - ox + W / 2 - 256 * 2 + 30, j * 256 - oy + H * 0.67 - 256 * 2, 256, 256);
+  return c;
+}
+function camBackground() {
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const sky = g.createLinearGradient(0, 0, 0, H * 0.45); sky.addColorStop(0, "#9aa7b4"); sky.addColorStop(1, "#d8d2c4");
+  g.fillStyle = sky; g.fillRect(0, 0, W, H * 0.45);
+  g.fillStyle = "#8a7a5e"; g.fillRect(0, H * 0.45, W, H);
+  g.fillStyle = "#3d3d3d"; g.beginPath(); g.moveTo(W * 0.46, H * 0.45); g.lineTo(W * 0.54, H * 0.45); g.lineTo(W * 0.95, H); g.lineTo(W * 0.05, H); g.fill();
+  g.fillStyle = "#eee"; for (let k = 0; k < 6; k++) g.fillRect(W / 2 - 2 - k, H * 0.5 + k * 45, 4 + 2 * k, 22 + k * 4);
+  return c;
+}
+
+await loadUi();
+const sat = q.get("bg") === "cam" ? null : await satBackground();
+const cam = camBackground();
+const only = q.get("case");
+for (const [id, caption, steps, opts = {}] of CASES) {
+  if (only && only !== id) continue;
+  const fig = document.createElement("figure");
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H; cv.dataset.case = id;
+  const g = cv.getContext("2d");
+  // one step only: also draw it a second later (panels fade in after they appear)
+  const all = steps.length === 1 ? [...steps, [steps[0][0] + 1, steps[0][1]]] : steps;
+  for (const [t, step] of all) {
+    const st = state(t, step, opts);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.drawImage(opts.camera || !sat ? cam : sat, 0, 0);
+    if (!opts.camera && sat) drawVehicle(g, st.view.vehicleX, st.view.vehicleY, 0, st);
+    drawHud(g, st);
+  }
+  const cap = document.createElement("figcaption"); cap.textContent = `${id}: ${caption}`;
+  fig.append(cv, cap);
+  document.getElementById("out").append(fig);
+}
+document.title += " — ready";
+</script>
+</body>
+</html>
