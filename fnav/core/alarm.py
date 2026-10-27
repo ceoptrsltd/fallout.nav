@@ -894,7 +894,8 @@ class AlarmService:
         angle = self.detector.angle
         return AlarmStatus(
             state=self.state, armed_at=self.armed_at, arm_in_s=self._arm_in(),  # type: ignore[arg-type]
-            sensor=AlarmSensor(ok=self.imu.ok, model=self.imu.model, address=self.imu.address, error=self.imu.error),
+            sensor=AlarmSensor(ok=self.imu.ok, model=self.imu.model, address=self.imu.address, bus=self.imu.bus,
+                               error=self.imu.error),
             level_g=self._level("status"),
             tilt_deg=round(angle, 1) if angle is not None and self.state in DETECTED else None,
             siren=self.siren.sounding, events=self.events[:STATUS_EVENTS],

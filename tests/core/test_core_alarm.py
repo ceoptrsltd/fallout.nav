@@ -764,3 +764,23 @@ async def test_imu_consumer_error_does_not_stop_others():
     assert not imu.running and not imu.ok
     imu.apply_settings(AlarmSettings(sensor_bus=3, sensor_address=105))
     assert imu.address == 105 and imu._cfg == (3, 105)
+
+
+async def test_imu_finds_the_sensor_on_its_own_bus_or_the_compass_bus():
+    """По умолчанию I2C-3 (pins 7/29); нет там — I2C-1 (pins 3/5, вместе с компасом); нет нигде — обе причины."""
+    wired = {"bus": 1}
+
+    def opener(bus: int, address: int):
+        if bus != wired["bus"]:
+            raise OSError(f"MPU-6050: not found at 0x{address:02X} on I2C-{bus}")
+        return DummySource()
+
+    imu = ImuService(lambda: AlarmSettings(), open_source=opener)
+    assert imu._open_any() is not None and imu.bus == 1
+    wired["bus"] = 3
+    imu._open_any()
+    assert imu.bus == 3
+    wired["bus"] = 7
+    with pytest.raises(OSError) as e:
+        imu._open_any()
+    assert "on I2C-3" in str(e.value) and "I2C-1" in str(e.value) and imu.bus is None

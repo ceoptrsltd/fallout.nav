@@ -315,7 +315,7 @@ class AlarmSettings(_Model):
     arm_delay_s: int = Field(60, ge=0, le=600)  # задержка постановки на охрану
     push_cooldown_s: int = Field(60, ge=0, le=3600)  # push одного вида не чаще
     notify_offline: bool = False  # сервер шлёт push, если устройство на охране пропало из сети
-    sensor_bus: int = Field(1, ge=0, le=30)  # шина I2C (общая с компасом)
+    sensor_bus: int = Field(3, ge=0, le=30)  # шина I2C: 3 — своя (pins 7/29); не нашёлся — ищем и на 1 (с компасом)
     sensor_address: Literal[104, 105] = 104  # 0x68 (AD0 → GND) или 0x69
     hazard: HazardSettings = HazardSettings()
 
@@ -622,6 +622,7 @@ class AlarmSensor(_Model):
     ok: bool = False
     model: str | None = None  # "MPU-6050", клон — с WHO_AM_I
     address: int = 104
+    bus: int | None = None  # шина I2C, на которой нашёлся
     error: str | None = None
 
 

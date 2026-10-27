@@ -129,7 +129,7 @@ export function mount(root) {
     clear(stKv);
     const sen = st && st.sensor;
     const senTxt = !sen ? (l.sensorOk ? h("span.green", null, "ok") : "—")
-      : sen.ok ? h("span.green", null, `${sen.model || "MPU-6050"} · 0x${(sen.address ?? 104).toString(16)}`)
+      : sen.ok ? h("span.green", null, `${sen.model || "MPU-6050"} · 0x${(sen.address ?? 104).toString(16)}${sen.bus != null ? ` · I²C-${sen.bus}` : ""}`)
       : h("span.red", null, "not responding");
     const rel = relayText(st && st.relay);
     stKv.append(
@@ -517,7 +517,7 @@ export function mount(root) {
       f({ path: "alarm.notify_offline", label: "Van went offline", type: "switch", switchLabel: "notify if the van drops off the network while armed",
         help: "Sent by the server after 3 minutes without contact (power cut, jammer, no mobile network)." }),
       h("details.al-adv", null, h("summary", null, "Sensor connection"),
-        f({ path: "alarm.sensor_bus", label: "I²C bus", type: "number", min: 0, max: 30, step: 1, validate: int, help: "The same bus as the compass (1 on the Raspberry Pi header)." }),
+        f({ path: "alarm.sensor_bus", label: "I²C bus", type: "number", min: 0, max: 30, step: 1, validate: int, help: "3 = its own bus (pins 7 / 29). If the sensor is not found there, the compass bus 1 (pins 3 / 5) is searched too." }),
         f({ path: "alarm.sensor_address", label: "Sensor address", type: "select",
           options: [{ value: 104, label: "0x68 — AD0 to GND (default)" }, { value: 105, label: "0x69 — AD0 to 3.3 V" }] })),
       form.bar,

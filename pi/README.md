@@ -71,6 +71,7 @@ asked only when that file does not exist). Change the password later in the web 
 
 - `enable_uart=1` + `dtoverlay=disable-bt`: the full PL011 UART `/dev/ttyAMA0` on GPIO14/15 for the GPS (and no Bluetooth).
 - `dtparam=i2c_arm=on` (+ `i2c-dev` module): compass IST8310 on I2C-1.
+- `dtoverlay=i2c3,pins_4_5`: MPU-6050 shock / level sensor on its own I2C-3 (GPIO4/5, pins 7/29).
 - `camera_auto_detect=0` + `dtoverlay=ov5647,cam0`: the OV5647 on CSI0.
 - `dtoverlay=vc4-kms-v3d,cma-256`: KMS driver for cage/Chromium, 256 MB CMA for camera buffers; `gpu_mem=128` for the H.264 encoder.
 - `disable_fw_kms_setup=1`: the firmware must not pick/override the video mode.

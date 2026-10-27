@@ -18,6 +18,7 @@ log = logging.getLogger("fnav.core.imu")
 
 Consumer = Callable[[list[Vec], float], None]
 SourceOpener = Callable[[int, int], AccelSource]
+BUS_FALLBACK = (3, 1)  # где ещё искать датчик: своя шина (pins 7/29) и шина компаса (pins 3/5)
 
 
 class ImuService:
@@ -36,6 +37,7 @@ class ImuService:
         s = get_settings()
         self._cfg = (s.sensor_bus, s.sensor_address)
         self.address = s.sensor_address
+        self.bus: int | None = None  # шина, на которой датчик нашёлся
         self.rate_hz = RATE_HZ
         self.ok = False
         self.model: str | None = None
@@ -58,8 +60,24 @@ class ImuService:
     def start(self) -> None:
         if self._reader is not None:
             return
-        self._reader = AccelReader(lambda: self._open(*self._cfg), self.feed, self._on_state, retry_s=self.retry_s)
+        self._reader = AccelReader(self._open_any, self.feed, self._on_state, retry_s=self.retry_s)
         self._reader.start()
+
+    def _open_any(self) -> AccelSource:
+        """Датчик — на своей шине (sensor_bus, по умолчанию I2C-3: pins 7/29), иначе — на шинах из BUS_FALLBACK
+        (I2C-1, pins 3/5, вместе с компасом): подключить можно к любой, ищем сами."""
+        bus, address = self._cfg
+        errors: list[str] = []
+        for b in dict.fromkeys((bus, *BUS_FALLBACK)):
+            try:
+                src = self._open(b, address)
+            except OSError as e:
+                errors.append(str(e) if b == bus else f"I2C-{b}: {e.strerror or e}")
+                continue
+            self.bus = b
+            return src
+        self.bus = None
+        raise OSError("; ".join(errors))
 
     async def stop(self) -> None:
         r, self._reader = self._reader, None
