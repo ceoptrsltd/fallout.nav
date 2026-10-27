@@ -1045,6 +1045,7 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
 }
 @media (prefers-reduced-motion: reduce) { .db-chip.blink, .db-word.blink, .db-banner { animation: none; } }
 /* recordings: alarm events on a strip under the player, the list of them, the badge in the list */
+.rec-video { display: block; width: min(900px, 82vw); max-height: 68vh; background: #000; }
 .rec-marks { position: relative; width: min(900px, 82vw); height: 12px; margin-top: 8px; background: #0b0d0a; border: 1px solid var(--line); border-radius: 3px; }
 .rec-mark { position: absolute; top: -4px; width: 8px; height: 18px; margin-left: -4px; padding: 0; border: 0; border-radius: 2px; background: var(--amber); box-shadow: 0 0 0 1px #000; cursor: pointer; }
 .rec-mark.k-bad { background: var(--red); }
@@ -1055,3 +1056,10 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
 .rec-ev.k-bad svg { color: var(--red); }
 .rec-ev.k-warn svg { color: var(--amber); }
 .rec-evbadge { cursor: pointer; border: 0; font: inherit; }
+/* phones: the player is a bottom sheet — video and the event strip take its full width, markers easier to tap */
+@media (max-width: 760px) {
+  .rec-video, .rec-marks { width: 100%; }
+  .rec-evs { max-width: none; }
+  .rec-marks { height: 16px; margin-top: 10px; }
+  .rec-mark { top: -5px; width: 14px; height: 24px; margin-left: -7px; }
+}

@@ -26,7 +26,7 @@ function dayTitle(d) {
  * other browsers through hls.js (MSE).
  */
 export function openPlayer(rec, { at = null } = {}) {
-  const video = h("video", { controls: true, autoplay: true, playsinline: true, style: { width: "min(900px, 82vw)", maxHeight: "68vh", background: "#000", display: "block" } });
+  const video = h("video.rec-video", { controls: true, autoplay: true, playsinline: true });
   video.muted = true;
   video.playsInline = true;
   const status = h(".dim", { style: { marginTop: "8px", fontSize: "12.5px" } }, "Loading player…");
