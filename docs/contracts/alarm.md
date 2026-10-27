@@ -69,7 +69,7 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 
 | Реле | → | 40-pin | Сигнал Pi |
 |---|---|---|---|
-| сигнал (S / PWM / IN) | → | **pin 35** | GPIO19 (аппаратный PWM1, свободен) |
+| сигнал (S / PWM / IN) | → | **pin 35** | GPIO19 (аппаратный PWM1: `dtoverlay=pwm,pin=19,func=2`) |
 | GND (−) | → | **pin 39** | GND |
 | +5 В (+) — только если модуль питается от разъёма сигнала (RC-реле) | → | **pin 4** | 5 В |
 
@@ -96,6 +96,9 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 - `POST /api/alarm/hazard/test` — мигнуть 3 с текущими настройками (даже при `enabled = false` и выключенной охране).
 - `AlarmStatus.hazard = {enabled, active, error}`, `Telemetry.alarm.hazard: bool` (мигает сейчас).
 - `--mock` — ненастоящий вывод (только состояние и лог).
+- `servo` на GPIO18/19 — только аппаратный ШИМ (sysfs `/sys/class/pwm`): программный ШИМ при загруженном CPU теряет
+  импульсы, и RC-реле «дребезжит». Нет `dtoverlay=pwm` — ошибка в `AlarmStatus.hazard.error`. На других выводах —
+  программный ШИМ (gpiozero/lgpio).
 
 ## 3. Настройки `settings.alarm` (`AlarmSettings`)
 

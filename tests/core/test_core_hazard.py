@@ -151,3 +151,39 @@ async def test_hazard_test_api(data_dir):
         core.alarm.hazard._close_output()
         r = await c.post("/api/alarm/hazard/test")
         assert r.status_code == 503 and r.json()["detail"] == "Hazard relay: GPIO19 is busy"
+
+
+def fake_pwmchip(tmp_path, exported: bool = False):
+    chip = tmp_path / "pwmchip0"
+    chip.mkdir()
+    (chip / "npwm").write_text("2\n")
+    (chip / "export").write_text("")
+    ch = chip / "pwm1"
+    ch.mkdir()  # в sysfs его создаёт запись в export; здесь — заранее
+    for f in ("enable", "duty_cycle", "period"):
+        (ch / f).write_text("0")
+    return chip, ch
+
+
+def test_hardware_pwm_steady_servo_pulses(tmp_path):
+    from fnav.sensors.hazard import HardwarePwmHazard, find_pwmchip
+
+    chip, ch = fake_pwmchip(tmp_path)
+    assert find_pwmchip(tmp_path) == chip
+    out = HardwarePwmHazard(HazardSettings(gpio=19, on_us=2000, off_us=1000), root=tmp_path, sleep=lambda s: None)
+    assert (chip / "export").read_text() == ""  # канал уже был
+    assert ch.joinpath("period").read_text() == "20000000" and ch.joinpath("duty_cycle").read_text() == "1000000"
+    assert ch.joinpath("enable").read_text() == "1"
+    out.set(True)
+    assert ch.joinpath("duty_cycle").read_text() == "2000000"
+    out.close()
+    assert ch.joinpath("duty_cycle").read_text() == "1000000" and ch.joinpath("enable").read_text() == "0"
+
+
+def test_hardware_pwm_needs_the_overlay_and_a_pwm_pin(tmp_path):
+    from fnav.sensors.hazard import HardwarePwmHazard
+
+    with pytest.raises(RuntimeError, match="dtoverlay=pwm,pin=19,func=2"):
+        HardwarePwmHazard(HazardSettings(gpio=19), root=tmp_path)
+    with pytest.raises(RuntimeError, match="no hardware PWM"):
+        HardwarePwmHazard(HazardSettings(gpio=21), root=tmp_path)
