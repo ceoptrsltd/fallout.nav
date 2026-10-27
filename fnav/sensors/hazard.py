@@ -80,7 +80,8 @@ def find_pwmchip(root: Path = PWM_SYSFS) -> Path | None:
 
 
 class HardwarePwmHazard:
-    """RC-реле от аппаратного ШИМ через sysfs: период 20 мс, ширина импульса on_us / off_us.
+    """Реле от аппаратного ШИМ через sysfs, период 20 мс. servo — импульс on_us / off_us; level — постоянный уровень
+    (заполнение 100 % / 0 %): вывод отдан блоку ШИМ, gpiozero его взять не может.
     Права на файлы — группе gpio (udev-правило Raspberry Pi OS 99-com.rules); fnav-core в этой группе."""
 
     def __init__(self, cfg: HazardSettings, root: Path = PWM_SYSFS,
@@ -102,15 +103,21 @@ class HardwarePwmHazard:
             sleep(0.02)
         self._write("enable", "0")
         self._write("duty_cycle", "0")  # сначала ширина ≤ периода, иначе ядро не примет период
-        self._write("period", str(1_000_000_000 // SERVO_HZ))
-        self._write("duty_cycle", str(cfg.off_us * 1000))
+        self.period_ns = 1_000_000_000 // SERVO_HZ
+        self._write("period", str(self.period_ns))
+        self._write("duty_cycle", str(self._duty(False)))
         self._write("enable", "1")
+
+    def _duty(self, on: bool) -> int:
+        if self.cfg.signal == "servo":
+            return (self.cfg.on_us if on else self.cfg.off_us) * 1000
+        return self.period_ns if on != self.cfg.active_low else 0  # level: высокий / низкий всё время
 
     def _write(self, name: str, value: str) -> None:
         (self.dir / name).write_text(value)
 
     def set(self, on: bool) -> None:
-        self._write("duty_cycle", str((self.cfg.on_us if on else self.cfg.off_us) * 1000))
+        self._write("duty_cycle", str(self._duty(on)))
 
     def close(self) -> None:
         with contextlib.suppress(OSError):
@@ -138,8 +145,8 @@ class FakeHazard:
 
 
 def open_gpio_hazard(cfg: HazardSettings) -> HazardOutput:
-    """RC-реле на выводе с аппаратным ШИМ — только аппаратный (программный дребезжит); иначе — gpiozero."""
-    if cfg.signal == "servo" and cfg.gpio in HW_PWM_CHANNEL:
+    """Вывод с аппаратным ШИМ (GPIO18/19) — через блок ШИМ (и RC-реле, и обычный вход); иначе — gpiozero."""
+    if cfg.gpio in HW_PWM_CHANNEL:
         try:
             return HardwarePwmHazard(cfg)
         except OSError as e:

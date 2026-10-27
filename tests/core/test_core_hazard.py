@@ -187,3 +187,18 @@ def test_hardware_pwm_needs_the_overlay_and_a_pwm_pin(tmp_path):
         HardwarePwmHazard(HazardSettings(gpio=19), root=tmp_path)
     with pytest.raises(RuntimeError, match="no hardware PWM"):
         HardwarePwmHazard(HazardSettings(gpio=21), root=tmp_path)
+
+
+def test_hardware_pwm_level_mode_is_a_steady_high_or_low(tmp_path):
+    from fnav.sensors.hazard import HardwarePwmHazard
+
+    _chip, ch = fake_pwmchip(tmp_path)
+    out = HardwarePwmHazard(HazardSettings(gpio=19, signal="level"), root=tmp_path, sleep=lambda s: None)
+    assert ch.joinpath("duty_cycle").read_text() == "0"
+    out.set(True)
+    assert ch.joinpath("duty_cycle").read_text() == "20000000"  # 100 %: постоянно высокий
+    low = HardwarePwmHazard(HazardSettings(gpio=19, signal="level", active_low=True), root=tmp_path,
+                            sleep=lambda s: None)
+    assert ch.joinpath("duty_cycle").read_text() == "20000000"  # выкл = высокий
+    low.set(True)
+    assert ch.joinpath("duty_cycle").read_text() == "0"

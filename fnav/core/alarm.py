@@ -462,12 +462,17 @@ class HazardLights:
             self._blink = None
         try:
             await self._switch(True)
-            log.warning("alarm: hazard lights on")
+            if self.lit:
+                log.warning("alarm: hazard lights on")
+            else:
+                log.warning("alarm: hazard lights skipped - %s", self.error or "relay unavailable")
             while (left := self._until - self.mono()) > 0:
                 await asyncio.sleep(min(left, 1.0))
         finally:
+            was = self.lit
             await asyncio.shield(self._switch(False))
-            log.info("alarm: hazard lights off")
+            if was:
+                log.info("alarm: hazard lights off")
             self._after()
 
     def _after(self) -> None:
