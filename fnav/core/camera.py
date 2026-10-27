@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
@@ -26,6 +27,32 @@ WHEP_URL = "http://127.0.0.1:8889/cam/whep"
 POLL_S = 1.0
 UNAVAILABLE = "Camera service (fnav-camera) is not responding"
 LIVE_UNAVAILABLE = "Live stream is unavailable"
+# едем / стоим — для предела выдержки ночью (на стоянке длиннее: светлее, но меньше кадров/с)
+MOVING_MPS = 1.5  # быстрее ~5 км/ч — едем, сразу
+PARKED_MPS = 0.5  # медленнее ~2 км/ч…
+PARKED_AFTER_S = 10.0  # …дольше 10 с — стоим
+
+
+class MotionState:
+    """Едем / стоим по скорости GPS с гистерезисом. Нет скорости — прежнее решение (вначале None)."""
+
+    def __init__(self) -> None:
+        self.moving: bool | None = None
+        self._slow_since: float | None = None
+
+    def update(self, speed_mps: float | None, now: float) -> bool | None:
+        if speed_mps is None:
+            return self.moving
+        if speed_mps >= MOVING_MPS:
+            self.moving, self._slow_since = True, None
+        elif speed_mps < PARKED_MPS:
+            if self._slow_since is None:
+                self._slow_since = now
+            if self.moving is None or now - self._slow_since >= PARKED_AFTER_S:
+                self.moving = False
+        else:
+            self._slow_since = None
+        return self.moving
 
 
 class CameraUnavailable(Exception):
@@ -41,6 +68,7 @@ class CameraService:
         base_url: str = CAMERA_URL,
         whep_url: str = WHEP_URL,
         transport: httpx.AsyncBaseTransport | None = None,
+        get_speed: Callable[[], float | None] | None = None,
     ):
         self.mock = mock
         self.base_url = base_url.rstrip("/")
@@ -51,6 +79,8 @@ class CameraService:
         self.mockcam = MockCamera(recordings_root) if mock else None
         self._listeners: list = []
         self._task: asyncio.Task | None = None
+        self.get_speed = get_speed
+        self.motion = MotionState()
 
     @property
     def using_mock(self) -> bool:
@@ -96,6 +126,10 @@ class CameraService:
                          " - using mock camera" if self.mockcam is not None else "")
         if self.available and prev_avail is not True:
             log.info("camera: fnav-camera is available (%s)", self.base_url)
+        if self.available and self.get_speed is not None:
+            moving = self.motion.update(self.get_speed(), time.monotonic())
+            if moving != st.moving and await self._send_motion(moving):
+                st = st.model_copy(update={"moving": moving})
         old = self.status
         self.status = st
         if old != st:
@@ -107,6 +141,16 @@ class CameraService:
         return st
 
     # ── управление ──
+    async def _send_motion(self, moving: bool | None) -> bool:
+        """Сообщить камере «едем/стоим». Не вышло — повтор при следующем опросе (камера сообщает своё в /status)."""
+        try:
+            r = await self._client.post(f"{self.base_url}/motion", json={"moving": moving}, timeout=2.0)
+            r.raise_for_status()
+            return True
+        except httpx.HTTPError as e:
+            log.warning("camera: cannot send motion state (%s)", type(e).__name__)
+            return False
+
     async def reload(self) -> None:
         """Уведомить камеру о новых настройках. Ошибки игнорируются."""
         try:

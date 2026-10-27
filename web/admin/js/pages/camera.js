@@ -11,6 +11,22 @@ import { store, on } from "../store.js";
 import { banner, confirmDialog } from "../ui.js";
 
 const CAM_STATE = { starting: "starting", recording: "recording", stopped: "stopped", error: "error" };
+// applied by fnav-camera on the fly: no "recording restart" confirmation for these
+const LIVE_KEYS = ["live_bitrate_kbps", "max_exposure_ms_driving", "max_exposure_ms_parked"];
+const frameMs = () => Math.round(1000 / (store.settings?.camera?.fps || 15));
+
+/** "125 ms · gain 16× · 3.4 lux · limit 125 ms (parked)" */
+function exposureText(c) {
+  if (!isNum(c.exposure_ms)) return "—";
+  const parts = [`${fmt(c.exposure_ms, 0)} ms`];
+  if (isNum(c.gain)) parts.push(`gain ${fmt(c.gain, 1)}×`);
+  if (isNum(c.lux)) parts.push(`${fmt(c.lux, 1)} lux`);
+  if (isNum(c.max_exposure_ms)) {
+    const why = c.moving === true ? "driving" : c.moving === false ? "parked" : "speed unknown";
+    parts.push(`limit ${fmt(c.max_exposure_ms, 0)} ms (${why})`);
+  }
+  return parts.join(" · ");
+}
 
 /** Minimal WHEP client (RFC 9725) on RTCPeerConnection. */
 export class WhepClient {
@@ -316,7 +332,7 @@ export function mount(root) {
   const stRefs = {};
   const kvRow = (k, label) => { const v = h("span.v", null, "—"); stRefs[k] = v; return [h("span.k", null, label), v]; };
   const statusCard = h(".card", null, h("h2", null, "Status"),
-    h(".kv", null, kvRow("state", "State"), kvRow("fps", "Frames/s"), kvRow("br", "Bitrate"), kvRow("mode", "Sensor → output"), kvRow("seg", "Current segment"), kvRow("drop", "Dropped frames"), kvRow("rc", "Recordings"), kvRow("free", "Free space"), kvRow("sync", "Time synchronized"), kvRow("err", "Error")));
+    h(".kv", null, kvRow("state", "State"), kvRow("fps", "Frames/s"), kvRow("br", "Bitrate"), kvRow("mode", "Sensor → output"), kvRow("seg", "Current segment"), kvRow("drop", "Dropped frames"), kvRow("exp", "Exposure"), kvRow("rc", "Recordings"), kvRow("free", "Free space"), kvRow("sync", "Time synchronized"), kvRow("err", "Error")));
   const setS = (k, t, cls) => { stRefs[k].textContent = t; stRefs[k].className = "v" + (cls ? " " + cls : ""); };
   function renderStatus() {
     const c = store.telemetry?.camera;
@@ -327,6 +343,7 @@ export function mount(root) {
     setS("mode", `${c.sensor_mode || "—"} → ${c.output_size || "—"}`);
     setS("seg", c.current_segment ? c.current_segment.split("/").pop() : "—");
     setS("drop", String(c.frames_dropped ?? 0), c.frames_dropped > 0 ? "amber" : "");
+    setS("exp", exposureText(c));
     setS("rc", `${c.recordings_count ?? "—"} · ${isNum(c.recordings_gb) ? c.recordings_gb.toFixed(2) + " GB" : "—"}`);
     setS("free", isNum(c.free_gb) ? c.free_gb.toFixed(1) + " GB" : "—");
     setS("sync", c.time_synced ? "yes" : "no", c.time_synced ? "" : "amber");
@@ -336,7 +353,7 @@ export function mount(root) {
   // ── settings ──
   const form = new SettingsForm({
     beforeSave: (patch) =>
-      patch.camera
+      patch.camera && Object.keys(patch.camera).some((k) => !LIVE_KEYS.includes(k))
         ? confirmDialog({
             title: "Recording restart",
             text: "Applying camera settings restarts the video pipeline: the current segment is closed cleanly and recording resumes after a few seconds. Continue?",
@@ -359,9 +376,15 @@ export function mount(root) {
     f({ path: "camera.exposure_mode", label: "Exposure", type: "select", options: [
       { value: "normal", label: "Normal" },
       { value: "short", label: "Short (less motion blur)" },
-      { value: "long", label: "Long (night)" },
+      { value: "long", label: "Long (less noise, more blur)" },
     ] }),
     f({ path: "camera.ev", label: "EV compensation", hint: "Brighter / darker", type: "range", min: -4, max: 4, step: 0.1 }),
+    store.settings?.camera?.max_exposure_ms_parked !== undefined
+      ? [
+          f({ path: "camera.max_exposure_ms_driving", label: "Night exposure, driving", hint: "Longest exposure in the dark while moving", type: "number", min: 10, max: 1000, step: 1, unit: "ms", help: `Up to ${frameMs()} ms keeps the full frame rate; longer is brighter, but blurs and drops frames. Applied without restarting the recording.` }),
+          f({ path: "camera.max_exposure_ms_parked", label: "Night exposure, parked", hint: "Longest exposure in the dark when the van stands still for 10 s", type: "number", min: 10, max: 1000, step: 1, unit: "ms", help: "125 ms ≈ 8 frames/s at night: twice as bright as 66 ms. Daytime footage is not affected: the camera goes this far only when it is dark." }),
+        ]
+      : null,
     f({ path: "camera.overlay_timestamp", label: "Timestamp overlay", hint: "Burned into the recording", type: "switch" }),
     form.bar,
   );

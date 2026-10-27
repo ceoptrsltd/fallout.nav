@@ -116,6 +116,10 @@ class CameraSettings(_Model):
     vflip: bool = False
     exposure_mode: Literal["normal", "short", "long"] = "normal"
     ev: float = Field(0.0, ge=-4, le=4)
+    # ночь: когда штатных 1/fps × 8 мало, AE удлиняет выдержку до предела и поднимает усиление до 16×;
+    # выдержка длиннее кадра (1000/fps мс) снижает частоту кадров. Днём ничего не меняется.
+    max_exposure_ms_driving: int = Field(66, ge=10, le=1000)  # едем (или скорость неизвестна)
+    max_exposure_ms_parked: int = Field(125, ge=10, le=1000)  # стоим
     overlay_timestamp: bool = False
     lores: LoresSettings = LoresSettings()
 
@@ -447,6 +451,12 @@ class CameraStatus(_Model):
     recordings_gb: float = 0.0
     free_gb: float | None = None
     time_synced: bool = False  # было ли системное время синхронизировано при начале сегмента
+    # экспозиция (метаданные кадра) и предел выдержки, который сейчас действует
+    moving: bool | None = None  # что сообщило ядро: едем / стоим / ещё не сообщало
+    max_exposure_ms: float | None = None
+    exposure_ms: float | None = None
+    gain: float | None = None  # аналоговое × цифровое
+    lux: float | None = None  # оценка освещённости от libcamera
 
 
 # ───────────────────────────── Телеметрия (WebSocket) ─────────────────────────────

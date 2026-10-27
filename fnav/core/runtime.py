@@ -128,7 +128,8 @@ class Core:
         self.tiles = TileService(s, transport=opts.tile_transport)
         self.camera = CameraService(mock=opts.mock, recordings_root=paths.recordings_dir(),
                                     base_url=opts.camera_url, whep_url=opts.whep_url,
-                                    transport=opts.local_transport)
+                                    transport=opts.local_transport,
+                                    get_speed=lambda: self.hub.snapshot().gps.speed_mps)
         self.system = SystemService(mock=opts.mock)
         self.video = VideoOutput(mock=opts.mock)
         relay = opts.relay or RelayConfig.from_env()

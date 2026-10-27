@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from fnav import paths
-from fnav.models import CameraStatus, Settings
+from fnav.models import CameraSettings, CameraStatus, Settings
 
 from .jpeg import LoresFrame
 from .live import LiveHub, LiveMux
@@ -35,6 +35,12 @@ def load_settings(path: Path | None = None, fallback: Settings | None = None) ->
     except Exception:
         log.exception("cannot read %s, using %s", path, "previous settings" if fallback else "defaults")
         return fallback or Settings()
+
+
+def max_frame_us(cam: CameraSettings, moving: bool | None) -> int:
+    """Предел длительности кадра (= выдержки) для AE: стоим — свой, едем или неизвестно — свой; не короче кадра."""
+    ms = cam.max_exposure_ms_parked if moving is False else cam.max_exposure_ms_driving
+    return max(round(1e6 / cam.fps), ms * 1000)
 
 
 def default_source_factory(fake: bool) -> SourceFactory:
@@ -110,6 +116,7 @@ class CameraService(FrameSink):
         self.free_gb: float | None = None
         self.recordings_count = 0
         self.recordings_bytes = 0
+        self.moving: bool | None = None  # сообщает ядро (POST /motion); от этого — предел выдержки ночью
 
     # ───────────── публичный API ─────────────
     def start(self) -> None:
@@ -136,7 +143,8 @@ class CameraService(FrameSink):
     def reload(self) -> bool:
         """Перечитать настройки; True — изменились параметры камеры, конвейер перезапускается.
 
-        Битрейт живого видео запись не трогает: перезапускается только live-энкодер (если он работает)."""
+        Битрейт живого видео запись не трогает: перезапускается только live-энкодер (если он работает).
+        Пределы выдержки применяются на ходу."""
         new = load_settings(self.settings_path, fallback=self.settings)
         old_cam, new_cam = self.settings.camera, new.camera
         changed = _rec_params(new_cam) != _rec_params(old_cam)
@@ -145,13 +153,15 @@ class CameraService(FrameSink):
         if changed:
             log.info("camera settings changed -> restart")
             self.restart()
-        elif new_cam.live_bitrate_kbps != old_cam.live_bitrate_kbps:
-            with self._lock:
-                if self._live_src is not None:
-                    log.info("live bitrate changed -> restart live encoder")
-                    self._live_stop()
-                    self._sync_live()
-        return changed
+            return True
+        with self._lock:
+            if self._p is not None and max_frame_us(new_cam, self.moving) != max_frame_us(old_cam, self.moving):
+                self._apply_exposure_limit(self._p)
+            if new_cam.live_bitrate_kbps != old_cam.live_bitrate_kbps and self._live_src is not None:
+                log.info("live bitrate changed -> restart live encoder")
+                self._live_stop()
+                self._sync_live()
+        return False
 
     # ───────────── живое видео ─────────────
     @property
@@ -215,6 +225,30 @@ class CameraService(FrameSink):
         except Exception:
             log.exception("live mux failed")
 
+    # ───────────── едем / стоим ─────────────
+    def set_moving(self, moving: bool | None) -> None:
+        if moving == self.moving:
+            return
+        self.moving = moving
+        log.info("vehicle %s: max exposure %.0f ms", {True: "moving", False: "parked", None: "unknown"}[moving],
+                 max_frame_us(self.settings.camera, moving) / 1000)
+        with self._lock:
+            p = self._p
+            if p is not None:
+                self._apply_exposure_limit(p)
+
+    def _apply_exposure_limit(self, p: _Pipeline) -> None:
+        cam = self.settings.camera
+        us = max_frame_us(cam, self.moving)
+        if p.recorder is not None:  # длинные ночные кадры — не «потерянные»
+            p.recorder.fps = float(cam.fps) if us <= round(1e6 / cam.fps) else 1e6 / us
+        fn = getattr(p.source, "set_max_exposure", None)
+        if fn is not None:
+            try:
+                fn(us)
+            except Exception:
+                log.exception("set max exposure failed")
+
     def protect_current(self) -> str | None:
         p = self._p
         if p is None or p.recorder is None:
@@ -232,6 +266,7 @@ class CameraService(FrameSink):
         fps = kbps = None
         if rec is not None and time.monotonic() - rec.last_frame_mono < 3.0:
             fps, kbps = rec.rates()
+        exp = dict(getattr(src, "exposure", None) or {})
         error = self._error or (rec.write_error if rec else None)
         if self._no_space:
             error = NO_SPACE
@@ -258,6 +293,11 @@ class CameraService(FrameSink):
             recordings_gb=round(self.recordings_bytes / GB, 3),
             free_gb=round(self.free_gb, 2) if self.free_gb is not None else None,
             time_synced=rec.segment_time_synced if seg and rec else self.time_sync.value,
+            moving=self.moving,
+            max_exposure_ms=max_frame_us(self.settings.camera, self.moving) / 1000,
+            exposure_ms=round(exp["ExposureTime"] / 1000, 1) if "ExposureTime" in exp else None,
+            gain=round(exp["AnalogueGain"] * exp.get("DigitalGain", 1.0), 2) if "AnalogueGain" in exp else None,
+            lux=round(exp["Lux"], 1) if "Lux" in exp else None,
         )
 
     # ───────────── FrameSink (вызывается из потока источника) ─────────────
@@ -309,6 +349,7 @@ class CameraService(FrameSink):
         self._source_error = None
         self._p = p  # sink начинает принимать кадры
         p.source = self.source_factory(s, self)
+        self._apply_exposure_limit(p)  # до start(): предел попадёт в начальные controls
         p.source.start()
         p.started_mono = time.monotonic()
         with self._lock:
@@ -432,6 +473,9 @@ class CameraService(FrameSink):
             self._hk_wake.wait(min(10.0, self.housekeeping_s))
 
 
+LIVE_PARAMS = ("live_bitrate_kbps", "max_exposure_ms_driving", "max_exposure_ms_parked")
+
+
 def _rec_params(cam) -> object:
-    """Параметры камеры, от которых зависит запись (всё, кроме битрейта живого видео)."""
-    return cam.model_copy(update={"live_bitrate_kbps": 0})
+    """Параметры камеры, после смены которых конвейер перезапускается (всё, что не меняется на ходу)."""
+    return cam.model_copy(update=dict.fromkeys(LIVE_PARAMS, 0))

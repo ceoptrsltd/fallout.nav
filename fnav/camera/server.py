@@ -122,6 +122,16 @@ def create_app(service: CameraService, manage_service: bool = True) -> Starlette
         service.restart()
         return JSONResponse({"ok": True})
 
+    async def motion(request: Request) -> JSONResponse:
+        try:
+            moving = (await request.json())["moving"]
+            if moving is not None and not isinstance(moving, bool):
+                raise TypeError
+        except (ValueError, KeyError, TypeError):
+            return JSONResponse({"ok": False, "error": 'expected {"moving": true | false | null}'}, status_code=400)
+        await asyncio.to_thread(service.set_moving, moving)
+        return JSONResponse({"ok": True, "max_exposure_ms": service.status().max_exposure_ms})
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
         hub.bind_loop(asyncio.get_running_loop())
@@ -144,6 +154,7 @@ def create_app(service: CameraService, manage_service: bool = True) -> Starlette
             Route("/protect-current", protect_current, methods=["POST"]),
             Route("/reload", reload, methods=["POST"]),
             Route("/restart", restart, methods=["POST"]),
+            Route("/motion", motion, methods=["POST"]),
         ],
         lifespan=lifespan,
     )

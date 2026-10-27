@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import struct
 import time
+from pathlib import Path
 from typing import Any
 
 from fnav.models import CameraSettings
@@ -16,6 +18,54 @@ log = logging.getLogger("fnav.camera.picam")
 
 VIDIOC_S_CTRL = 0xC008561C
 V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME = 0x009909E5
+
+# Ночная ступень AE (замерено ночью в фургоне: 66 мс × 16 вдвое светлее штатных 66 мс × 8, 125 мс × 16 — ещё вдвое).
+# Выдержку ограничивает FrameDurationLimits — его можно менять на ходу (едем/стоим), а таблицу тюнинга libcamera
+# читает один раз на процесс, поэтому таблица всегда одна и та же.
+NIGHT_GAIN = 16.0  # максимум аналогового усиления OV5647
+NIGHT_SHUTTER_US = 1_000_000
+V4L2_ROOT = Path("/sys/class/video4linux")
+
+
+def sensor_model(root: Path = V4L2_ROOT) -> str | None:
+    """Модель сенсора из имени V4L2-subdev ("ov5647 0-0036" → "ov5647") — до открытия камеры через libcamera."""
+    for f in sorted(root.glob("v4l-subdev*/name")):
+        with contextlib.suppress(OSError):
+            name = f.read_text().split()
+            if name and name[0][:2] in ("ov", "im"):  # ov5647, imx219, imx477, imx708…
+                return name[0]
+    return None
+
+
+def night_tuning(tuning: dict) -> dict:
+    """Дописать ко всем режимам экспозиции ступень «до NIGHT_SHUTTER_US, затем усиление до NIGHT_GAIN».
+
+    Штатные ступени (и дневная картинка) не меняются: AE доходит до новой, только упёршись в старый максимум."""
+    for algo in tuning.get("algorithms", []):
+        agc = algo.get("rpi.agc")
+        if agc is None:
+            continue
+        for ch in agc.get("channels", [agc]):
+            for mode in ch.get("exposure_modes", {}).values():
+                key = "shutter" if "shutter" in mode else "exposure"  # в новых libcamera — "exposure"
+                if mode[key][-1] < NIGHT_SHUTTER_US:
+                    mode[key].append(NIGHT_SHUTTER_US)
+                    mode["gain"].append(max(NIGHT_GAIN, mode["gain"][-1]))
+    return tuning
+
+
+def load_night_tuning() -> dict | None:
+    from picamera2 import Picamera2  # type: ignore[import-not-found]
+
+    model = sensor_model()
+    if model is None:
+        log.warning("sensor model unknown: stock tuning (no night exposure)")
+        return None
+    try:
+        return night_tuning(Picamera2.load_tuning_file(f"{model}.json"))
+    except Exception as e:  # noqa: BLE001
+        log.warning("tuning %s.json: %s: stock tuning (no night exposure)", model, e)
+        return None
 
 
 def full_fov_modes(modes: list[dict]) -> list[dict]:
@@ -51,11 +101,27 @@ class PicameraSource:
         self._overlay_lores: TimestampOverlay | None = None
         self._lores_fmt = "YUV420"
         self._t0 = time.monotonic()
+        self.max_frame_us = self._frame_us()
+        self.exposure: dict[str, float] = {}  # ExposureTime/AnalogueGain/DigitalGain/Lux последнего кадра
+        self._n = 0
+
+    def _frame_us(self) -> int:
+        return round(1e6 / self.cam.fps)
+
+    def _frame_limits(self) -> tuple[int, int]:
+        return (self._frame_us(), max(self._frame_us(), self.max_frame_us))
+
+    def set_max_exposure(self, us: int) -> None:
+        """Предел выдержки для AE (длиннее кадра — кадр удлиняется). Можно на ходу: запись не перезапускается."""
+        self.max_frame_us = int(us)
+        p = self.picam2
+        if p is not None:
+            p.set_controls({"FrameDurationLimits": self._frame_limits()})
 
     # ── конфигурация ──
     def _controls(self) -> dict:
         cam = self.cam
-        ctl: dict[str, Any] = {"FrameRate": float(cam.fps), "ExposureValue": float(cam.ev)}
+        ctl: dict[str, Any] = {"FrameDurationLimits": self._frame_limits(), "ExposureValue": float(cam.ev)}
         try:
             from libcamera import controls  # type: ignore[import-not-found]
 
@@ -88,7 +154,7 @@ class PicameraSource:
         from picamera2.outputs import Output  # type: ignore[import-not-found]
 
         cam = self.cam
-        self.picam2 = Picamera2()
+        self.picam2 = Picamera2(tuning=load_night_tuning())
         want = (cam.sensor_w, cam.sensor_h)
         try:
             cfg = self._make_config({"output_size": want, "bit_depth": 10})
@@ -230,6 +296,12 @@ class PicameraSource:
             log.exception("overlay failed")
 
     def _post_callback(self, request: Any) -> None:
+        self._n += 1
+        if self._n % 8 == 1:
+            with contextlib.suppress(Exception):
+                md = request.get_metadata()
+                self.exposure = {k: float(md[k]) for k in ("ExposureTime", "AnalogueGain", "DigitalGain", "Lux")
+                                 if md.get(k) is not None}
         if not self.sink.wants_lores():
             return
         try:
