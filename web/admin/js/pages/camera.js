@@ -223,8 +223,7 @@ export function mount(root) {
   const video = h("video", { autoplay: true, muted: true, playsinline: true, hidden: true });
   video.muted = true;
   const msg = h(".overlay-msg", null, "Connecting…");
-  const tag = h(".tag.badge", null, "—");
-  const box = h(".video-box", null, video, msg, tag);
+  const box = h(".video-box", null, video, msg);
   const statsEl = h(".mono.dim", { style: { fontSize: "12.5px", marginTop: "8px", minHeight: "20px" } });
 
   let mode = null; // "webrtc" | "stream" — what is playing (or connecting) now
@@ -253,13 +252,12 @@ export function mount(root) {
     stopAll();
     const my = gen;
     mode = "webrtc";
-    tag.textContent = "WebRTC";
     showMsg("Connecting WebRTC…");
     statsEl.textContent = "";
     const c = (client = new WhepClient(video, {
       onState: (s) => {
         if (my !== gen) return;
-        if (s === "playing") { video.hidden = false; showMsg(""); tag.textContent = "WebRTC · H.264"; }
+        if (s === "playing") { video.hidden = false; showMsg(""); }
         if (s === "lost") { showMsg("Connection lost, reconnecting…"); retryTimer = setTimeout(() => { if (my === gen && mode === "webrtc") startWebrtc(); }, 1500); }
       },
     }));
@@ -271,7 +269,7 @@ export function mount(root) {
         const s = await c.stats(prev).catch(() => null);
         if (!s) return;
         prev = s;
-        statsEl.textContent = `${s.w || video.videoWidth || "?"}×${s.h || video.videoHeight || "?"} · ${fmt(s.fps, 0)} fps · ${s.kbps ? Math.round(s.kbps) + " kbit/s" : "…"} · packets lost: ${s.lost ?? 0}`;
+        statsEl.textContent = `${s.w || video.videoWidth || "?"}×${s.h || video.videoHeight || "?"} · ${fmt(s.fps, 0)} fps · ${s.kbps ? Math.round(s.kbps) + " kbit/s" : "…"} · packets lost: ${s.lost ?? 0} · WebRTC`;
       }, 1000);
     } catch (e) {
       if (my !== gen) return;
@@ -285,7 +283,6 @@ export function mount(root) {
     stopAll();
     const my = gen;
     mode = "stream";
-    tag.textContent = "Stream";
     showMsg(attempt ? "Reconnecting to the live stream…" : "Starting the live stream…");
     if (!attempt) statsEl.textContent = "";
     const retry = (why) => {
@@ -298,7 +295,7 @@ export function mount(root) {
     const c = (client = new TsLiveClient(video, {
       onState: (s, why) => {
         if (my !== gen) return;
-        if (s === "playing") { video.hidden = false; showMsg(""); tag.textContent = "Stream · H.264"; }
+        if (s === "playing") { video.hidden = false; showMsg(""); }
         if (s === "lost") retry("Stream interrupted: " + (why || "connection lost"));
       },
     }));
