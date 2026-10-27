@@ -48,6 +48,14 @@ export function alarmActions({ state, siren, hazard, hazardEnabled }) {
   return out;
 }
 
+// the car screen's alarm banner words (web/display/ui/alarm.js BANNER_WORD; the admin does not import display modules)
+const BANNER_WORD = { impact: "IMPACT", tilt: "TILTED", move: "MOVING", approach: "PERSON", face: "FACE", loiter: "PERSON" };
+
+/** Word of the hazard banner for the event that triggered the alarm: "IMPACT" … ("ALARM" for anything else). */
+export function bannerWord(kind) {
+  return BANNER_WORD[kind] || "ALARM";
+}
+
 /** Big state word. */
 export function alarmWord(state) {
   return { off: "OFF", arming: "ARMING", armed: "ARMED", triggered: "TRIGGERED" }[state] || (state ? String(state).toUpperCase() : "—");

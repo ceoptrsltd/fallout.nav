@@ -7,8 +7,9 @@ import { store, on } from "../store.js";
 import { toast, banner, modal } from "../ui.js";
 import { alarmStateText, armLeft, kindInfo } from "../alarm-fmt.js";
 import { recLink } from "../rec-play.js";
+import { installEntry } from "../install.js";
 import {
-  EVENTS_N, pollDelay, alarmLive, alarmActions, alarmWord, armedFor, armProgress, armHint, alarmChips,
+  EVENTS_N, pollDelay, alarmLive, alarmActions, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
   recentEvents, recentKey, eventExtras, snapPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
 } from "../dash-fmt.js";
@@ -59,6 +60,7 @@ export function mount(root) {
   }
 
   // ───── alarm card ─────
+  const heroBanner = h(".db-banner", { hidden: true, role: "alert" }); // like the car screen: IMPACT / TILTED / …
   const heroIc = h("span.al-ic");
   const heroWord = h(".al-word.db-word", null, "—");
   const heroSub = h(".db-sub");
@@ -69,6 +71,7 @@ export function mount(root) {
   const chips = h(".db-chips");
   const hero = h(".card.db-hero", null,
     h(".card-head", null, h("h2", null, "Alarm"), h("a.db-more", { href: "#/alarm" }, "Settings & log ›")),
+    heroBanner,
     h(".db-hero-top", null,
       heroIc,
       h(".db-hero-txt", null, heroWord, heroSub, heroLive),
@@ -107,6 +110,7 @@ export function mount(root) {
       clear(btns);
       btnSig = "";
       armBar.hidden = true;
+      heroBanner.hidden = true;
       put(heroHint, "");
       return;
     }
@@ -127,17 +131,20 @@ export function mount(root) {
     const now = nowS();
     const left = l.state === "arming" ? armLeft(l.armIn, l.at, Date.now()) : null;
     let sub = "";
+    let last = null;
     if (l.state === "arming") sub = `${left ?? "…"} s until armed`;
     else if (l.state === "triggered") {
       const ev = st && Array.isArray(st.events) && st.events[0];
       const lt = store.online && store.telemetry && store.telemetry.alarm && store.telemetry.alarm.last;
-      const last = lt || ev;
+      last = lt || ev || null;
       sub = last ? `${last.title || kindInfo(last.kind).label} · ${eventAgo(last.ts, now)}` : "Something happened";
     } else if (l.state === "armed") sub = (st && armedFor(st.armed_at, now)) || "Watching the van";
     else if (l.state === "off") sub = "Not watching the van";
     if (stale) sub = "No connection to the device — last known state";
     put(heroSub, sub);
     cls(heroSub, "db-sub" + (l.state === "arming" ? " amber mono" : ""));
+    heroBanner.hidden = l.state !== "triggered" || stale;
+    put(heroBanner, bannerWord(last && last.kind));
 
     // siren / hazard sounding now
     const liveSig = `${l.siren}|${l.hazard}`;
@@ -310,7 +317,8 @@ export function mount(root) {
   }
 
   const tiles = h(".db-tiles", null, posTile, camTile, sysTile, lvTile, radioTile);
-  const van = h(".db-van", null, errBox, tiles);
+  const install = installEntry("button.db-install", "Install app"); // hides itself in the installed app
+  const van = h(".db-van", null, errBox, tiles, h(".db-foot", null, install));
 
   function renderVan() {
     const t = store.telemetry;
@@ -506,5 +514,6 @@ export function mount(root) {
     offTel();
     offConn();
     offSet();
+    install.dispose();
   };
 }

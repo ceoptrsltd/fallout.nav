@@ -218,3 +218,15 @@ test("radio tile and the Bluetooth speaker", () => {
   assert.deepEqual(speakerInfo({ output: null }), { text: "No speaker", connected: false, kind: "" });
   assert.deepEqual(speakerInfo(null), { text: "No speaker", connected: false, kind: "" });
 });
+
+test("hazard banner word: the car screen's words", async () => {
+  const { bannerWord } = await import("../../web/admin/js/dash-fmt.js");
+  assert.equal(bannerWord("impact"), "IMPACT");
+  assert.equal(bannerWord("tilt"), "TILTED");
+  assert.equal(bannerWord("move"), "MOVING");
+  assert.equal(bannerWord("approach"), "PERSON");
+  assert.equal(bannerWord("face"), "FACE");
+  assert.equal(bannerWord("loiter"), "PERSON");
+  assert.equal(bannerWord("test"), "ALARM");
+  assert.equal(bannerWord(undefined), "ALARM");
+});

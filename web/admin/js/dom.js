@@ -93,6 +93,12 @@ const ICONS = {
   // hazard lights: triangle ring with a small triangle inside
   hazard: "M12 2 1 21h22L12 2zm0 4.5L19.4 19H4.6L12 6.5zm0 4-3.5 6h7l-3.5-6z",
   bell: "M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6v-5a6 6 0 0 0-4.5-5.8V4.5a1.5 1.5 0 0 0-3 0v.7A6 6 0 0 0 6 11v5l-2 2v1h16v-1l-2-2z",
+  // iOS share: a box with an arrow up
+  share: "M12 2 7.5 6.5l1.4 1.4L11 5.8V15h2V5.8l2.1 2.1 1.4-1.4L12 2zM5 10h3v2H6v8h12v-8h-2v-2h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V11a1 1 0 0 1 1-1z",
+  dots: "M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
+  more: "M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 0h6v6h-6v-6z",
+  // phone with an arrow down into it
+  install: "M16 1H8a2 2 0 0 0-2 2v18a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm0 18H8V5h8v14zm-4-1 4-4h-3V7h-2v7H8l4 4z",
 };
 
 export function icon(name, size) {
