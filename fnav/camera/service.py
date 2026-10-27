@@ -1,4 +1,5 @@
-"""Сервис камеры: источник → (регистратор, RTSP, MJPEG), супервизор с повтором, обслуживание хранилища."""
+"""Сервис камеры: источник → (регистратор, RTSP, MJPEG, кольцо lores для fnav-watch), супервизор с повтором,
+обслуживание хранилища."""
 
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from .live import LiveHub, LiveMux
 from .mjpeg import JpegWorker, MjpegHub
 from .recorder import Recorder, TimeSync
 from .rtsp import DEFAULT_URL, RtspPublisher
+from .shmring import RingWriter
 from .sources import FakeSource, FrameSink, Source
 from .storage import GB, cleanup, disk_free, repair_latest, segment_reserve_bytes, stats
 
@@ -79,6 +81,7 @@ class CameraService(FrameSink):
         frame_timeout_s: float = 5.0,
         housekeeping_s: float = 30.0,
         live_grace_s: float = 5.0,
+        ring_path: Path | None = None,
     ) -> None:
         self.fake = fake
         self.root = Path(root) if root else paths.recordings_dir()
@@ -117,6 +120,10 @@ class CameraService(FrameSink):
         self.recordings_count = 0
         self.recordings_bytes = 0
         self.moving: bool | None = None  # сообщает ядро (POST /motion); от этого — предел выдержки ночью
+        # lores-кадры для fnav-watch (камера на охране): копируются, только пока он просит
+        self.ring = RingWriter(ring_path)
+        self._ring_only = False  # кадр нужен только кольцу (JPEG — нет)
+        self._ring_want = False
 
     # ───────────── публичный API ─────────────
     def start(self) -> None:
@@ -134,6 +141,7 @@ class CameraService(FrameSink):
             t.join(15)
         self._threads.clear()
         self._stop_pipeline()
+        self.ring.close()
 
     def restart(self) -> None:
         log.info("pipeline restart requested")
@@ -312,12 +320,20 @@ class CameraService(FrameSink):
 
     def on_lores(self, frame: LoresFrame) -> None:
         p = self._p
-        if p is not None and p.jpeg is not None:
+        if p is None:
+            return
+        if p.jpeg is not None and not self._ring_only:
             p.jpeg.submit(frame)
+        if self._ring_want:
+            self._ring_want = False
+            self.ring.write(frame.data, frame.kind, frame.w, frame.h, getattr(p.source, "exposure", None))
 
     def wants_lores(self) -> bool:
         p = self._p
-        return bool(p and p.jpeg and p.jpeg.wants_frame())
+        jpeg = bool(p and p.jpeg and p.jpeg.wants_frame())
+        ring = self._ring_want = p is not None and self.ring.wants_frame()
+        self._ring_only = ring and not jpeg
+        return jpeg or ring
 
     def on_error(self, msg: str) -> None:
         self._source_error = msg

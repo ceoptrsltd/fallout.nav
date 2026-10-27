@@ -1,0 +1,50 @@
+[Unit]
+Description=fallout.nav alarm vision (fnav-watch: person approaching / face at the windshield)
+Documentation=file:///opt/fnav/app/docs/contracts/vision.md
+# Ordering only: frames come from fnav-camera through /dev/shm/fnav-lores; either side may restart on its own,
+# and a crash here never touches recording (fnav-camera) or the alarm itself (fnav-core).
+After=fnav-camera.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fnav
+Group=fnav
+WorkingDirectory=/opt/fnav/app
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPYCACHEPREFIX=/var/cache/fnav/pycache
+Environment=FNAV_DATA_DIR=/var/lib/fnav
+# One inference thread: OpenCV is told so in code, these cover OpenMP/OpenBLAS inside the wheels.
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+ExecStart=/opt/fnav/venv/bin/python -m fnav.watch
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+
+# Recording and the screen come first: this service only gets CPU time nobody else wants (SCHED_IDLE for its
+# threads and an idle cgroup, so it does not compete as a peer of other services either), on core 3 only, and
+# idle-class I/O. No CPUQuota: idle scheduling already yields, a quota would only add stalls.
+CPUSchedulingPolicy=idle
+CPUWeight=idle
+Nice=19
+CPUAffinity=3
+IOSchedulingClass=idle
+OOMScoreAdjust=500
+MemoryHigh=300M
+MemoryMax=400M
+TasksMax=64
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=-/var/cache/fnav/pycache
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

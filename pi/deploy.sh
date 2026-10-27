@@ -4,7 +4,7 @@
 #
 # Usage:
 #   pi/deploy.sh                 sync code to /opt/fnav/app, update system files and Python deps if
-#                                changed, restart fnav-core fnav-camera fnav-display
+#                                changed, restart fnav-core fnav-camera fnav-watch fnav-display
 #   pi/deploy.sh --no-restart    same, but restart nothing
 #   pi/deploy.sh --only "fnav-core fnav-display"   restart only these services
 #   pi/deploy.sh --stage         first install, step 1: upload the repo to ~/fallout.nav on the device
@@ -27,7 +27,7 @@ DEV_USER="${FNAV_USER:-falloutnav}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 MODE=deploy
-RESTART="fnav-core fnav-camera fnav-display"
+RESTART="fnav-core fnav-camera fnav-watch fnav-display"
 while [ $# -gt 0 ]; do
     case "$1" in
         --no-restart) RESTART="" ;;

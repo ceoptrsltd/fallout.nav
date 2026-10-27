@@ -433,7 +433,7 @@ step "Enabling and starting services"
 systemctl daemon-reload
 systemctl enable avahi-daemon.service chrony.service seatd.service 2>/dev/null || warn "could not enable avahi/chrony/seatd"
 systemctl enable gpsd.socket gpsd.service 2>/dev/null || warn "could not enable gpsd"
-systemctl enable mediamtx.service fnav-core.service fnav-camera.service fnav-display.service fnav-radio.service
+systemctl enable mediamtx.service fnav-core.service fnav-camera.service fnav-watch.service fnav-display.service fnav-radio.service
 # Remote access (optional): the unit only runs once tools/remote.sh setup has written /etc/fnav/remote.env.
 systemctl enable fnav-tunnel.service 2>/dev/null || warn "could not enable fnav-tunnel"
 [ "$CHRONY_CHANGED" = 1 ] && systemctl restart chrony.service 2>/dev/null || true

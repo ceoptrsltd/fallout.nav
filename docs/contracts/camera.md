@@ -7,8 +7,9 @@ OV5647 2592×1944 (полный кадр) ─ISP→ main 1440×1080 YUV420 ─�
                                                                  ├─► регистратор MPEG-TS (10 мин, fsync 1 с)
                                                                  └─► RTSP-публикация в MediaMTX rtsp://127.0.0.1:8554/cam
                                  └► lores 768×576 ──┬────────────► JPEG (simplejpeg) ► MJPEG http://127.0.0.1:8081/mjpeg
-                                                    └─(по требованию)► H264Encoder №2 (аппаратный, live_bitrate_kbps, GOP 1 с)
-                                                                       ► MPEG-TS ► http://127.0.0.1:8081/live.ts
+                                                    ├─(по требованию)► H264Encoder №2 (аппаратный, live_bitrate_kbps, GOP 1 с)
+                                                    │                  ► MPEG-TS ► http://127.0.0.1:8081/live.ts
+                                                    └─(пока просит fnav-watch, ≤ 4 к/с)► кольцо в общей памяти /dev/shm/fnav-lores ► fnav-watch
 ```
 
 - Picamera2, `create_video_configuration(main={"size":(out_w,out_h)}, lores={"size":(768,576)}, sensor={"output_size":(2592,1944)}, controls={"FrameRate": fps})`.
@@ -89,6 +90,23 @@ OV5647 2592×1944 (полный кадр) ─ISP→ main 1440×1080 YUV420 ─�
 - Изменение только `live_bitrate_kbps` (`/reload`) перезапускает лишь второй энкодер, запись — нет.
 - fnav-core: `GET /api/camera/live.ts` (только с сессией) и `GET /api/camera/mjpeg?fps=N` — потоковый прокси.
   Mock-режим ядра отдаёт синтетический live.ts (PyAV на ПК).
+
+## Кольцо lores в общей памяти (для fnav-watch)
+
+Камера на охране (docs/contracts/vision.md) берёт lores-кадры без JPEG: `fnav/camera/shmring.py`, файл
+`/dev/shm/fnav-lores` (на ПК — во временном каталоге; `FNAV_LORES_RING` — свой путь), mmap с обеих сторон.
+
+- Файл создаёт **читатель** (fnav-watch). Камера раз в секунду проверяет, есть ли он (`stat`), и копирует кадр, только
+  пока читатель продлевает в заголовке «хочу до» (монотонные часы, ~3 с вперёд) и не чаще его частоты (4 к/с). Нет
+  читателя — ~2 мкс на кадр; копия кадра 768×576 — ~0,5 мс на CM4. Перестал смотреть — сразу «не хочу».
+- Заголовок 64 байта (`FNAVRNG1`, версия, 3 слота, ёмкость слота, номер последнего кадра, «хочу до», частота, pid
+  камеры); слот — 64 байта (номер begin, время записи по `time.monotonic()`, формат `yuv420`/`rgb`, ширина, высота,
+  шаг строки, длина, ExposureTime/AnalogueGain/DigitalGain/Lux из `PicameraSource.exposure` (раз в 8 кадров) или NaN, номер end) и
+  данные как у Picamera2 (`yuv420`: (h·3/2, stride)). Без блокировок: писатель пишет begin, данные, метаданные, end,
+  потом номер кадра; читатель берёт слот, только если end и begin равны номеру (иначе читает заново).
+- Путь внутри камеры — тот же, что для MJPEG: `wants_lores()` / `on_lores()` (`CameraService` раздаёт кадр JPEG-кодеру
+  и/или кольцу), поэтому `--fake` (FakeSource) тоже кормит кольцо (`rgb`). Ошибки кольца в потоке камеры не
+  выходят наружу (в лог один раз); пересоздание файла (сменился размер) — атомарно, через rename.
 
 ## MediaMTX (конфиг пишет G: `pi/mediamtx.yml`)
 

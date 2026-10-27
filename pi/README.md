@@ -12,7 +12,7 @@ dashcam recorder, navigation display on HDMI (720x576 @ 50 Hz -> HDMI->AV conver
 | `boot/config.txt.fnav` | block placed between `# >>> fnav` / `# <<< fnav` in `/boot/firmware/config.txt` |
 | `boot/cmdline.txt.fnav` | extra kernel command line tokens (HDMI mode, EDID override, console blanking) |
 | `tools/gen-edid.py` | generates the fixed 720x576@50 EDID (`/lib/firmware/edid/fnav-576p50.bin`) |
-| `systemd/` | `fnav-core`, `fnav-camera`, `mediamtx`, `fnav-display` units; drop-ins (watchdog, journald, seatd, NM wait-online) |
+| `systemd/` | `fnav-core`, `fnav-camera`, `fnav-watch`, `mediamtx`, `fnav-display` units; drop-ins (watchdog, journald, seatd, NM wait-online) |
 | `mediamtx.yml` | MediaMTX config (`/etc/fnav/mediamtx.yml`) |
 | `sysctl/90-fnav.conf` | fast dirty-page writeback (video survives power loss) |
 | `sudoers/fnav`, `polkit/` | the only privileges the `fnav` user gets |
@@ -106,11 +106,12 @@ value: if `chronyc sourcestats` shows a steady offset of the GPS source against 
 ## Checking that it works
 
 ```bash
-systemctl status fnav-core fnav-camera mediamtx fnav-display gpsd chrony --no-pager
-journalctl -u fnav-core -b --no-pager | tail -50            # also: -u fnav-camera, -u mediamtx, -u fnav-display
-systemctl is-active fnav-core fnav-camera mediamtx fnav-display
+systemctl status fnav-core fnav-camera fnav-watch mediamtx fnav-display gpsd chrony --no-pager
+journalctl -u fnav-core -b --no-pager | tail -50            # also: -u fnav-camera, -u fnav-watch, -u mediamtx, -u fnav-display
+systemctl is-active fnav-core fnav-camera fnav-watch mediamtx fnav-display
 curl -s http://127.0.0.1/api/session                         # {"authenticated": false}
 curl -s http://127.0.0.1:8081/status                         # camera status
+curl -s http://127.0.0.1:8082/status                         # alarm vision (fnav-watch): watching only while armed
 ss -ltnup | grep -E ':(80|8081|8554|8889|8189|2947)\b'
 ls /dev/ttyAMA0 /dev/i2c-1 /dev/gpiochip0 && i2cdetect -y 1  # expect 0x0e
 gpsmon /dev/ttyAMA0   # or: cgps -s
@@ -133,7 +134,7 @@ If `cage` cannot get a seat through seatd on your image, the alternative is a lo
 
 ```bash
 export FNAV_HOST=172.23.204.16 FNAV_USER=falloutnav
-./pi/deploy.sh                          # code + system files + deps (if pyproject.toml changed) + restart fnav-core/camera/display
+./pi/deploy.sh                          # code + system files + deps (if pyproject.toml changed) + restart fnav-core/camera/watch/display
 ./pi/deploy.sh --only "fnav-core"       # restart only core
 ./pi/deploy.sh --no-restart             # just copy
 ./pi/deploy.sh --dry-run                # show what would be sent
@@ -141,14 +142,15 @@ export FNAV_HOST=172.23.204.16 FNAV_USER=falloutnav
 
 `deploy.sh` needs key-based ssh and passwordless `sudo` for the login user; the upload is a tar stream (no rsync on Windows).
 Restarting `fnav-camera` closes the current recording segment cleanly and starts a new one.
+A unit added after the first install (`fnav-watch`) is enabled by the deploy itself; `install.sh` enables all of them.
 
 ## Rollback
 
 ```bash
 sudo ./pi/install.sh --rollback-boot   # restore config.txt and cmdline.txt from the .fnav-orig backups, then reboot
 # Remove the services (data in /var/lib/fnav and the secrets are kept):
-sudo systemctl disable --now fnav-display fnav-camera fnav-core mediamtx
-sudo rm /etc/systemd/system/{fnav-core,fnav-camera,fnav-display,mediamtx}.service
+sudo systemctl disable --now fnav-display fnav-watch fnav-camera fnav-core mediamtx
+sudo rm /etc/systemd/system/{fnav-core,fnav-camera,fnav-watch,fnav-display,mediamtx}.service
 sudo rm /etc/systemd/system/{seatd.service.d,NetworkManager-wait-online.service.d}/fnav.conf
 sudo rm /etc/sudoers.d/fnav /etc/polkit-1/rules.d/50-fnav-networkmanager.rules /etc/udev/rules.d/90-fnav.rules \
         /etc/sysctl.d/90-fnav.conf /etc/chrony/conf.d/fnav.conf /etc/NetworkManager/conf.d/90-fnav-wifi.conf \
@@ -165,6 +167,12 @@ sudo systemctl unmask serial-getty@ttyAMA0.service serial-getty@serial0.service
 
 - `fnav-core` is started as `python -m fnav.core` and relies on its defaults (`0.0.0.0:80`); `fnav-camera` as `python -m fnav.camera`.
 - `fnav-core` runs without `NoNewPrivileges`/capability bounding because it calls `sudo -n systemctl reboot|poweroff` and `nmcli`.
+- `fnav-watch` (camera on alarm duty, `python -m fnav.watch`, `127.0.0.1:8082`) runs with `CPUSchedulingPolicy=idle`,
+  `CPUWeight=idle`, `Nice=19`, `CPUAffinity=3` and idle I/O: it only uses CPU time nobody else wants. Frames come from
+  `fnav-camera` through `/dev/shm/fnav-lores` (copied only while fnav-watch is watching, i.e. while the alarm is armed and
+  "camera watch" is on). Not watching it sleeps (no frames, no models loaded). Models: `fnav/watch/models/` (OpenCV DNN,
+  `opencv-python-headless` from the `pi` extra). Tuning view: `curl -o d.jpg http://127.0.0.1:8082/debug.jpg`, numbers:
+  `curl http://127.0.0.1:8082/debug.json`; offline: `python -m fnav.watch.replay <recording.ts> --out /tmp/w`.
 - The kiosk page should set `cursor: none`; cage also draws no cursor without a pointer device.
 - MediaMTX version is pinned in `install.sh` (`MEDIAMTX_VERSION`); `mediamtx.yml` is written for v1.12.x and MediaMTX refuses unknown keys, so
   after bumping the version check `journalctl -u mediamtx`. The checksum protects against corrupted downloads, not against a compromised release.
