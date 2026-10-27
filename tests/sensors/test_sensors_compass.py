@@ -35,7 +35,7 @@ def test_axes() -> None:
         with pytest.raises(ValueError):
             cm.parse_axes(bad)
     assert cm.map_axes((1.0, 2.0, 3.0), cm.parse_axes("y,-x,-z")) == (2.0, -1.0, -3.0)
-    assert cm.map_axes((1.0, 2.0, 3.0), cm.axes_for("ist8310")) == (-1.0, -2.0, -3.0)
+    assert cm.map_axes((1.0, 2.0, 3.0), cm.axes_for("ist8310")) == (1.0, -2.0, -3.0)  # Holybro M8N: 180° вокруг x
 
 
 def test_axes_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
