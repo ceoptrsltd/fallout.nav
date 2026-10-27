@@ -101,9 +101,11 @@ test("event log helpers", () => {
   assert.equal(kindInfo("impact").kind, "bad");
   assert.equal(kindInfo("move").icon, "pin");
   assert.equal(kindInfo("other").label, "other");
-  assert.equal(eventsKey([]), "0::");
+  assert.equal(eventsKey([]), "0:::");
   assert.notEqual(eventsKey([{ id: "a" }, { id: "b" }]), eventsKey([{ id: "c" }, { id: "a" }]));
-  assert.equal(eventsKey(null), "0::");
+  assert.equal(eventsKey(null), "0:::");
+  // the snapshot / kept recording arrive a moment after the event — the log must redraw for them
+  assert.notEqual(eventsKey([{ id: "a", data: {} }]), eventsKey([{ id: "a", data: { snapshot: true, segment: "x.ts" } }]));
   assert.deepEqual(eventLink({ url: "#/tracking" }), { href: "#/tracking", text: "Show on the map" });
   assert.equal(eventLink({ url: "#/alarm" }), null);
   assert.equal(eventLink({ url: "https://evil.example/" }), null);

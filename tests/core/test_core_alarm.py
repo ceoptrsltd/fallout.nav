@@ -708,6 +708,8 @@ async def test_alarm_api_mock(data_dir):
         assert st["events"][0]["kind"] == "move" and st["events"][0]["url"] == "#/tracking"
         st = (await c.post("/api/alarm/test")).json()
         assert st["events"][0]["title"] == "Test alarm" and len(st["events"]) == 3
+        short = (await c.get("/api/alarm", params={"events": 1})).json()  # дашборд: только последние
+        assert [e["kind"] for e in short["events"]] == ["test"] and short["state"] == st["state"]
         tel = (await c.get("/api/telemetry")).json()["alarm"]
         assert tel["seq"] == 3 and tel["last"]["kind"] == "test" and tel["state"] == "triggered"
         assert (await c.post("/api/alarm/silence")).json()["state"] == "triggered"

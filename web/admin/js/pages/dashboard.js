@@ -6,6 +6,7 @@ import { api, appUrl, errText } from "../api.js";
 import { store, on } from "../store.js";
 import { toast, banner, modal } from "../ui.js";
 import { alarmStateText, armLeft, kindInfo } from "../alarm-fmt.js";
+import { recLink } from "../rec-play.js";
 import {
   EVENTS_N, pollDelay, alarmLive, alarmActions, alarmWord, armedFor, armProgress, armHint, alarmChips,
   recentEvents, recentKey, eventExtras, snapPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
@@ -235,7 +236,7 @@ export function mount(root) {
           ev.body ? h(".bd", null, ev.body) : null,
           x.link || x.segment ? h(".ex", null,
             x.link ? h("a", { href: x.link.href }, x.link.text) : null,
-            x.segment ? h("a", { href: "#/recordings", title: x.segment }, "Recording kept") : null) : null),
+            x.segment ? h("a", { href: recLink(x.segment, ev.ts), title: "Watch from the moment of the event: " + x.segment }, "Recording kept") : null) : null),
         thumb));
     }
   }
@@ -430,7 +431,7 @@ export function mount(root) {
     if (loading) return loading;
     loading = (async () => {
       try {
-        const s = await api.get("/api/alarm");
+        const s = await api.get("/api/alarm?events=5"); // the dashboard shows 5: not the whole log on every check
         if (!stopped) setStatus(s);
       } catch (e) {
         if (stopped) return;

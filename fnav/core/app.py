@@ -686,8 +686,12 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
         return core.alarm.status().model_dump(mode="json")
 
     @app.get("/api/alarm")
-    async def alarm_status():
-        return await status()
+    async def alarm_status(events: int | None = None):
+        """?events=N — только N последних событий журнала (дашборд: меньше трафика с телефона)."""
+        st = await status()
+        if events is not None:
+            st["events"] = st["events"][:max(0, events)]
+        return st
 
     @app.post("/api/alarm/arm")
     async def alarm_arm():

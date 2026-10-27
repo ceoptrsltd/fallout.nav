@@ -154,7 +154,9 @@ export function kindInfo(kind) {
 /** Change marker of the event list (re-render the log only when it changed). */
 export function eventsKey(events) {
   const list = Array.isArray(events) ? events : [];
-  return `${list.length}:${list.length ? list[0].id : ""}:${list.length ? list[list.length - 1].id : ""}`;
+  // the snapshot and the kept recording are attached a moment after the event: they change the key too
+  const extras = list.map((e) => (e && e.data && e.data.snapshot ? "s" : "") + (e && e.data && e.data.segment ? "r" : "")).join(",");
+  return `${list.length}:${list.length ? list[0].id : ""}:${list.length ? list[list.length - 1].id : ""}:${extras}`;
 }
 
 /** Link of an event other than the alarm page itself (e.g. "#/tracking" for move), or null. */

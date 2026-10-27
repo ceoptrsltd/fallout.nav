@@ -31,6 +31,7 @@ export function mount(root) {
   let lastSeq = null;
   let evKey = null;
   let stateSig = "";
+  let lastBtnSig = "";
 
   const settings = () => (store.settings && store.settings.alarm) || null;
 
@@ -109,17 +110,21 @@ export function mount(root) {
     if (l.siren) stSub.append(h("span.al-siren", null, icon("vol", 16), "Siren is sounding"));
     if (l.hazard) stSub.append(h("span.al-siren.al-hz", null, icon("hazard", 16), "Hazard lights flashing"));
 
-    // buttons
-    clear(btns);
-    const b = (what, cls, ic, text, title) => h("button.btn" + cls, { type: "button", disabled: !!busy, title, onclick: () => act(what) },
-      busy === what ? h("span.spin") : icon(ic), text);
-    if (l.state === "off") btns.append(b("arm", ".primary.al-big", "lock", "Arm", "Turn the alarm on"));
-    else {
-      if (l.siren || l.hazard) {
-        btns.append(b("silence", ".primary.al-big", "vol", silenceLabel({ siren: l.siren, hazard: l.hazard, hazardEnabled: hzOn }),
-          "Stop the siren and the hazard lights, the alarm stays armed"));
+    // buttons: rebuilt only when the set changes (not every countdown tick): a tap must not miss them
+    const btnSig = [l.state === "off", l.siren || l.hazard, busy, silenceLabel({ siren: l.siren, hazard: l.hazard, hazardEnabled: hzOn })].join("|");
+    if (btnSig !== lastBtnSig) {
+      lastBtnSig = btnSig;
+      clear(btns);
+      const b = (what, cls, ic, text, title) => h("button.btn" + cls, { type: "button", disabled: !!busy, title, onclick: () => act(what) },
+        busy === what ? h("span.spin") : icon(ic), text);
+      if (l.state === "off") btns.append(b("arm", ".primary.al-big", "lock", "Arm", "Turn the alarm on"));
+      else {
+        if (l.siren || l.hazard) {
+          btns.append(b("silence", ".primary.al-big", "vol", silenceLabel({ siren: l.siren, hazard: l.hazard, hazardEnabled: hzOn }),
+            "Stop the siren and the hazard lights, the alarm stays armed"));
+        }
+        btns.append(b("disarm", ".danger.al-big", "unlock", "Disarm", "Turn the alarm off"));
       }
-      btns.append(b("disarm", ".danger.al-big", "unlock", "Disarm", "Turn the alarm off"));
     }
     const delay = settings() ? settings().arm_delay_s : null;
     stHint.textContent = l.state === "off"
