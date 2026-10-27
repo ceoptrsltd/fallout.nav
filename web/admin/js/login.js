@@ -35,6 +35,7 @@ form.addEventListener("submit", async (e) => {
     });
     if (r.ok) {
       markAppLogin();
+      pw.blur(); // the keyboard closes before the panel loads (its height is measured without it)
       location.replace(nextUrl());
       return;
     }

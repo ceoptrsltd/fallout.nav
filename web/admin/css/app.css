@@ -770,7 +770,9 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
   .side-install span { display: none; }
 }
 @media (max-width: 760px) {
-  #app { grid-template-columns: minmax(0, 1fr); }
+  /* pinned to the real window, not 100dvh: an installed app opened right after the keyboard (sign-in) could
+     keep a stale, taller dvh and push the tab bar below the screen */
+  #app { grid-template-columns: minmax(0, 1fr); position: fixed; inset: 0; height: auto; }
   .side { display: none; }
   .statusbar {
     flex-wrap: nowrap; gap: 0 14px; min-height: 0; overflow: hidden;
