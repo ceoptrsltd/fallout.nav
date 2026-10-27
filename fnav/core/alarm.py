@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 import uuid
@@ -42,6 +43,7 @@ from fnav.models import (
     AlarmSettings,
     AlarmStatus,
     AlarmTelemetry,
+    AlarmVision,
     GpsFix,
     HazardSettings,
 )
@@ -79,6 +81,9 @@ HAZARD_TEST_S = 3.0
 HAZARD_BLINK_ON_S, HAZARD_BLINK_OFF_S = 0.7, 0.5  # подтверждение Arm/Disarm
 
 DETECTED = ("armed", "triggered")  # события и сирена — только в этих состояниях
+VISION_KINDS = ("approach", "face")  # от камеры (fnav-watch): без сирены — push, аварийка, защита записи
+SNAPSHOTS_MAX = 100  # снимков камеры к событиям журнала (alarm_snaps/<id>.jpg)
+_EVENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 # ───────────────────────── обнаружение ─────────────────────────
@@ -86,7 +91,7 @@ DETECTED = ("armed", "triggered")  # события и сирена — толь
 
 @dataclass
 class Detection:
-    kind: str  # "impact" | "tilt" | "move"
+    kind: str  # "impact" | "tilt" | "move" | "approach" | "face"
     data: dict = field(default_factory=dict)
 
 
@@ -274,6 +279,10 @@ def make_event(kind: str, data: dict, ts: float) -> AlarmEvent:
     elif kind == "move":
         title, body = "Van is moving", f"{data.get('distance_m', 0):.0f} m from the parking spot at {hm}"
         url = "#/tracking"
+    elif kind == "approach":
+        title, body = "Person approaching", f"Someone came close to the van at {hm}"
+    elif kind == "face":
+        title, body = "Someone is looking in", f"A face close to the windshield at {hm}"
     else:
         title, body = "Test alarm", f"Alarm notifications work ({hm})"
     return AlarmEvent(id=uuid.uuid4().hex, ts=round(ts, 3), kind=kind, title=title, body=body, url=url,  # type: ignore[arg-type]
@@ -517,6 +526,7 @@ class AlarmService:
     def __init__(self, data_dir: Path, get_settings: Callable[[], AlarmSettings], imu: ImuService,
                  relay: RelayConfig, *, get_fix: Callable[[], GpsFix] | None = None,
                  protect: Callable[[], Awaitable[dict]] | None = None, radio: RadioService | None = None,
+                 snapshot: Callable[[], Awaitable[bytes]] | None = None,
                  open_hazard: Callable[[HazardSettings], HazardOutput] = FakeHazard,
                  transport: httpx.AsyncBaseTransport | None = None, clock: Callable[[], float] = time.time,
                  mono: Callable[[], float] = time.monotonic) -> None:
@@ -527,6 +537,9 @@ class AlarmService:
         self.relay = relay
         self.get_fix = get_fix
         self.protect = protect
+        self.snapshot = snapshot
+        self.snap_dir = data_dir / "alarm_snaps"
+        self.vision_status: Callable[[], AlarmVision] | None = None  # fnav/core/vision.py
         self.clock = clock
         self.mono = mono
         self.detector = Detector()
@@ -755,15 +768,57 @@ class AlarmService:
         else:
             await self._save_state()
         await self._save_events()
-        if cfg.siren and self.state in DETECTED and not self.siren.sounding:
+        if (cfg.siren and det.kind not in VISION_KINDS and self.state in DETECTED
+                and not self.siren.sounding):
             spawn(self.siren.start(cfg.siren_s), name="alarm-siren-start")
         if cfg.hazard.enabled and self.state in DETECTED:
             self.hazard.flash(cfg.hazard.seconds)
-        seg = await self._protect()
+        seg, snap = await asyncio.gather(self._protect(), self._save_snapshot(ev.id))
         if seg:
             ev.data["segment"] = seg
+        if snap:
+            ev.data["snapshot"] = True
+        if seg or snap:
             await self._save_events()
         await self._enqueue(ev, cooldown=True)
+
+    async def vision_event(self, kind: str, data: dict) -> bool:
+        """Событие fnav-watch (человек подошёл / лицо у стекла) → как у датчика, но без сирены."""
+        cfg = self.get_settings().vision
+        if kind not in VISION_KINDS or not cfg.enabled or not getattr(cfg, kind) or self.state not in DETECTED:
+            return False
+        await self._fire(Detection(kind, dict(data)))
+        return True
+
+    # ── снимки камеры к событиям ──
+    def snapshot_path(self, event_id: str) -> Path | None:
+        if not _EVENT_ID_RE.match(event_id):
+            return None
+        p = self.snap_dir / f"{event_id}.jpg"
+        return p if p.is_file() else None
+
+    async def _save_snapshot(self, event_id: str) -> bool:
+        if self.snapshot is None:
+            return False
+        try:
+            jpg = await self.snapshot()
+        except Exception as e:  # noqa: BLE001 — камеры нет: событие идёт дальше
+            log.info("alarm: no snapshot: %s", e)
+            return False
+        if not jpg:
+            return False
+        await self._run_io(self._write_snapshot, event_id, jpg)
+        return True
+
+    def _write_snapshot(self, event_id: str, jpg: bytes) -> None:
+        self.snap_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.snap_dir / f".{event_id}.tmp"
+        tmp.write_bytes(jpg)
+        tmp.replace(self.snap_dir / f"{event_id}.jpg")
+        old = sorted(self.snap_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime)[:-SNAPSHOTS_MAX]
+        for p in old:
+            with contextlib.suppress(OSError):
+                p.unlink()
 
     async def _protect(self) -> str | None:
         if self.protect is None:
@@ -801,12 +856,21 @@ class AlarmService:
     async def clear_events(self) -> AlarmStatus:
         self.events = []
         await self._save_events()
+        await self._run_io(self._clear_snapshots)
         return self.status()
+
+    def _clear_snapshots(self) -> None:
+        for p in self.snap_dir.glob("*.jpg"):
+            with contextlib.suppress(OSError):
+                p.unlink()
 
     async def simulate(self, kind: str, g: float = 0.5) -> AlarmStatus:
         """Только --mock. Удар и наклон — через «датчик», если он читается: виден на уровне вибрации, событие даёт
         настоящее обнаружение (удар — через 1 с, наклон — через ~10 с). Иначе и для сдвига — сразу событие.
         Как у настоящих событий — только в armed/triggered."""
+        if kind in VISION_KINDS:  # как от fnav-watch: с учётом настроек alarm.vision
+            await self.vision_event(kind, {"simulated": True})
+            return self.status()
         cfg = self.get_settings()
         fake = self.imu.fake if self.imu.running else None
         if fake is not None and kind == "impact":
@@ -896,6 +960,8 @@ class AlarmService:
             siren=self.siren.sounding, events=self.events[:STATUS_EVENTS],
             relay=AlarmRelay(configured=self.relay.configured, pending=self._pending),
             hazard=self.hazard.status(),
+            vision=self.vision_status() if self.vision_status else AlarmVision(
+                enabled=self.get_settings().vision.enabled),
         )
 
     def telemetry(self) -> AlarmTelemetry:

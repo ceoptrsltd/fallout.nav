@@ -100,6 +100,19 @@ export function hazardStatus(hz) {
   return { text: "Off — the alarm does not use them", kind: "" };
 }
 
+/** Camera watch (fnav-watch) status line: {text, kind} or null when the device does not report it. */
+export function visionStatus(v) {
+  if (!v || typeof v !== "object") return null;
+  if (!v.enabled) return { text: "Off — the camera does not guard the van", kind: "" };
+  if (v.error) return { text: String(v.error), kind: "bad" };
+  if (!v.available) return { text: "The vision service is not running", kind: "bad" };
+  if (v.watching) {
+    const n = Number.isFinite(v.people) ? v.people : 0;
+    return { text: n ? `Watching — ${n === 1 ? "a person" : n + " people"} in view` : "Watching", kind: n ? "warn" : "ok" };
+  }
+  return { text: "Ready — starts watching when the alarm is armed", kind: "ok" };
+}
+
 /** The button that stops the siren and the hazard lights (the alarm stays armed); short enough for a phone. */
 export function silenceLabel({ siren, hazard, hazardEnabled }) {
   if (hazard && !siren) return "Stop the lights";
@@ -111,6 +124,8 @@ const KINDS = {
   impact: { label: "Impact", icon: "warn", kind: "bad" },
   tilt: { label: "Tilt", icon: "level", kind: "warn" },
   move: { label: "Moving", icon: "pin", kind: "warn" },
+  approach: { label: "Person approaching", icon: "cam", kind: "bad" },
+  face: { label: "Face at the windshield", icon: "cam", kind: "bad" },
   test: { label: "Test", icon: "info", kind: "" },
 };
 

@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.staticfiles import StaticFiles
 
@@ -658,7 +658,7 @@ def _register_games(app: FastAPI, core: Core) -> None:
 
 
 class SimulateBody(BaseModel):
-    kind: Literal["impact", "tilt", "move"]
+    kind: Literal["impact", "tilt", "move", "approach", "face"]
     g: float = Field(0.5, gt=0, le=16)
 
 
@@ -698,6 +698,14 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
         if why:
             return _err(503, f"Hazard relay: {why}")
         return await status()
+
+    @app.get("/api/alarm/snapshot/{event_id}.jpg")
+    async def alarm_snapshot(event_id: str):
+        """Снимок камеры в момент события журнала (если камера работала)."""
+        p = core.alarm.snapshot_path(event_id)
+        if p is None:
+            return _err(404, "No snapshot for this event")
+        return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
     @app.delete("/api/alarm/events")
     async def alarm_clear():

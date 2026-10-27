@@ -301,6 +301,19 @@ class HazardSettings(_Model):
     confirm: bool = False  # мигнуть 1 раз при Arm и 2 раза при Disarm
 
 
+class VisionSettings(_Model):
+    """Камера на охране (fnav-watch, docs/contracts/vision.md): человек подходит / лицо у стекла. Без сирены:
+    push, аварийка, защита записи."""
+
+    enabled: bool = False
+    approach: bool = True  # человек подошёл: рамка росла, нижний край дошёл до ближней линии
+    near_line: float = Field(0.6, ge=0.2, le=1.0)  # ближняя линия, доля высоты кадра сверху (над капотом)
+    approach_hold_s: float = Field(2.0, ge=0, le=30)  # столько у линии — тревога (прохожие не успевают)
+    face: bool = True  # крупное лицо у центра кадра
+    face_min: float = Field(0.08, ge=0.02, le=0.5)  # ширина лица — доля ширины кадра (≈ человек в 1–1,5 м)
+    face_hold_s: float = Field(3.0, ge=0.5, le=30)
+
+
 class AlarmSettings(_Model):
     """Охрана: датчик удара MPU-6050, наклон, сдвиг по GPS (docs/contracts/alarm.md)."""
 
@@ -317,6 +330,7 @@ class AlarmSettings(_Model):
     sensor_bus: int = Field(3, ge=0, le=30)  # шина I2C: 3 — своя (pins 7/29); не нашёлся — ищем и на 1 (с компасом)
     sensor_address: Literal[104, 105] = 104  # 0x68 (AD0 → GND) или 0x69
     hazard: HazardSettings = HazardSettings()
+    vision: VisionSettings = VisionSettings()
 
 
 LevelAxis = Literal["x+", "x-", "y+", "y-", "z+", "z-"]
@@ -608,7 +622,7 @@ class BtState(_Model):
 # ───────────────────────────── Охрана и уровень (MPU-6050) ─────────────────────────────
 
 AlarmStateName = Literal["off", "arming", "armed", "triggered"]
-AlarmKind = Literal["impact", "tilt", "move", "test"]
+AlarmKind = Literal["impact", "tilt", "move", "approach", "face", "test"]
 
 
 class AlarmEvent(_Model):
@@ -642,6 +656,16 @@ class AlarmHazard(_Model):
     error: str | None = None  # реле не открылось / ошибка вывода
 
 
+class AlarmVision(_Model):
+    """fnav-watch глазами ядра (docs/contracts/vision.md)."""
+
+    enabled: bool = False  # settings.alarm.vision.enabled
+    available: bool = False  # сервис отвечает
+    watching: bool = False  # смотрит в кадр (охрана включена)
+    people: int = 0  # людей в кадре сейчас
+    error: str | None = None
+
+
 class AlarmStatus(_Model):
     state: AlarmStateName = "off"
     armed_at: float | None = None
@@ -653,6 +677,7 @@ class AlarmStatus(_Model):
     events: list[AlarmEvent] = []  # новые первыми, ≤ 100
     relay: AlarmRelay = AlarmRelay()
     hazard: AlarmHazard = AlarmHazard()
+    vision: AlarmVision = AlarmVision()
 
 
 class AlarmLast(_Model):

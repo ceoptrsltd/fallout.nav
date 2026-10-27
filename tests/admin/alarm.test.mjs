@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logVal, roundG, impactToSlider, sliderToImpact,
   logTicks, fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, isIos, deviceName,
-  pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardStatus, silenceLabel,
+  pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardStatus, silenceLabel, visionStatus,
 } from "../../web/admin/js/alarm-fmt.js";
 
 const UA = {
@@ -191,4 +191,17 @@ test("toUnix: seconds, milliseconds, ISO, nothing", () => {
   assert.equal(toUnix("2025-10-22T13:33:20Z"), 1761140000);
   assert.equal(toUnix(null), null);
   assert.equal(toUnix("nope"), null);
+});
+
+test("camera watch: status line and event kinds", () => {
+  assert.equal(visionStatus(null), null);
+  assert.equal(visionStatus({ enabled: false }).kind, "");
+  assert.equal(visionStatus({ enabled: true, available: false, error: "Vision service (fnav-watch) is not responding" }).kind, "bad");
+  assert.equal(visionStatus({ enabled: true, available: false }).text, "The vision service is not running");
+  assert.equal(visionStatus({ enabled: true, available: true, watching: false }).kind, "ok");
+  assert.deepEqual(visionStatus({ enabled: true, available: true, watching: true, people: 0 }), { text: "Watching", kind: "ok" });
+  assert.equal(visionStatus({ enabled: true, available: true, watching: true, people: 1 }).text, "Watching — a person in view");
+  assert.equal(visionStatus({ enabled: true, available: true, watching: true, people: 3 }).kind, "warn");
+  assert.equal(kindInfo("approach").label, "Person approaching");
+  assert.equal(kindInfo("face").kind, "bad");
 });

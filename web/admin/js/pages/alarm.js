@@ -4,14 +4,14 @@
 // api/push/* answered by the server behind https …/fnadmin/), the event log and the hazard lights relay
 // (settings.alarm.hazard, test: POST api/alarm/hazard/test).
 import { h, icon, clear, isNum } from "../dom.js";
-import { api, errText } from "../api.js";
+import { api, appUrl, errText } from "../api.js";
 import { SettingsForm } from "../form.js";
 import { store, on } from "../store.js";
-import { toast, banner, badge, confirmDialog, poll } from "../ui.js";
+import { toast, banner, badge, confirmDialog, modal, poll } from "../ui.js";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logTicks, impactToSlider, sliderToImpact,
   fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, pushErrorText, toUnix,
-  hazardStatus, silenceLabel,
+  hazardStatus, silenceLabel, visionStatus,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
 import * as push from "../push.js";
@@ -224,17 +224,25 @@ export function mount(root) {
       const ki = kindInfo(ev.kind);
       const link = eventLink(ev);
       const seg = ev.data && typeof ev.data.segment === "string" && ev.data.segment ? ev.data.segment : null;
+      const snap = ev.data && ev.data.snapshot === true;
       evList.append(h(".al-ev." + (ki.kind || "plain"), null,
         h("span.ic", null, icon(ki.icon)),
         h(".txt", null,
           h(".tt", null, ev.title || ki.label),
           ev.body ? h(".bd", null, ev.body) : null,
-          link || seg ? h(".ex", null,
+          link || seg || snap ? h(".ex", null,
             link ? h("a", { href: link.href }, link.text) : null,
+            snap ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); showSnapshot(ev); } }, "Snapshot") : null,
             seg ? h("span", null, "Recording kept: ", h("a.mono", { href: "#/recordings" }, seg)) : null) : null),
         h(".when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, isNum(ev.ts) ? fmtWhen(ev.ts, now) : "—"),
       ));
     }
+  }
+
+  function showSnapshot(ev) {
+    const img = h("img", { src: appUrl(`api/alarm/snapshot/${ev.id}.jpg`), alt: ev.title || "Snapshot", style: { width: "100%", display: "block", background: "#000" } });
+    img.addEventListener("error", () => img.replaceWith(h(".dim", null, "The snapshot is gone (the log keeps the last 100).")));
+    modal({ title: ev.title || "Snapshot", width: 800, body: [img, h(".dim", { style: { marginTop: "8px" } }, isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "")] });
   }
 
   async function sendTestAlarm() {
@@ -271,6 +279,7 @@ export function mount(root) {
     renderTilt();
     renderEvents(false);
     renderHazard();
+    renderVision();
   }
 
   async function load() {
@@ -589,6 +598,74 @@ export function mount(root) {
     );
   }
 
+  // ───── camera watch: fnav-watch (docs/contracts/vision.md) ─────
+  let vsForm = null;
+  let vsCard;
+  const vsStatus = h("span.al-hzstatus");
+
+  function renderVision() {
+    const s = visionStatus(st && st.vision);
+    const txt = s ? s.text : st ? "Not reported by the device" : "—";
+    const cls = "al-hzstatus " + (s && s.kind === "bad" ? "red" : s && s.kind === "warn" ? "amber" : s && s.kind === "ok" ? "green" : "dim");
+    if (vsStatus.textContent !== txt) vsStatus.textContent = txt;
+    if (vsStatus.className !== cls) vsStatus.className = cls;
+  }
+
+  /** Near line: click or drag on a camera snapshot, just above the hood. */
+  const nearLineWidget = (fd) => {
+    const img = h("img", { alt: "Camera snapshot", draggable: false });
+    const line = h(".al-nearline");
+    const val = h("span.mono");
+    const box = h(".al-nearbox", null, img, line);
+    const show = (v) => {
+      const p = isNum(v) ? v : 0.6;
+      line.style.top = `${p * 100}%`;
+      val.textContent = `${Math.round(p * 100)} % from the top`;
+    };
+    const fromEvent = (e) => {
+      const r = box.getBoundingClientRect();
+      const v = Math.min(1, Math.max(0.2, Math.round(((e.clientY - r.top) / r.height) * 100) / 100));
+      show(v);
+      fd.change(v);
+    };
+    let drag = false;
+    box.addEventListener("pointerdown", (e) => { drag = true; box.setPointerCapture(e.pointerId); fromEvent(e); });
+    box.addEventListener("pointermove", (e) => { if (drag) fromEvent(e); });
+    box.addEventListener("pointerup", () => { drag = false; });
+    const reload = () => { img.src = appUrl("api/camera/snapshot.jpg") + "?t=" + Date.now(); };
+    img.addEventListener("error", () => { img.removeAttribute("src"); box.classList.add("noimg"); });
+    img.addEventListener("load", () => box.classList.remove("noimg"));
+    reload();
+    return {
+      el: h(".al-near", null, box, h(".al-nearbar", null, val,
+        h("button.btn.sm", { type: "button", onclick: reload }, icon("refresh"), "New snapshot"))),
+      update: show,
+    };
+  };
+
+  if (!settings() || !settings().vision) {
+    vsCard = h(".card", null, h("h2", null, "Camera watch"),
+      banner("warn", "This device cannot watch the camera yet — update the device software."));
+  } else {
+    vsForm = new SettingsForm();
+    const f = (s) => vsForm.add(s);
+    const P = "alarm.vision.";
+    vsCard = h(".card.al-hzcard", null,
+      h("h2", null, "Camera watch"),
+      h(".al-hzhead", null, h("span.dim", null, "Status "), vsStatus),
+      h(".hint", null, "While the alarm is armed, the camera looks for a person coming close to the van and for a face at the windshield. No siren: a notification, the hazard lights and a protected recording."),
+      f({ path: P + "enabled", label: "Watch the camera", type: "switch", switchLabel: "only while the alarm is armed" }),
+      f({ path: P + "approach", label: "Person approaching", type: "switch", switchLabel: "grows in the frame and reaches the near line" }),
+      f({ path: P + "near_line", label: "Near line", hint: "just above the hood: a person whose feet reach it is close", type: "custom", build: nearLineWidget, wide: true }),
+      f({ path: P + "approach_hold_s", label: "At the line for", hint: "people walking past do not stay that long", type: "number", min: 0, max: 30, step: 0.5, unit: "s" }),
+      f({ path: P + "face", label: "Face at the windshield", type: "switch", switchLabel: "a large face near the centre of the frame" }),
+      f({ path: P + "face_min", label: "Face size", hint: "at least this wide", type: "range", min: 0.02, max: 0.5, step: 0.01,
+        unitFn: (v) => (isNum(v) ? `${Math.round(v * 100)} % of the frame width` : "") }),
+      f({ path: P + "face_hold_s", label: "Face held for", type: "number", min: 0.5, max: 30, step: 0.5, unit: "s" }),
+      vsForm.bar,
+    );
+  }
+
   // ───── layout ─────
   root.append(
     h(".page-head", null, h("h1", null, "Alarm"), headBadge),
@@ -622,11 +699,13 @@ export function mount(root) {
         nBox,
         devBox)),
     setCard,
+    vsCard,
     hzCard,
   );
 
   renderState(true);
   renderHazard();
+  renderVision();
   renderMeter();
   renderTilt();
   renderEvents(true);
@@ -658,5 +737,6 @@ export function mount(root) {
     offSet();
     if (form) form.destroy();
     if (hzForm) hzForm.destroy();
+    if (vsForm) vsForm.destroy();
   };
 }

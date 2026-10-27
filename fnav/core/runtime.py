@@ -32,6 +32,7 @@ from fnav.core.tiles import TileService
 from fnav.core.tracking import RelayConfig, TrackService
 from fnav.core.util import cancel_tasks, spawn
 from fnav.core.videoout import VideoOutput, VideoOutputError
+from fnav.core.vision import WATCH_URL, VisionClient
 from fnav.core.weather import WeatherService
 from fnav.core.ws import WsManager, new_nmea_lines
 from fnav.interfaces import ButtonEvent, LedMode, SensorHub, create_sensor_hub
@@ -59,6 +60,7 @@ class CoreOptions:
     trust_localhost: bool = True
     background: bool = True  # фоновые циклы (телеметрия, опросы); в unit-тестах можно выключить
     camera_url: str = CAMERA_URL
+    watch_url: str = WATCH_URL
     whep_url: str = WHEP_URL
     local_transport: httpx.AsyncBaseTransport | None = None  # для камеры/MediaMTX (тесты)
     tile_transport: httpx.AsyncBaseTransport | None = None  # для Esri (тесты)
@@ -153,8 +155,13 @@ class Core:
         self.imu = ImuService(lambda: self.store.get().alarm, mock=opts.mock)
         self.alarm = AlarmService(paths.data_dir(), lambda: self.store.get().alarm, self.imu, relay,
                                   get_fix=lambda: self.hub.snapshot().gps, protect=self.camera.protect_current,
-                                  radio=self.radio, transport=opts.relay_transport,
+                                  snapshot=self.camera.snapshot, radio=self.radio, transport=opts.relay_transport,
                                   open_hazard=FakeHazard if opts.mock else open_gpio_hazard)
+        self.vision = VisionClient(get_settings=lambda: self.store.get().alarm.vision,
+                                   get_armed=lambda: self.alarm.state in ("armed", "triggered"),
+                                   on_event=self.alarm.vision_event, base_url=opts.watch_url,
+                                   transport=opts.local_transport)
+        self.alarm.vision_status = self.vision.status
         self.level = LevelService(self.imu, lambda: self.store.get().level, self._save_level_calibration,
                                   get_fix=lambda: self.hub.snapshot().gps)
         self.keypad = KeypadService({
@@ -223,6 +230,7 @@ class Core:
             log.exception("radio/bluetooth start")
         try:
             await self.alarm.start(background=bg)
+            await self.vision.start(background=bg)
             await self.level.start(background=bg)
             if bg:
                 self.imu.start()
@@ -245,7 +253,7 @@ class Core:
     async def stop(self) -> None:
         await cancel_tasks(*self._tasks)
         self._tasks.clear()
-        for closer in (self.imu.stop, self.alarm.stop, self.level.stop, self.speedlimits.stop, self.weather.stop,
+        for closer in (self.imu.stop, self.vision.stop, self.alarm.stop, self.level.stop, self.speedlimits.stop, self.weather.stop,
                        self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop,
                        self.hub.stop, self.camera.stop, self.tiles.stop):
             try:
