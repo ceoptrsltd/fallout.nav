@@ -724,7 +724,7 @@ export function mount(root) {
     vsCard = h(".card.al-hzcard", null,
       h("h2", null, "Camera watch"),
       h(".al-hzhead", null, h("span.dim", null, "Status "), vsStatus),
-      h(".hint", null, "While the alarm is armed, the camera looks for a person coming close to the van and for a face at the windshield. No siren: a notification, the hazard lights and a protected recording."),
+      h(".hint", null, "While the alarm is armed, the camera looks for a person coming close to the van, someone lingering at it and a face at the windshield. No siren: a notification, the hazard lights and a protected recording."),
       f({ path: P + "enabled", label: "Watch the camera", type: "switch", switchLabel: "only while the alarm is armed" }),
       f({ path: P + "approach", label: "Person approaching", type: "switch", switchLabel: "grows in the frame and reaches the near line" }),
       f({ path: P + "near_line", label: "Near line", hint: "just above the hood: a person whose feet reach it is close", type: "custom", build: nearLineWidget, wide: true }),
@@ -732,7 +732,14 @@ export function mount(root) {
       f({ path: P + "face", label: "Face at the windshield", type: "switch", switchLabel: "a large face near the centre of the frame" }),
       f({ path: P + "face_min", label: "Face size", hint: "at least this wide", type: "range", min: 0.02, max: 0.5, step: 0.01,
         unitFn: (v) => (isNum(v) ? `${Math.round(v * 100)} % of the frame width` : "") }),
-      f({ path: P + "face_hold_s", label: "Face held for", type: "number", min: 0.5, max: 30, step: 0.5, unit: "s" }),
+      f({ path: P + "face_hold_s", label: "Face held for", type: "number", min: 0.5, max: 30, step: 0.5, unit: "s",
+        help: "Faces are seen in daylight or with light on them; at night a person against a street lamp is a dark silhouette — the rule below catches that." }),
+      settings().vision.loiter !== undefined
+        ? [
+            f({ path: P + "loiter", label: "Lingering at the van", type: "switch", switchLabel: "someone stays close, near the centre (works at night too)" }),
+            f({ path: P + "loiter_s", label: "Lingering for", hint: "once per visit: again only after nobody was there for 10 s", type: "number", min: 3, max: 120, step: 1, unit: "s" }),
+          ]
+        : null,
       vsForm.bar,
     );
   }
