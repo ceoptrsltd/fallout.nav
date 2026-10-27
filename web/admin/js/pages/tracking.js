@@ -106,17 +106,46 @@ export async function mount(root) {
 
   // ── layout ──
   const rangeSeg = segmented({ name: "trkrange", value: opts.range, options: RANGES.map((r) => ({ value: r.value, label: r.label })), onchange: (v) => { opts.range = v; saveOpts(opts); fitPending = true; refresh(); } });
-  const lineSw = switchEl({ checked: opts.line, label: "Track line", onchange: (v) => { opts.line = v; saveOpts(opts); refresh(); } });
-  const followSw = switchEl({ checked: opts.follow, label: "Follow vehicle", onchange: (v) => { opts.follow = v; saveOpts(opts); if (v) centerVehicle(); } });
+  const lineSw = switchEl({ checked: opts.line, label: "Track line", onchange: (v) => setLine(v) });
+  const followSw = switchEl({ checked: opts.follow, label: "Follow vehicle", onchange: (v) => setFollow(v) });
   const fitBtn = h("button.btn.sm", { type: "button", title: "Show all places of the period", onclick: () => fitAll() }, icon("fit"), "Fit");
   const vehBtn = h("button.btn.sm", { type: "button", title: "Center on the vehicle", onclick: () => centerVehicle(true) }, icon("gps"), "Vehicle");
+  for (const c of [lineSw, followSw, fitBtn, vehBtn]) c.classList.add("trk-hctl"); // phones: the buttons on the map instead
+  // phones: round buttons over the map (css), the same actions as the header controls
+  const tool = (ic, title, onclick) => h("button.trk-tool", { type: "button", title, "aria-label": title, onclick }, icon(ic));
+  const fitTool = tool("fit", "Show all places of the period", () => fitAll());
+  const vehTool = tool("gps", "Center on the vehicle", () => centerVehicle(true));
+  const followTool = tool("nav", "Follow vehicle", () => setFollow(!opts.follow));
+  const lineTool = tool("track", "Track line", () => setLine(!opts.line));
+  const tools = h(".trk-tools", null, fitTool, vehTool, followTool, lineTool);
+  const markTools = () => {
+    for (const [b, v] of [[followTool, opts.follow], [lineTool, opts.line]]) {
+      b.classList.toggle("on", v);
+      b.setAttribute("aria-pressed", String(v));
+    }
+  };
+  markTools();
+  function setLine(v) {
+    opts.line = v;
+    saveOpts(opts);
+    lineSw.input.checked = v;
+    markTools();
+    refresh();
+  }
+  function setFollow(v) {
+    opts.follow = v;
+    saveOpts(opts);
+    followSw.input.checked = v;
+    markTools();
+    if (v) centerVehicle();
+  }
   const posEl = h("span.trk-pos", null, "No position yet");
   const countEl = h("span.dim", null, "");
   const updEl = h("span.faint", null, "");
   const errBox = h("div", { hidden: true });
   const mapEl = h(".trk-map");
   const legend = h(".trk-legend", null,
-    h("span", null, h("i.lg-stop", null, "P"), "parking (stayed 5 min or longer)"),
+    h("span", null, h("i.lg-stop", null, "P"), "parking", h("span.lg-more", null, " (stayed 5 min or longer)")),
     h("span", null, h("i.lg-dot"), "waypoint"),
     h("span", null, h("i.lg-veh"), "vehicle"),
   );
@@ -126,10 +155,11 @@ export async function mount(root) {
     errBox,
     h(".card.trk-card", null,
       h(".trk-info", null, posEl, h(".grow"), countEl, updEl),
-      mapEl,
+      h(".trk-mapwrap", null, mapEl, tools),
       legend,
     ),
   );
+  root.classList.add("trk-page"); // phones: the page fills the screen, the map takes what is left
 
   // ── Leaflet ──
   let L;
@@ -145,6 +175,8 @@ export async function mount(root) {
 
   const zl = tileZoomLimits(store.settings); // imagery down to z21 by default, roads and labels to z19
   const map = L.map(mapEl, { preferCanvas: true, worldCopyJump: true, maxZoom: zl.imagery, zoomControl: true });
+  const ro = new ResizeObserver(() => map.invalidateSize({ pan: false })); // the phone layout sizes the map by flex
+  ro.observe(mapEl);
   map.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
   const tpl = esriTemplates(store.settings);
   esriImageryLayer(L, tpl.imagery, { maxZoom: zl.imagery, maxNative: zl.imagery, attribution: ESRI_ATTR }).addTo(map);
@@ -446,6 +478,7 @@ export async function mount(root) {
     offTel();
     clearInterval(staleTimer);
     if (raf) cancelAnimationFrame(raf);
+    ro.disconnect();
     map.remove();
   };
 }

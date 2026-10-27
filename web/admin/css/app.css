@@ -317,6 +317,8 @@ tbody tr:hover { background: var(--panel2); }
 /* ───── tracking ───── */
 .offline-banner { margin: 10px 22px 0; flex: none; }
 .trk-card { padding: 10px 12px 10px; }
+.trk-mapwrap { position: relative; }
+.trk-tools { display: none; } /* phones: round buttons over the map instead of the header controls */
 .trk-info { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; font-family: var(--mono); font-size: 13px; margin-bottom: 8px; }
 .trk-pos { color: var(--dim); }
 .trk-pos.live { color: var(--green); }
@@ -1066,4 +1068,34 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
   .rec-evs { max-width: none; }
   .rec-marks { height: 16px; margin-top: 10px; }
   .rec-mark { top: -5px; width: 14px; height: 24px; margin-left: -7px; }
+}
+/* Tracking on phones: title and period in one line, the map fills the screen down to the tab bar,
+   Fit / Vehicle / Follow / Track line as round buttons over the map */
+@media (max-width: 760px) {
+  #view:has(> .trk-page) { padding-bottom: 10px; }
+  .trk-page { height: 100%; gap: 8px; }
+  .trk-page .page-head { flex-wrap: nowrap; gap: 10px; }
+  .trk-page .page-head h1 { flex: 1 1 auto; min-width: 0; }
+  .trk-page .page-head .seg { flex: none; flex-wrap: nowrap; }
+  .trk-page .page-head .seg label { padding: 6px 10px; font-size: 13.5px; }
+  .trk-hctl { display: none !important; }
+  .trk-card { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 8px; }
+  .trk-info { flex-wrap: nowrap; font-size: 12px; gap: 8px; margin-bottom: 6px; }
+  .trk-pos { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trk-info .dim { flex: none; }
+  .trk-info .faint { display: none; }
+  .trk-mapwrap { flex: 1 1 auto; min-height: 260px; display: flex; }
+  .trk-map { flex: 1 1 auto; height: auto; min-height: 0; }
+  .trk-tools { display: flex; flex-direction: column; gap: 10px; position: absolute; top: 10px; right: 10px; z-index: 1; }
+  .trk-tool {
+    width: 44px; height: 44px; display: grid; place-items: center; padding: 0; cursor: pointer;
+    border-radius: 50%; border: 1px solid var(--metal-lo); background: rgba(17, 21, 15, .9); color: var(--text);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .06);
+  }
+  .trk-tool svg { width: 20px; height: 20px; }
+  .trk-tool:active { background: var(--panel3); }
+  .trk-tool.on { background: var(--amber); border-color: var(--amber); color: #1a1100; }
+  .trk-map .leaflet-touch .leaflet-bar a, .trk-map.leaflet-touch .leaflet-bar a { width: 40px; height: 40px; line-height: 40px; font-size: 20px; }
+  .trk-legend { flex-wrap: nowrap; gap: 14px; margin-top: 6px; font-size: 12px; overflow: hidden; }
+  .trk-legend .lg-more { display: none; }
 }
