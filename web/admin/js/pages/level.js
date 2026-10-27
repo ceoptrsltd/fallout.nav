@@ -6,10 +6,10 @@ import { h, icon, clear } from "../dom.js";
 import { api } from "../api.js";
 import { SettingsForm } from "../form.js";
 import { store, on } from "../store.js";
-import { toast, banner, badge, confirmDialog, poll, segmented } from "../ui.js";
+import { toast, banner, badge, confirmDialog, poll } from "../ui.js";
 import {
-  AXES, MEASURE_S, LEARN_NEED_S, fmtDeg, pitchText, rollText, levelBadge, fmtVec, fmtCm, calibSummary, learnFrac,
-  levelErrorText,
+  AXES, MEASURE_S, LEARN_NEED_S, REF_MAX_DEG, fmtDeg, fmtSigned, pitchText, rollText, levelBadge, fmtVec, fmtCm,
+  calibSummary, learnFrac, levelErrorText, signMeaning, parseDeg, toggleSign, degError, hasLevelRef,
 } from "../level-fmt.js";
 import { fmtWhen } from "../tracking-fmt.js";
 
@@ -21,9 +21,7 @@ export function mount(root) {
   let stopped = false;
   let st = null; // LevelStatus
   let hud = null; // web/display/ui/index.js: drawLevelPanel, LEVEL_BOX
-  let method = "two_point";
-  let measuring = null; // {step, t0}
-  let lvMsg = null; // {kind, text} — result of the last level measurement
+  let measuring = null; // {t0} — the spirit level measurement (3 s) in progress
   let fwdMsg = null;
   let fwdBusy = false;
   let wasLearning = false;
@@ -115,30 +113,52 @@ export function mount(root) {
   const resetBtn = h("button.btn.sm.danger", { type: "button", onclick: () => resetCal() }, icon("trash"), "Reset calibration");
   const uncalNote = h("div");
 
-  const methodSeg = segmented({
-    name: "lv-method",
-    value: method,
-    options: [{ value: "two_point", label: "Precise (two-point)" }, { value: "single", label: "Single" }],
-    onchange: (v) => { method = v; lvMsg = null; renderCal(); },
-  });
-  const m1Btn = h("button.btn.primary", { type: "button", onclick: () => measure(1) });
-  const m2Btn = h("button.btn.primary", { type: "button", onclick: () => measure(2) });
-  const mSBtn = h("button.btn.primary", { type: "button", onclick: () => measure(null) });
-  const s1Done = h("span.green.lv-done", null, "✓ measured");
-  const twoBox = h(".lv-two", null,
-    h("p.lv-p.dim", null, "Works on any ground: the slope of the spot cancels out."),
-    h("ol.lv-steps", null,
-      h("li", null, h("div", null, "Park, stop the engine; nobody inside or moving. Keep still for 3 s."),
-        h(".btnrow", null, m1Btn, s1Done)),
-      h("li", null, h("div", null, "Turn the van around (180°) and stop with the wheels on the same spots. Keep still again."),
-        h(".btnrow", null, m2Btn))));
-  const singleBox = h(".lv-single", null,
-    h("p.lv-p.dim", null, "Park on ground you know is level (check it with a spirit level); nobody inside or moving."),
-    h(".btnrow", null, mSBtn));
+  // spirit level: two signed angles, 0.1°; the ± button for number pads without a minus key (iPhone)
+  const refIn = {};
+  const refErr = {};
+  let refMsg = null; // {kind, text, entered?, read?} — result of the last save
+  const refRow = (axis, label, hint) => {
+    const inp = h("input.lv-deg", { type: "text", inputmode: "decimal", autocomplete: "off", spellcheck: "false", placeholder: "0.0", "aria-label": label });
+    const pm = h("button.btn.lv-pm", { type: "button", title: "Change the sign (+ / −)", "aria-label": "Change the sign" }, "±");
+    const mean = h("span.lv-mean.dim");
+    const err = h(".err.lv-referr", { hidden: true });
+    const upd = () => {
+      const v = parseDeg(inp.value);
+      mean.textContent = v === null ? "" : signMeaning(axis, v);
+      mean.className = "lv-mean" + (v !== null && Math.abs(v) > REF_MAX_DEG ? " red" : "");
+      err.hidden = true;
+      inp.classList.remove("invalid");
+      if (refMsg) { refMsg = null; renderRefMsg(); }
+    };
+    inp.addEventListener("input", upd);
+    inp.addEventListener("blur", () => { const v = parseDeg(inp.value); if (v !== null) inp.value = String(v); }); // rounded to 0.1
+    pm.addEventListener("click", () => { inp.value = toggleSign(inp.value); upd(); inp.focus(); });
+    refIn[axis] = inp;
+    refErr[axis] = err;
+    return h(".lv-ref", null,
+      h(".lv-reflab", null, h("b", null, label), h("span.dim", null, hint)),
+      h(".lv-refctl", null, pm, inp, h("span.unit", null, "°"), mean),
+      err);
+  };
+  const saveBtn = h("button.btn.primary", { type: "button", onclick: () => saveRef() }, "Save calibration");
   const measBar = h(".progress.lv-meas", { hidden: true }, h("i"));
-  const measTxt = h(".hint", { hidden: true }, "Measuring — keep still…");
-  const lvMsgBox = h("div");
+  const measTxt = h(".hint", { hidden: true }, "Measuring — keep still, nobody inside or moving…");
+  const refMsgBox = h("div");
   const stillHint = h(".lv-still");
+
+  function renderRefMsg() {
+    clear(refMsgBox);
+    const noSensor = st && !st.sensor_ok;
+    if (refMsg) {
+      refMsgBox.append(banner(refMsg.kind, h("div", null, refMsg.text,
+        refMsg.entered ? h(".lv-cmp", null,
+          h("span", null, "Entered ", h("b.mono", null, `${fmtSigned(refMsg.entered.pitch)} / ${fmtSigned(refMsg.entered.roll)}`)),
+          h("span", null, "the device reads ", h("b.mono", null, `${fmtSigned(refMsg.read.pitch)} / ${fmtSigned(refMsg.read.roll)}`)),
+          h("span.dim", null, "(along / across)")) : null)));
+    } else if (noSensor) {
+      refMsgBox.append(banner("bad", "Level sensor is not connected. It is the alarm's shock sensor (MPU-6050) — see the Alarm page."));
+    }
+  }
 
   let axisPick = null; // the user's choice in the select until applied (the poll must not reset it)
   const axisSel = h("select", { "aria-label": "Board axis pointing forward", onchange: () => { axisPick = axisSel.value; } },
@@ -151,7 +171,6 @@ export function mount(root) {
   const learnBox = h(".lv-learn", { hidden: true },
     h(".lv-learn-row", null, learnBar, cancelBtn), learnTxt,
     h(".hint", null, "Drive normally on straight roads: speed up and brake a few times (above 5 km/h). It finishes by itself."));
-  const fwdNeed = h(".hint", null, "Set the level first.");
   const fwdMsgBox = h("div");
 
   function renderCal() {
@@ -166,51 +185,38 @@ export function mount(root) {
     }
     resetBtn.hidden = !cal;
     clear(uncalNote);
-    if (st && !cal) {
-      uncalNote.append(banner("warn", "Not calibrated: the angles are measured from the sensor board as it is mounted, and forward is assumed to be its X+ axis. Do steps 1 and 2 below."));
+    if (st && !hasLevelRef(cal)) {
+      uncalNote.append(banner("warn", "Not calibrated: the angles are measured from the sensor board as it is mounted. Set the forward direction, then calibrate with a spirit level (steps 1 and 2)."));
     }
 
-    // step 1
+    // spirit level
     const busy = !!measuring;
     const noSensor = st && !st.sensor_ok;
-    const step1 = st && st.wizard ? st.wizard.two_point_step === 1 : false;
-    twoBox.hidden = method !== "two_point";
-    singleBox.hidden = method !== "single";
-    const lab = (btn, step, text) => {
-      const spin = !!(measuring && measuring.step === step);
-      if (btn.dataset.k !== spin + text) { // only when it changes: the button keeps its content under the pointer
-        btn.dataset.k = spin + text;
-        clear(btn);
-        if (spin) btn.append(h("span.spin"), " ");
-        btn.append(text);
-      }
-      btn.disabled = busy || noSensor;
-    };
-    lab(m1Btn, 1, step1 ? "Measure position 1 again" : "Measure position 1");
-    lab(m2Btn, 2, "Measure position 2");
-    m2Btn.disabled = busy || noSensor || !step1;
-    s1Done.hidden = !step1;
-    lab(mSBtn, null, "Measure");
+    if (saveBtn.dataset.k !== String(busy)) { // only when it changes: the button keeps its content under the pointer
+      saveBtn.dataset.k = String(busy);
+      clear(saveBtn);
+      if (busy) saveBtn.append(h("span.spin"), " ");
+      saveBtn.append(busy ? "Measuring…" : "Save calibration");
+    }
+    saveBtn.disabled = busy || noSensor;
+    for (const k of ["pitch", "roll"]) refIn[k].disabled = busy;
     measBar.hidden = !busy;
     measTxt.hidden = !busy;
-    clear(lvMsgBox);
-    if (lvMsg) lvMsgBox.append(banner(lvMsg.kind, lvMsg.text));
-    else if (noSensor) lvMsgBox.append(banner("bad", "Level sensor is not connected. It is the alarm's shock sensor (MPU-6050) — see the Alarm page."));
+    renderRefMsg();
     clear(stillHint);
     if (st && st.sensor_ok && !busy) {
       stillHint.append(st.still ? h("span.green", null, "● The van is still — ready to measure") : h("span.amber", null, "● The van is moving or rocking — wait until it settles"));
     }
 
-    // step 2
+    // forward direction (works before the spirit level too)
     const w = (st && st.wizard) || {};
     const learning = !!w.learning;
     axisSel.value = axisPick || (cal && cal.axis) || "x+";
-    axisSel.disabled = !cal || fwdBusy || learning;
-    axisBtn.disabled = !cal || fwdBusy || learning;
-    learnBtn.disabled = !cal || fwdBusy || learning || noSensor;
+    axisSel.disabled = fwdBusy || learning;
+    axisBtn.disabled = fwdBusy || learning;
+    learnBtn.disabled = fwdBusy || learning || noSensor;
     learnBtn.hidden = learning;
     learnBox.hidden = !learning;
-    fwdNeed.hidden = !!cal;
     if (learning) {
       learnBar.firstChild.style.width = learnFrac(w) * 100 + "%";
       learnTxt.textContent = `${(w.learn_s || 0).toFixed(1)} of ${LEARN_NEED_S} s` + (typeof w.learn_spread_deg === "number" ? ` · spread ${w.learn_spread_deg.toFixed(0)}° (needs ≤ 10°)` : "");
@@ -224,24 +230,40 @@ export function mount(root) {
     if (fwdMsg) fwdMsgBox.append(banner(fwdMsg.kind, fwdMsg.text));
   }
 
-  async function measure(step) {
+  async function saveRef() {
     if (measuring) return;
-    measuring = { step, t0: Date.now() };
-    lvMsg = null;
+    const vals = {};
+    let bad = false;
+    for (const k of ["pitch", "roll"]) {
+      const v = parseDeg(refIn[k].value);
+      const e = degError(v);
+      refErr[k].hidden = !e;
+      refErr[k].textContent = e || "";
+      refIn[k].classList.toggle("invalid", !!e);
+      if (e) bad = true;
+      else {
+        vals[k] = v;
+        refIn[k].value = String(v);
+      }
+    }
+    if (bad) return;
+    measuring = { t0: Date.now() };
+    refMsg = null;
     renderCal();
-    const body = method === "single" ? { method: "single" } : { method: "two_point", step };
     try {
-      const r = await api.post("/api/level/calibration/level", body);
+      const r = await api.post("/api/level/calibration/reference", { pitch_deg: vals.pitch, roll_deg: vals.roll });
       if (stopped) return;
       st = r;
-      lvMsg = method === "single" ? { kind: "ok", text: "Level set. Now check the forward direction (step 2)." }
-        : step === 1 ? { kind: "ok", text: "Position 1 measured. Turn the van around on the same spot, then measure position 2." }
-        : { kind: "ok", text: "Level set (two-point). Now check the forward direction (step 2)." };
+      refMsg = { kind: "ok", text: "Calibration saved.", entered: { pitch: vals.pitch, roll: vals.roll }, read: { pitch: r.pitch_deg, roll: r.roll_deg } };
     } catch (e) {
-      lvMsg = { kind: e.status === 409 ? "warn" : "bad", text: levelErrorText(e) };
+      refMsg = { kind: e.status === 409 ? "warn" : "bad", text: levelErrorText(e) };
     }
     measuring = null;
-    if (!stopped) { renderCal(); renderStatusBits(); renderLive(); }
+    if (!stopped) {
+      renderCal();
+      renderStatusBits();
+      renderLive();
+    }
   }
 
   async function setAxis() {
@@ -281,7 +303,7 @@ export function mount(root) {
     try {
       st = await api.del("/api/level/calibration");
       axisPick = null;
-      lvMsg = null;
+      refMsg = null;
       fwdMsg = null;
       toast("ok", "Level calibration reset");
     } catch (e) {
@@ -345,23 +367,24 @@ export function mount(root) {
         h(".card-head", null, h("h2", null, "Calibration"), resetBtn),
         calKv,
         uncalNote,
-        h("h3.lv-h3", null, h("span.lv-n", null, "1"), "Set level"),
-        h(".lv-method", null, methodSeg),
-        twoBox,
-        singleBox,
-        measBar,
-        measTxt,
-        stillHint,
-        lvMsgBox,
-        h("h3.lv-h3", null, h("span.lv-n", null, "2"), "Forward direction"),
-        h("p.lv-p.dim", null, "Which way the sensor board faces the front of the van."),
+        h("h3.lv-h3", null, h("span.lv-n", null, "1"), "Forward direction"),
+        h("p.lv-p.dim", null, "Which way the sensor board faces the front of the van — best set before the spirit level step."),
         h(".lv-axis", null, h("span", null, "Board axis pointing forward"), axisSel, axisBtn),
         h(".hint", null, "The X and Y arrows printed on the board; Z points out of its face."),
         h(".lv-or.dim", null, "or"),
         learnBtn,
         learnBox,
-        fwdNeed,
-        fwdMsgBox)),
+        fwdMsgBox,
+        h("h3.lv-h3", null, h("span.lv-n", null, "2"), "Calibrate with a spirit level"),
+        h("p.lv-p.dim", null, "Put a spirit level (or a digital / phone level) on the van floor and type in what it shows. ",
+          "Nobody inside or moving while the device measures (3 s)."),
+        refRow("pitch", "Along the van (pitch)", "level pointing forward · + when the front is higher"),
+        refRow("roll", "Across the van (roll)", "level across the floor · + when the right side is higher"),
+        h(".btnrow.lv-save", null, saveBtn),
+        measBar,
+        measTxt,
+        stillHint,
+        refMsgBox)),
     setCard,
   );
 

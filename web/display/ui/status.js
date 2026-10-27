@@ -1,6 +1,6 @@
 // Индикаторы (GPS, REC, сеть, охрана) и крупные предупреждения (NO GPS, NO LINK).
 
-import { alarmIndicator, drawLock } from "./alarm.js";
+import { HAZARD_HZ, alarmIndicator, drawHazardSign, drawLock, hazardOn } from "./alarm.js";
 import { C, blinkOn, blit, chamferPath, fontLabel, fontNum, fontStencil, hazardSprite, outlinedText, plateSprite, sprite, textWidth } from "./theme.js";
 
 const ROW_H = 36;
@@ -171,6 +171,11 @@ export function drawIndicators(ctx, state, safe) {
       invert: inv,
       minW: al.kind === "arming" ? rowWidth(ctx, "ARM 88", 22) : 0, // отсчёт не «дышит» шириной
     });
+    y -= ROW_H + 6;
+  }
+  // аварийка мигает (реле на её кнопке): мигающий знак над строкой охраны, у правого края колонки
+  if (hazardOn(t.alarm)) {
+    drawHazardSign(ctx, xr - 20, y + ROW_H / 2, 28, blinkOn(now, HAZARD_HZ, 0.5));
     y -= ROW_H + 6;
   }
   return { x: xr - 200, y, w: 200, h: safe.y + safe.h - y };

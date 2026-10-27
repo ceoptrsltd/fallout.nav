@@ -16,16 +16,21 @@
 
 ## Калибровка (хранится в `settings.level.calibration`)
 
-`LevelCalibration = {up: [x, y, z], forward: [x, y, z], method: "single"|"two_point", forward_source: "axis"|"driving",
-axis: "x+"|"x-"|"y+"|"y-"|"z+"|"z-"|null, ts: float}` — векторы в осях датчика, нормированы.
-Базис машины: `U = up`, `F = normalize(forward − (forward·U)·U)`, `R = F × U`.
+`LevelCalibration = {up: [x, y, z], forward: [x, y, z], method: "reference", forward_source: "axis"|"driving",
+axis: "x+"|"x-"|"y+"|"y-"|"z+"|"z-"|null, ref: {a: [x, y, z], pitch_deg, roll_deg}|null, ts: float}` — векторы в
+осях датчика, нормированы. Базис машины: `U = up`, `F = normalize(forward − (forward·U)·U)`, `R = F × U`.
+(Старые значения `method` `"single"`/`"two_point"` при загрузке принимаются.)
 
-1. **Ноль (`up`)** — замер: среднее за 3 с, только если машина неподвижна (разброс |a| ≤ 0,01 g и угол ≤ 0,3° за
-   замер; иначе 409 «The van is moving or rocking. Keep still and try again»).
-   - `single` — машина стоит на ровном месте: `up = normalize(a)`.
-   - `two_point` — точно, не нужно ровное место: замер 1, развернуть машину на 180° на том же месте, замер 2;
-     `up = normalize(a1 + a2)` (уклон площадки вычитается).
-2. **Вперёд (`forward`)**:
+1. **По эталонному уровню (`up`)** — пользователь кладёт механический/цифровой уровень на пол машины и вводит
+   настоящие углы **со знаком, с точностью 0,1°**: продольный (`pitch_deg`, > 0 — перед выше) и поперечный
+   (`roll_deg`, > 0 — правый борт выше), каждый в пределах ±45°. В этот момент — замер: среднее `a` за 3 с, только
+   если машина неподвижна (разброс |a| ≤ 0,01 g и угол ≤ 0,3° за замер; иначе 409 «The van is moving or rocking.
+   Keep still and try again»). `up` выбирается так, чтобы в базисе машины (вперёд — текущий `forward`) вектор `a`
+   давал ровно введённые углы: целевой `a_V = (sin p, sin r, √(1 − sin²p − sin²r))` в осях (F, R, U), базис
+   поворачивается на минимальный угол, переводящий `a_V` в замер (рысканье почти не меняется). Замер и углы
+   хранятся в `ref`; когда потом меняется `forward` (ось / обучение по ходу), `up` пересчитывается из `ref`.
+   Нет `ref` — `forward` меняется без пересчёта (как раньше).
+2. **Вперёд (`forward`)** — лучше задать до эталона (иначе `up` пересчитается сам, см. выше):
    - `axis` — какая ось датчика смотрит вперёд (по стрелкам X/Y на плате), по умолчанию `x+`;
    - `driving` — по ходу: во время разгонов/торможений по GPS (|dv/dt| ≥ 0,8 м/с², скорость ≥ 5 км/ч, курс почти
      не меняется) копится сумма `h · dv/dt`, где `h` — горизонтальная (⊥ U) часть ускорения минус тяжесть;
@@ -52,17 +57,17 @@ axis: "x+"|"x-"|"y+"|"y-"|"z+"|"z-"|null, ts: float}` — векторы в ос
 
 `LevelStatus = {sensor_ok: bool, calibrated: bool, pitch_deg: float|null, roll_deg: float|null, still: bool,
 raw: [x, y, z]|null (g, оси датчика, сглаженный), wheels_cm: {fl, fr, rl, rr}|null, calibration: LevelCalibration|null,
-wizard: {two_point_step: 0|1 (1 — первый замер сделан, ждём второй), learning: bool, learn_s: float (набрано секунд),
-learn_spread_deg: float|null}}`
+wizard: {learning: bool, learn_s: float (набрано секунд), learn_spread_deg: float|null}}`
 
 | Метод | Путь | Тело → ответ |
 |---|---|---|
 | GET | `/api/level` | `LevelStatus` |
-| POST | `/api/level/calibration/level` | `{"method": "single"}` или `{"method": "two_point", "step": 1|2}` → `LevelStatus` (ждёт 3 с замера; 409 — качается; `step: 2` без `step: 1` → 409) |
-| POST | `/api/level/calibration/forward` | `{"axis": "x+"…}` или `{"learn": true}` / `{"learn": false}` → `LevelStatus` |
+| POST | `/api/level/calibration/reference` | `{"pitch_deg": 1.3, "roll_deg": -0.4}` (−45…45) → `LevelStatus` (ждёт 3 с замера; 409 — качается; 422 — вне пределов) |
+| POST | `/api/level/calibration/forward` | `{"axis": "x+"…}` или `{"learn": true}` / `{"learn": false}` → `LevelStatus` (работает и без эталона: `up` по умолчанию — ось датчика, ближайшая к тяжести) |
 | DELETE | `/api/level/calibration` | `LevelStatus` (сброс) |
 
-`/api/level/calibration/level` без датчика → 503 «Level sensor is not connected».
+`/api/level/calibration/reference` без датчика → 503 «Level sensor is not connected». Старого
+`/api/level/calibration/level` (`single`/`two_point`) больше нет.
 
 **Телеметрия**: `Telemetry.level = {sensor_ok, calibrated, pitch_deg, roll_deg, wheels_cm}` (или `null`, если
 сервиса нет); обновляется с каждой телеметрией.

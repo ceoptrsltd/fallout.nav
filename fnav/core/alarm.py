@@ -35,6 +35,7 @@ from fnav.core.tracking import TOKEN_HEADER, Outbox, RelayConfig
 from fnav.core.util import cancel_tasks, spawn
 from fnav.models import (
     AlarmEvent,
+    AlarmHazard,
     AlarmLast,
     AlarmRelay,
     AlarmSensor,
@@ -42,7 +43,9 @@ from fnav.models import (
     AlarmStatus,
     AlarmTelemetry,
     GpsFix,
+    HazardSettings,
 )
+from fnav.sensors.hazard import FakeHazard, HazardOutput, output_key
 from fnav.sensors.mpu6050 import Vec
 
 if TYPE_CHECKING:
@@ -71,6 +74,9 @@ BATCH = 50
 SIREN_RATE = 16000
 SIREN_SECONDS = 8.0  # файл короткий, играет по кругу siren_s секунд
 EPS = 1e-9
+
+HAZARD_TEST_S = 3.0
+HAZARD_BLINK_ON_S, HAZARD_BLINK_OFF_S = 0.7, 0.5  # подтверждение Arm/Disarm
 
 DETECTED = ("armed", "triggered")  # события и сирена — только в этих состояниях
 
@@ -369,6 +375,146 @@ class Siren:
                 await self.radio.end_alert()
 
 
+class HazardLights:
+    """Аварийка через реле на её кнопку (docs/contracts/alarm.md, «Аварийка»).
+
+    hold — реле замкнуто, пока мигаем; pulse — «нажатие» кнопки без фиксации: нажали — включилась, ещё раз —
+    выключилась (горит ли она, знаем только по своим нажатиям). Мигание длится до срока, новое событие его продлевает.
+    """
+
+    def __init__(self, get_cfg: Callable[[], HazardSettings],
+                 open_output: Callable[[HazardSettings], HazardOutput] = FakeHazard,
+                 mono: Callable[[], float] = time.monotonic) -> None:
+        self.get_cfg = get_cfg
+        self.open_output = open_output
+        self.mono = mono
+        self._out: HazardOutput | None = None
+        self._key: tuple | None = None
+        self.error: str | None = None
+        self.lit = False  # аварийка горит (по нашим нажатиям / реле замкнуто)
+        self._until = 0.0  # monotonic: когда погасить
+        self._task: asyncio.Task | None = None  # мигание по тревоге / тест
+        self._blink: asyncio.Task | None = None  # подтверждение Arm/Disarm
+        self._lock = asyncio.Lock()  # переключения реле — по одному
+
+    @property
+    def active(self) -> bool:
+        return any(t is not None and not t.done() for t in (self._task, self._blink))
+
+    def _output(self, cfg: HazardSettings) -> HazardOutput | None:
+        """Открыть вывод (или заново — сменились вывод/сигнал); ошибка — в self.error."""
+        key = output_key(cfg)
+        if self._out is not None and key == self._key:
+            return self._out
+        self._close_output()
+        try:
+            self._out, self._key = self.open_output(cfg), key
+            self.error = None
+            log.info("alarm: hazard relay on GPIO%d (%s, %s)", cfg.gpio, cfg.signal, cfg.mode)
+        except Exception as e:  # noqa: BLE001 — нет gpiozero, вывод занят и т.п.
+            if self.error != str(e):
+                log.warning("alarm: hazard relay unavailable: %s", e)
+            self.error = str(e)
+        return self._out
+
+    def _close_output(self) -> None:
+        if self._out is not None:
+            with contextlib.suppress(Exception):
+                self._out.close()
+        self._out, self._key, self.lit = None, None, False
+
+    def apply(self, cfg: HazardSettings) -> None:
+        """Настройки: включена — держать вывод открытым (у RC-реле — импульсы «выкл»), выключена — отпустить."""
+        if self.active:
+            return  # мигает (или тест) — вывод отпустим/переоткроем после
+        if cfg.enabled:
+            self._output(cfg)
+        else:
+            self._close_output()
+            self.error = None
+
+    async def _switch(self, on: bool) -> None:
+        cfg = self.get_cfg()
+        async with self._lock:
+            out = self._output(cfg)
+            if out is None or self.lit == on:
+                return
+            if cfg.mode == "hold":
+                out.set(on)
+                self.lit = on
+                return
+            out.set(True)  # «нажали»
+            self.lit = on
+            try:
+                await asyncio.sleep(cfg.press_ms / 1000)
+            finally:
+                out.set(False)  # «отпустили» — даже если нас отменили посреди нажатия
+
+    def flash(self, seconds: float) -> None:
+        """Мигать seconds (уже мигает — продлить до now + seconds)."""
+        self._until = max(self._until, self.mono() + seconds)
+        if self._task is None or self._task.done():
+            self._task = spawn(self._run(), name="alarm-hazard")
+
+    async def _run(self) -> None:
+        if self._blink is not None:
+            await cancel_tasks(self._blink)
+            self._blink = None
+        try:
+            await self._switch(True)
+            log.warning("alarm: hazard lights on")
+            while (left := self._until - self.mono()) > 0:
+                await asyncio.sleep(min(left, 1.0))
+        finally:
+            await asyncio.shield(self._switch(False))
+            log.info("alarm: hazard lights off")
+            self._after()
+
+    def _after(self) -> None:
+        if not self.get_cfg().enabled:
+            self._close_output()  # тест при выключенной аварийке — вывод не держим
+
+    async def stop(self) -> None:
+        self._until = 0.0
+        await cancel_tasks(self._task, self._blink)
+        self._task = self._blink = None
+        await self._switch(False)
+        self._after()
+
+    def confirm(self, times: int) -> None:
+        """Мигнуть times раз (Arm — 1, Disarm — 2), если не мигаем по тревоге."""
+        if self._task is not None and not self._task.done():
+            return
+        if self._blink is not None:
+            self._blink.cancel()
+        self._blink = spawn(self._blinks(times), name="alarm-hazard-confirm")
+
+    async def _blinks(self, times: int) -> None:
+        try:
+            for i in range(times):
+                if i:
+                    await asyncio.sleep(HAZARD_BLINK_OFF_S)
+                await self._switch(True)
+                await asyncio.sleep(HAZARD_BLINK_ON_S)
+                await self._switch(False)
+        finally:
+            await asyncio.shield(self._switch(False))
+
+    async def test(self) -> str | None:
+        """Мигнуть HAZARD_TEST_S текущими настройками (даже выключенной). None — пошло, иначе — почему нет."""
+        if self._output(self.get_cfg()) is None:
+            return self.error or "hazard relay unavailable"
+        self.flash(HAZARD_TEST_S)
+        return None
+
+    async def close(self) -> None:
+        await self.stop()
+        self._close_output()
+
+    def status(self) -> AlarmHazard:
+        return AlarmHazard(enabled=self.get_cfg().enabled, active=self.active, error=self.error)
+
+
 # ───────────────────────── сервис ─────────────────────────
 
 
@@ -376,6 +522,7 @@ class AlarmService:
     def __init__(self, data_dir: Path, get_settings: Callable[[], AlarmSettings], imu: ImuService,
                  relay: RelayConfig, *, get_fix: Callable[[], GpsFix] | None = None,
                  protect: Callable[[], Awaitable[dict]] | None = None, radio: RadioService | None = None,
+                 open_hazard: Callable[[HazardSettings], HazardOutput] = FakeHazard,
                  transport: httpx.AsyncBaseTransport | None = None, clock: Callable[[], float] = time.time,
                  mono: Callable[[], float] = time.monotonic) -> None:
         self.state_path = data_dir / "alarm_state.json"
@@ -390,6 +537,7 @@ class AlarmService:
         self.detector = Detector()
         self.move = MoveWatch()
         self.siren = Siren(radio, data_dir / "alarm_siren.wav", allowed=lambda: self.state in DETECTED)
+        self.hazard = HazardLights(lambda: self.get_settings().hazard, open_hazard, mono=mono)
         self.outbox = Outbox(data_dir / "alarm_outbox.db", max_rows=OUTBOX_MAX_ROWS)
         self._transport = transport
         self._client: httpx.AsyncClient | None = None  # создаётся при первой отправке (сервер может быть не настроен)
@@ -420,6 +568,7 @@ class AlarmService:
             self.detector.rebase()  # база наклона — через 2 с после старта
             log.info("alarm: armed (restored after restart)")
         self._pending = await asyncio.to_thread(self.outbox.count)
+        self.hazard.apply(self.get_settings().hazard)
         if background:
             self._tasks = [asyncio.create_task(self._tick_loop(), name="alarm-tick"),
                            asyncio.create_task(self._relay_loop(), name="alarm-relay")]
@@ -428,6 +577,7 @@ class AlarmService:
         await cancel_tasks(*self._tasks)
         self._tasks.clear()
         await self.siren.stop()
+        await self.hazard.close()
         with contextlib.suppress(Exception):
             await self._save_state()
         if self._client is not None:
@@ -439,6 +589,7 @@ class AlarmService:
 
     def apply_settings(self, s: AlarmSettings) -> None:
         self.detector.configure(s)
+        self.hazard.apply(s.hazard)
         if s.notify_offline != self._notify:
             self._notify = s.notify_offline
             self._kick.set()
@@ -495,7 +646,10 @@ class AlarmService:
     async def arm(self) -> AlarmStatus:
         """off → arming (arm_delay_s) → armed; при arm_delay_s = 0 — сразу armed. Уже включена — ничего."""
         if self.state == "off":
-            delay = self.get_settings().arm_delay_s
+            cfg = self.get_settings()
+            if cfg.hazard.enabled and cfg.hazard.confirm:
+                self.hazard.confirm(1)
+            delay = cfg.arm_delay_s
             if delay <= 0:
                 self._set_armed()
             else:
@@ -510,14 +664,24 @@ class AlarmService:
         self.detector.clear_base()
         self.move.reset()
         await self.siren.stop()
+        await self.hazard.stop()
         if was != "off":
+            hz = self.get_settings().hazard
+            if hz.enabled and hz.confirm:
+                self.hazard.confirm(2)
             log.info("alarm: disarmed")
             await self._changed()
         return self.status()
 
     async def silence(self) -> AlarmStatus:
+        """Сирена и аварийка замолкают, охрана остаётся."""
         await self.siren.stop()
+        await self.hazard.stop()
         return self.status()
+
+    async def hazard_test(self) -> str | None:
+        """Мигнуть аварийкой 3 с текущими настройками. None — пошло, иначе — почему нет."""
+        return await self.hazard.test()
 
     async def toggle(self) -> bool:
         """Клавиша «Alarm on/off»: off → arming/armed, иначе (и из triggered) → off. → включена ли теперь."""
@@ -598,6 +762,8 @@ class AlarmService:
         await self._save_events()
         if cfg.siren and self.state in DETECTED and not self.siren.sounding:
             spawn(self.siren.start(cfg.siren_s), name="alarm-siren-start")
+        if cfg.hazard.enabled and self.state in DETECTED:
+            self.hazard.flash(cfg.hazard.seconds)
         seg = await self._protect()
         if seg:
             ev.data["segment"] = seg
@@ -733,12 +899,13 @@ class AlarmService:
             tilt_deg=round(angle, 1) if angle is not None and self.state in DETECTED else None,
             siren=self.siren.sounding, events=self.events[:STATUS_EVENTS],
             relay=AlarmRelay(configured=self.relay.configured, pending=self._pending),
+            hazard=self.hazard.status(),
         )
 
     def telemetry(self) -> AlarmTelemetry:
         last = self.events[0] if self.events else None
         return AlarmTelemetry(
             state=self.state, arm_in_s=self._arm_in(), level_g=self._level("telemetry"),  # type: ignore[arg-type]
-            sensor_ok=self.imu.ok, siren=self.siren.sounding, seq=self.seq,
+            sensor_ok=self.imu.ok, siren=self.siren.sounding, hazard=self.hazard.active, seq=self.seq,
             last=AlarmLast(kind=last.kind, ts=last.ts, title=last.title) if last else None,
         )

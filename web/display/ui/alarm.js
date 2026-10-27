@@ -33,6 +33,51 @@ export function alarmIndicator(alarm) {
   return { text: "ARMED", kind: "armed" };
 }
 
+/** Аварийка мигает сейчас (реле на её кнопке, alarm.md «Аварийка»; telemetry.alarm.hazard). */
+export const hazardOn = (alarm) => !!alarm && typeof alarm === "object" && alarm.hazard === true;
+
+/** Частота мигания знака аварийки — как у настоящей (≈ 90 раз в минуту). */
+export const HAZARD_HZ = 1.5;
+
+/**
+ * Знак аварийки (треугольник в треугольнике) с центром (x, y), высота ≈ s. lit — фаза «горит»: светлый
+ * залитый знак с тёмным внутренним треугольником (на ч/б — самое яркое пятно); иначе — тусклый контур.
+ */
+export function drawHazardSign(ctx, x, y, s, lit) {
+  const k = s / 20;
+  const tri = (r) => {
+    ctx.beginPath();
+    ctx.moveTo(0, -r);
+    ctx.lineTo(r * 0.866, r * 0.5);
+    ctx.lineTo(-r * 0.866, r * 0.5);
+    ctx.closePath();
+  };
+  ctx.save();
+  ctx.translate(x, y + 1.5 * k);
+  ctx.scale(k, k);
+  ctx.lineJoin = "round";
+  tri(13);
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = C.shadow;
+  ctx.stroke();
+  if (lit) {
+    ctx.fillStyle = C.hazard;
+    ctx.fill();
+    tri(5.5);
+    ctx.lineWidth = 2.6;
+    ctx.strokeStyle = C.dark;
+    ctx.stroke();
+  } else {
+    ctx.lineWidth = 2.4;
+    ctx.strokeStyle = C.inkDim;
+    ctx.stroke();
+    tri(5.5);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 /** Слово крупной плашки по виду последнего события. */
 export function bannerWord(kind) {
   return BANNER_WORD[kind] ?? "ALARM";

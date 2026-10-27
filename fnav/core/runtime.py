@@ -44,6 +44,7 @@ from fnav.models import (
     Settings,
     Telemetry,
 )
+from fnav.sensors.hazard import FakeHazard, open_gpio_hazard
 
 log = logging.getLogger("fnav.core")
 
@@ -151,7 +152,8 @@ class Core:
         self.imu = ImuService(lambda: self.store.get().alarm, mock=opts.mock)
         self.alarm = AlarmService(paths.data_dir(), lambda: self.store.get().alarm, self.imu, relay,
                                   get_fix=lambda: self.hub.snapshot().gps, protect=self.camera.protect_current,
-                                  radio=self.radio, transport=opts.relay_transport)
+                                  radio=self.radio, transport=opts.relay_transport,
+                                  open_hazard=FakeHazard if opts.mock else open_gpio_hazard)
         self.level = LevelService(self.imu, lambda: self.store.get().level, self._save_level_calibration,
                                   get_fix=lambda: self.hub.snapshot().gps)
         self.keypad = KeypadService({

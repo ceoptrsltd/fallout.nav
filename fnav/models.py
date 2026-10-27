@@ -287,6 +287,21 @@ class BluetoothSettings(_Model):
     auto_connect: bool = True  # переподключать колонку по умолчанию каждые 30 с
 
 
+class HazardSettings(_Model):
+    """Аварийка через реле на её кнопку (docs/contracts/alarm.md, «Аварийка»)."""
+
+    enabled: bool = False  # мигать аварийкой при тревоге
+    gpio: int = Field(19, ge=4, le=27)  # BCM; pin 35
+    signal: Literal["servo", "level"] = "servo"  # RC-реле (импульсы 50 Гц) / обычный вход
+    on_us: int = Field(2000, ge=500, le=2500)  # servo: импульс «вкл», мкс
+    off_us: int = Field(1000, ge=500, le=2500)  # servo: импульс «выкл», мкс
+    active_low: bool = False  # level: включается низким уровнем
+    mode: Literal["hold", "pulse"] = "hold"  # реле замкнуто всё время / «нажатие» кнопки вкл-выкл
+    press_ms: int = Field(400, ge=100, le=3000)  # pulse: длительность «нажатия»
+    seconds: int = Field(30, ge=5, le=900)  # сколько мигать после события
+    confirm: bool = False  # мигнуть 1 раз при Arm и 2 раза при Disarm
+
+
 class AlarmSettings(_Model):
     """Охрана: датчик удара MPU-6050, наклон, сдвиг по GPS (docs/contracts/alarm.md)."""
 
@@ -302,19 +317,30 @@ class AlarmSettings(_Model):
     notify_offline: bool = False  # сервер шлёт push, если устройство на охране пропало из сети
     sensor_bus: int = Field(1, ge=0, le=30)  # шина I2C (общая с компасом)
     sensor_address: Literal[104, 105] = 104  # 0x68 (AD0 → GND) или 0x69
+    hazard: HazardSettings = HazardSettings()
 
 
 LevelAxis = Literal["x+", "x-", "y+", "y-", "z+", "z-"]
 
 
+class LevelRef(_Model):
+    """Эталон: замер (среднее a за 3 с, g, оси датчика) и введённые по уровню на полу углы."""
+
+    a: list[float] = Field(min_length=3, max_length=3)
+    pitch_deg: float = Field(ge=-45, le=45)
+    roll_deg: float = Field(ge=-45, le=45)
+
+
 class LevelCalibration(_Model):
-    """Калибровка уровня (docs/contracts/level.md): векторы в осях датчика, нормированы."""
+    """Калибровка уровня (docs/contracts/level.md): векторы в осях датчика, нормированы.
+    method "single"/"two_point" — от прежней версии (замер «ноля»), принимаются при загрузке."""
 
     up: list[float] = Field(min_length=3, max_length=3)
     forward: list[float] = Field(min_length=3, max_length=3)
-    method: Literal["single", "two_point"] = "single"
+    method: Literal["reference", "single", "two_point"] = "reference"
     forward_source: Literal["axis", "driving"] = "axis"
     axis: LevelAxis | None = "x+"
+    ref: LevelRef | None = None  # есть — при смене forward up пересчитывается из него
     ts: float = 0.0
 
 
@@ -604,6 +630,12 @@ class AlarmRelay(_Model):
     pending: int = 0  # событий в outbox
 
 
+class AlarmHazard(_Model):
+    enabled: bool = False
+    active: bool = False  # мигает сейчас
+    error: str | None = None  # реле не открылось / ошибка вывода
+
+
 class AlarmStatus(_Model):
     state: AlarmStateName = "off"
     armed_at: float | None = None
@@ -614,6 +646,7 @@ class AlarmStatus(_Model):
     siren: bool = False  # звучит
     events: list[AlarmEvent] = []  # новые первыми, ≤ 100
     relay: AlarmRelay = AlarmRelay()
+    hazard: AlarmHazard = AlarmHazard()
 
 
 class AlarmLast(_Model):
@@ -628,6 +661,7 @@ class AlarmTelemetry(_Model):
     level_g: float | None = None
     sensor_ok: bool = False
     siren: bool = False
+    hazard: bool = False  # аварийка мигает
     seq: int = 0  # +1 на каждое событие журнала
     last: AlarmLast | None = None
 
@@ -642,7 +676,6 @@ class WheelsCm(_Model):
 
 
 class LevelWizard(_Model):
-    two_point_step: Literal[0, 1] = 0  # 1 — первый замер two_point сделан, ждём второй
     learning: bool = False  # учим «вперёд» по разгонам/торможениям
     learn_s: float = 0.0
     learn_spread_deg: float | None = None

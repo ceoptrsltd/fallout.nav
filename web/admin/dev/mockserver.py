@@ -14,7 +14,7 @@ The tracking journal is a few weeks of simulated driving; POST /api/_mock/tracki
 Alarm, level and push (docs/contracts/alarm.md, level.md) are fake state machines:
     POST /api/alarm/simulate {"kind": "impact"|"tilt"|"move", "g": 0.5}   an event (when armed), a jolt on the meter
     POST /api/_mock/park {"on": true|false}       stop / drive on (speed 0: the level widget on the screen)
-    POST /api/_mock/alarm {"sensor": false, "relay": false}, /api/_mock/level {"sensor": false, "rocking": true}
+    POST /api/_mock/alarm {"sensor": false, "relay": false, "hazard_error": "…"}, /api/_mock/level {"sensor": false, "rocking": true}
     POST /api/_mock/push {"status": 503|404|null}  api/push/* answer like a server without push support
 Push subscriptions are kept in memory; nothing is really sent (test → "sent").
 
@@ -1445,6 +1445,8 @@ class FakeAlarm:
         self.seq = 0
         self.last: dict | None = None
         self.siren_until = 0.0
+        self.hazard_until = 0.0  # hazard lights relay (alarm.md, «Аварийка»)
+        self.hazard_error: str | None = None
         self.last_event = 0.0
         self.spike = (0.0, 0.0)  # (g, at) — a knock on the meter, decays in ~1 s
         self.next_bump = time.time() + 5
@@ -1477,6 +1479,9 @@ class FakeAlarm:
     def siren(self) -> bool:
         return self.state in ("armed", "triggered") and time.time() < self.siren_until
 
+    def hazard(self) -> bool:
+        return time.time() < self.hazard_until
+
     def level_g(self) -> float | None:
         if not self.sensor_ok:
             return None
@@ -1506,7 +1511,7 @@ class FakeAlarm:
             self.state, self.arm_until = "arming", time.time() + delay
 
     def disarm(self) -> None:
-        self.state, self.armed_at, self.siren_until = "off", None, 0.0
+        self.state, self.armed_at, self.siren_until, self.hazard_until = "off", None, 0.0, 0.0
 
     @staticmethod
     def _event(kind: str, data: dict, ts: float | None = None) -> dict:
@@ -1536,6 +1541,8 @@ class FakeAlarm:
         c = self.cfg()
         if c.siren and bt.output_connected():
             self.siren_until = now + c.siren_s
+        if c.hazard.enabled and not self.hazard_error:
+            self.hazard_until = now + c.hazard.seconds
 
     def test(self) -> None:
         self._log(self._event("test", {}))
@@ -1572,14 +1579,16 @@ class FakeAlarm:
             "state": self.state, "armed_at": self.armed_at, "arm_in_s": self.arm_in(),
             "sensor": {"ok": self.sensor_ok, "model": "MPU-6050" if self.sensor_ok else None, "address": c.sensor_address,
                        "error": None if self.sensor_ok else "I2C bus 1, 0x68: [Errno 121] Remote I/O error"},
-            "level_g": self.level_g(), "tilt_deg": self.tilt_deg(), "siren": self.siren(), "events": self.events[:100],
+            "level_g": self.level_g(), "tilt_deg": self.tilt_deg(), "siren": self.siren(),
+            "hazard": {"enabled": c.hazard.enabled, "active": self.hazard(), "error": self.hazard_error},
+            "events": self.events[:100],
             "relay": {"configured": self.relay_configured, "pending": self.pending},
         }
 
     def compact(self) -> dict:
         self.tick()
         return {"state": self.state, "arm_in_s": self.arm_in(), "level_g": self.level_g(), "sensor_ok": self.sensor_ok,
-                "siren": self.siren(), "seq": self.seq, "last": self.last}
+                "siren": self.siren(), "hazard": self.hazard(), "seq": self.seq, "last": self.last}
 
 
 # ── push (docs/contracts/alarm.md §6): what fnav-relay answers under /fnadmin/api/push/; nothing is really sent ──
@@ -1620,16 +1629,52 @@ def _v_cross(a, b):
     return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
 
 
+def _v_rotation(t, a):
+    """The smallest rotation taking direction t onto direction a (Rodrigues), as a function of a vector."""
+    t, a = _v_unit(t), _v_unit(a)
+    k = _v_cross(t, a)
+    s, c = math.sqrt(_v_dot(k, k)), _v_dot(t, a)
+    if s < 1e-12:
+        if c > 0:
+            return lambda v: tuple(v)
+        k = _v_unit(_v_cross(t, (1.0, 0.0, 0.0) if abs(t[0]) < 0.9 else (0.0, 1.0, 0.0)))
+        s, c = 0.0, -1.0
+    else:
+        k = tuple(x / s for x in k)
+
+    def rot(v):
+        kv, kxv = _v_dot(k, v), _v_cross(k, v)
+        return tuple(v[i] * c + kxv[i] * s + k[i] * kv * (1 - c) for i in range(3))
+    return rot
+
+
+def _v_basis(up, fwd):
+    u = _v_unit(up)
+    d = _v_dot(fwd, u)
+    f = _v_unit(tuple(fv - d * uv for fv, uv in zip(fwd, u)))
+    return f, _v_cross(f, u), u
+
+
+def _fit_reference(a, pitch_deg, roll_deg, up, fwd):
+    """(up, forward) for which the measurement a gives exactly the entered angles: the basis turns by the smallest
+    angle that takes the target vector onto a (as fnav/core/level.py fit_reference)."""
+    f0, r0, u0 = _v_basis(up, fwd)
+    sp, sr = math.sin(math.radians(pitch_deg)), math.sin(math.radians(roll_deg))
+    tv = (sp, sr, math.sqrt(max(0.0, 1 - sp * sp - sr * sr)))
+    t = tuple(tv[0] * f0[i] + tv[1] * r0[i] + tv[2] * u0[i] for i in range(3))
+    q = _v_rotation(t, a)
+    return _v_unit(q(u0)), _v_unit(q(f0))
+
+
 class FakeLevel:
-    """The van stands on a slope (pitch 1.3°, roll −0.8° as it faces now); the board is x forward, y left, z up,
-    glued 2° / 1.5° crooked. A two-point step 1 "turns the van around": the slope flips, the crooked mount stays."""
+    """The van stands on a slope (pitch 1.3°, roll −0.8°); the board is x forward, y left, z up, glued 2° / 1.5°
+    crooked. Entering 1.3 / −0.8 from a spirit level makes the readings true."""
 
     def __init__(self) -> None:
         self.sensor_ok = True
         self.rocking = False
-        self.slope = (1.3, -0.8)  # pitch, roll of the parking spot as the van faces it, °
+        self.slope = (1.3, -0.8)  # pitch, roll of the parking spot, °
         self.mount = (2.0, -1.5)  # board tilt about the van's lateral and longitudinal axes, °
-        self.step1: tuple | None = None
         self.measuring = False
         self.learning = False
         self.learn_s = 0.0
@@ -1652,24 +1697,24 @@ class FakeLevel:
     def still(self) -> bool:
         return self.sensor_ok and not self.rocking and (hub.snapshot().gps.speed_mps or 0.0) < 0.3
 
-    def basis(self):
+    def default_up(self):
+        """Without a calibration: the board axis nearest to gravity."""
+        a = self.raw() or (0.0, 0.0, 1.0)
+        i = max(range(3), key=lambda k: abs(a[k]))
+        return tuple((1.0 if a[i] > 0 else -1.0) if k == i else 0.0 for k in range(3))
+
+    def up_forward(self):
         cal = settings.level.calibration
         if cal is not None:
-            up, fwd = _v_unit(cal.up), cal.forward
-        else:  # not calibrated: the board axis nearest to gravity is "up", x+ is forward
-            a = self.raw() or (0.0, 0.0, 1.0)
-            i = max(range(3), key=lambda k: abs(a[k]))
-            up = tuple((1.0 if a[i] > 0 else -1.0) if k == i else 0.0 for k in range(3))
-            fwd = LEVEL_AXES["x+"] if i != 0 else LEVEL_AXES["y+"]
-        d = _v_dot(fwd, up)
-        f = _v_unit(tuple(fv - d * uv for fv, uv in zip(fwd, up)))
-        return f, _v_cross(f, up), up
+            return _v_unit(cal.up), tuple(cal.forward)
+        up = self.default_up()
+        return up, LEVEL_AXES["x+"] if abs(up[0]) < 0.9 else LEVEL_AXES["y+"]
 
     def angles(self) -> tuple[float | None, float | None]:
         a = self.raw()
         if a is None:
             return None, None
-        f, r, u = self.basis()
+        f, r, u = _v_basis(*self.up_forward())
         af, ar, au = _v_dot(a, f), _v_dot(a, r), _v_dot(a, u)
         return (round(math.degrees(math.atan2(af, math.hypot(ar, au))), 2),
                 round(math.degrees(math.atan2(ar, math.hypot(af, au))), 2))
@@ -1693,32 +1738,33 @@ class FakeLevel:
                 self.learn_s = min(5.0, self.learn_s + (now - self.learn_t) * 0.35)
             if self.learn_s >= 5.0:
                 self.learning = False
-                self.save_forward((1.0, 0.0, 0.0), "driving", None)
+                self.set_forward(LEVEL_AXES["x+"], "driving", None)
         self.learn_t = now
 
     def spread(self) -> float | None:
         return None if self.learn_s < 1 else round(max(3.0, 14.0 - self.learn_s * 2.2), 1)
 
     @staticmethod
-    def save_forward(fwd, source: str, axis: str | None) -> None:
+    def save(up, fwd, source: str, axis: str | None, ref: dict | None) -> None:
         cal = settings.level.calibration
+        method = "reference" if ref or cal is None else cal.method
         data = settings.model_dump(mode="json")
-        data["level"]["calibration"] = {**cal.model_dump(mode="json"), "forward": list(fwd), "forward_source": source,
-                                        "axis": axis, "ts": round(time.time(), 3)}
+        data["level"]["calibration"] = {"up": [round(v, 6) for v in up], "forward": [round(v, 6) for v in fwd],
+                                        "method": method, "forward_source": source, "axis": axis, "ref": ref,
+                                        "ts": round(time.time(), 3)}
         apply_settings(Settings.model_validate(data))
 
-    @staticmethod
-    def save_up(up, method: str) -> None:
+    def set_forward(self, fwd, source: str, axis: str | None) -> str | None:
+        """New forward direction (board axis or learned); with a spirit level reference "up" is fitted again."""
         cal = settings.level.calibration
-        if cal is not None and abs(_v_dot(_v_unit(cal.forward), up)) < 0.9:
-            fwd, src, axis = list(cal.forward), cal.forward_source, cal.axis
-        else:
-            axis = "x+" if abs(up[0]) < 0.9 else "y+"
-            fwd, src = list(LEVEL_AXES[axis]), "axis"
-        data = settings.model_dump(mode="json")
-        data["level"]["calibration"] = {"up": [round(v, 6) for v in up], "forward": fwd, "method": method,
-                                        "forward_source": src, "axis": axis, "ts": round(time.time(), 3)}
-        apply_settings(Settings.model_validate(data))
+        up, _ = self.up_forward()
+        if abs(_v_dot(_v_unit(fwd), up)) >= 0.9:
+            return f"Axis {axis} points up or down: choose the one that points forward"
+        ref = cal.ref.model_dump(mode="json") if cal is not None and cal.ref is not None else None
+        if ref:
+            up, fwd = _fit_reference(ref["a"], ref["pitch_deg"], ref["roll_deg"], up, fwd)
+        self.save(up, fwd, source, axis, ref)
+        return None
 
     def status(self) -> dict:
         self.tick()
@@ -1727,8 +1773,8 @@ class FakeLevel:
         return {"sensor_ok": self.sensor_ok, "calibrated": cal is not None, "pitch_deg": pitch, "roll_deg": roll,
                 "still": self.still(), "raw": self.raw(), "wheels_cm": self.wheels(pitch, roll),
                 "calibration": cal.model_dump(mode="json") if cal else None,
-                "wizard": {"two_point_step": 1 if self.step1 else 0, "learning": self.learning,
-                           "learn_s": round(self.learn_s, 2), "learn_spread_deg": self.spread() if self.learning else None}}
+                "wizard": {"learning": self.learning, "learn_s": round(self.learn_s, 2),
+                           "learn_spread_deg": self.spread() if self.learning else None}}
 
     def compact(self) -> dict:
         pitch, roll = self.angles()
@@ -1759,7 +1805,16 @@ async def alarm_disarm():
 
 @app.post("/api/alarm/silence")
 async def alarm_silence():
-    alarm.siren_until = 0.0
+    alarm.siren_until = alarm.hazard_until = 0.0
+    return alarm.status()
+
+
+@app.post("/api/alarm/hazard/test")
+async def alarm_hazard_test():
+    """Flash 3 s with the current settings — even when disabled and with the alarm off."""
+    if alarm.hazard_error:
+        return err(503, alarm.hazard_error)
+    alarm.hazard_until = max(alarm.hazard_until, time.time() + 3)
     return alarm.status()
 
 
@@ -1788,8 +1843,11 @@ async def alarm_simulate(request: Request):
 
 @app.post("/api/_mock/alarm")
 async def mock_alarm(request: Request):
-    """{"sensor": false} — the shock sensor stops answering; {"relay": false} — no server link."""
+    """{"sensor": false} — the shock sensor stops answering; {"relay": false} — no server link;
+    {"hazard_error": "GPIO19 is busy"} — the hazard relay output fails (null — works again)."""
     b = await request.json() if (await request.body()) else {}
+    if "hazard_error" in b:
+        alarm.hazard_error = b["hazard_error"] or None
     if "sensor" in b:
         alarm.sensor_ok = bool(b["sensor"])
     if "relay" in b:
@@ -1879,16 +1937,21 @@ async def level_status():
     return level.status()
 
 
-@app.post("/api/level/calibration/level")
-async def level_zero(request: Request):
+@app.post("/api/level/calibration/reference")
+async def level_reference(request: Request):
+    """{"pitch_deg": 1.3, "roll_deg": -0.4} read from a spirit level on the van floor (each within ±45°)."""
     b = await request.json()
-    method, step = b.get("method"), b.get("step")
-    if method not in ("single", "two_point") or (method == "two_point" and step not in (1, 2)):
-        return err(422, "Invalid request: method single, or two_point with step 1 or 2")
+    errors = []
+    for k in ("pitch_deg", "roll_deg"):
+        v = b.get(k) if isinstance(b, dict) else None
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            errors.append({"loc": ["body", k], "msg": "Input should be a valid number", "type": "float_type"})
+        elif not -45 <= v <= 45:
+            errors.append({"loc": ["body", k], "msg": "Input should be between -45 and 45", "type": "less_than_equal"})
+    if errors:
+        return err(422, errors)
     if not level.sensor_ok:
         return err(503, "Level sensor is not connected")
-    if method == "two_point" and step == 2 and level.step1 is None:
-        return err(409, "Take the first measurement (step 1) first")
     if level.measuring:
         return err(409, "A measurement is already in progress")
     level.measuring = True
@@ -1905,16 +1968,12 @@ async def level_zero(request: Request):
     finally:
         level.measuring = False
     a = tuple(sum(s[k] for s in samples) / len(samples) for k in range(3))
-    if method == "two_point" and step == 1:
-        level.step1 = a
-        level.slope = (-level.slope[0], -level.slope[1])  # the driver turns the van around on the same spot
-        return level.status()
-    if method == "two_point":
-        up = _v_unit(tuple(x + y for x, y in zip(level.step1, a)))
-        level.step1 = None
-    else:
-        up = _v_unit(a)
-    level.save_up(up, method)
+    p, r = round(float(b["pitch_deg"]), 1), round(float(b["roll_deg"]), 1)
+    cal = settings.level.calibration
+    up0, fwd0 = level.up_forward()
+    up, fwd = _fit_reference(a, p, r, up0, fwd0)
+    level.save(up, fwd, cal.forward_source if cal else "axis", cal.axis if cal else "x+",
+               {"a": [round(v, 6) for v in a], "pitch_deg": p, "roll_deg": r})
     return level.status()
 
 
@@ -1927,14 +1986,10 @@ async def level_forward(request: Request):
     if learn is False:
         level.learning = False
         return level.status()
-    cal = settings.level.calibration
-    if cal is None:
-        return err(409, "Calibrate the level first")
-    if axis is not None:
-        if abs(_v_dot(LEVEL_AXES[axis], _v_unit(cal.up))) >= 0.9:
-            return err(409, f"Axis {axis} points up or down: choose the one that points forward")
+    if axis is not None:  # works without the spirit level too (then "up" is the board axis nearest to gravity)
         level.learning = False
-        level.save_forward(LEVEL_AXES[axis], "axis", axis)
+        if (msg := level.set_forward(LEVEL_AXES[axis], "axis", axis)) is not None:
+            return err(409, msg)
         return level.status()
     if not level.sensor_ok:
         return err(503, "Level sensor is not connected")
@@ -1944,7 +1999,7 @@ async def level_forward(request: Request):
 
 @app.delete("/api/level/calibration")
 async def level_reset():
-    level.step1, level.learning = None, False
+    level.learning = False
     data = settings.model_dump(mode="json")
     data["level"]["calibration"] = None
     apply_settings(Settings.model_validate(data))

@@ -612,6 +612,12 @@ tbody tr:hover { background: var(--panel2); }
 .al-num { display: inline-flex; align-items: center; gap: 8px; }
 .al-impact input[type=number] { width: 96px; }
 .al-adv { margin-top: 6px; }
+.al-hz svg { color: var(--amber); }
+.al-hzhead { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.al-hzstatus { font-weight: 500; }
+.al-hzstatus.blink { animation: blink 1s steps(2, jump-none) infinite; }
+.al-hzres { margin: 6px 0 2px; font-size: 13px; }
+.al-hzcard .field[hidden] { display: none; }
 .al-adv > summary { cursor: pointer; color: var(--dim); padding: 8px 0; }
 .al-adv > summary:hover { color: var(--amber); }
 @media (max-width: 600px) {
@@ -645,14 +651,21 @@ tbody tr:hover { background: var(--panel2); }
 .lv-h3 { display: flex; align-items: center; gap: 10px; margin: 18px 0 8px; color: var(--text); }
 .lv-n { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: var(--amber); color: #1a1100; font: 700 13px var(--mono); }
 .lv-p { margin: 0 0 8px; }
-.lv-method { margin-bottom: 10px; }
-.lv-steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 12px; }
-.lv-steps .btnrow { margin-top: 6px; }
-.lv-done { font-size: 13px; }
+.lv-ref { padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.lv-reflab b { display: block; font-weight: 500; }
+.lv-reflab span { font-size: 12px; }
+.lv-refctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.lv-pm { min-width: 42px; min-height: 38px; font-size: 18px; font-weight: 600; padding: 4px 10px; }
+.lv-deg { width: 92px; min-height: 38px; font-family: var(--mono); font-size: 17px; text-align: right; }
+.lv-mean { font-family: var(--mono); font-size: 13px; color: var(--amber); }
+.lv-mean.dim { color: var(--dim); }
+.lv-referr { color: var(--red); font-size: 12.5px; margin-top: 4px; }
+.lv-save { margin-top: 12px; }
+.lv-cmp { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 4px; }
 .lv-meas { margin-top: 12px; }
 .lv-meas > i { transition: width .1s linear; }
 .lv-still { margin-top: 10px; font-size: 13px; }
-.lv-two + .lv-single, .lv-page .banner { margin-top: 10px; }
+.lv-page .banner { margin-top: 10px; }
 .lv-axis { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .lv-axis span { color: var(--dim); }
 .lv-or { margin: 10px 0; font-size: 12.5px; text-transform: uppercase; letter-spacing: .1em; }

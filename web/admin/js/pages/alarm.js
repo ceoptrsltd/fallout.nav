@@ -1,7 +1,8 @@
-// Alarm (docs/contracts/alarm.md): state and Arm / Disarm / Silence, the live vibration level from telemetry
+// Alarm (docs/contracts/alarm.md): state and Arm / Disarm / Stop siren & lights, the live vibration level from telemetry
 // (alarm.level_g) with the impact threshold and a peak hold — knock on the body to pick impact_g —, the tilt angle
 // (GET api/alarm, polled while the page is open), settings.alarm, push notifications on this device (sw.js +
-// api/push/* answered by the server behind https …/fnadmin/) and the event log.
+// api/push/* answered by the server behind https …/fnadmin/), the event log and the hazard lights relay
+// (settings.alarm.hazard, test: POST api/alarm/hazard/test).
 import { h, icon, clear, isNum } from "../dom.js";
 import { api, errText } from "../api.js";
 import { SettingsForm } from "../form.js";
@@ -10,6 +11,7 @@ import { toast, banner, badge, confirmDialog, poll } from "../ui.js";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logTicks, impactToSlider, sliderToImpact,
   fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, pushErrorText, toUnix,
+  hazardFields, hazardStatus, silenceLabel,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
 import * as push from "../push.js";
@@ -46,8 +48,8 @@ export function mount(root) {
   /** Live part: telemetry while it flows, otherwise the last GET. */
   function live() {
     const t = store.online && store.telemetry ? store.telemetry.alarm : null;
-    if (t) return { state: t.state, armIn: t.arm_in_s, siren: !!t.siren, sensorOk: !!t.sensor_ok, at: store.telemetryAt, level: t.level_g, seq: t.seq };
-    if (st) return { state: st.state, armIn: st.arm_in_s, siren: !!st.siren, sensorOk: !!(st.sensor && st.sensor.ok), at: stAt, level: st.level_g, seq: null };
+    if (t) return { state: t.state, armIn: t.arm_in_s, siren: !!t.siren, hazard: !!t.hazard, sensorOk: !!t.sensor_ok, at: store.telemetryAt, level: t.level_g, seq: t.seq };
+    if (st) return { state: st.state, armIn: st.arm_in_s, siren: !!st.siren, hazard: !!(st.hazard && st.hazard.active), sensorOk: !!(st.sensor && st.sensor.ok), at: stAt, level: st.level_g, seq: null };
     return null;
   }
 
@@ -61,7 +63,7 @@ export function mount(root) {
       setStatus(r);
       if (what === "arm") toast("ok", r.state === "arming" ? `Arming — the alarm is on in ${r.arm_in_s ?? "a few"} s` : "Alarm armed");
       else if (what === "disarm") toast("ok", "Alarm off");
-      else if (what === "silence") toast("ok", "Siren silenced — the alarm stays armed");
+      else if (what === "silence") toast("ok", "Siren and hazard lights stopped — the alarm stays armed");
     } catch (e) {
       toast("error", errText(e));
     } finally {
@@ -74,7 +76,8 @@ export function mount(root) {
     const l = live();
     const left = l && l.state === "arming" ? armLeft(l.armIn, l.at, Date.now()) : null;
     const sen0 = st && st.sensor;
-    const sig = l ? [l.state, left, l.siren, l.sensorOk, busy, st && st.armed_at, st && st.relay && st.relay.pending,
+    const hzOn = !!(settings() && settings().hazard && settings().hazard.enabled);
+    const sig = l ? [l.state, left, l.siren, l.hazard, hzOn, l.sensorOk, busy, st && st.armed_at, st && st.relay && st.relay.pending,
       st && st.relay && st.relay.configured, sen0 && sen0.ok, sen0 && sen0.model, sen0 && sen0.error,
       settings() && settings().arm_delay_s].join("|") : "none";
     if (!force && sig === stateSig) return;
@@ -103,6 +106,7 @@ export function mount(root) {
       stSub.append("Not watching");
     }
     if (l.siren) stSub.append(h("span.al-siren", null, icon("vol", 16), "Siren is sounding"));
+    if (l.hazard) stSub.append(h("span.al-siren.al-hz", null, icon("hazard", 16), "Hazard lights flashing"));
 
     // buttons
     clear(btns);
@@ -110,13 +114,16 @@ export function mount(root) {
       busy === what ? h("span.spin") : icon(ic), text);
     if (l.state === "off") btns.append(b("arm", ".primary.al-big", "lock", "Arm", "Turn the alarm on"));
     else {
-      if (l.siren) btns.append(b("silence", ".primary.al-big", "vol", "Silence", "Stop the siren, the alarm stays armed"));
+      if (l.siren || l.hazard) {
+        btns.append(b("silence", ".primary.al-big", "vol", silenceLabel({ siren: l.siren, hazard: l.hazard, hazardEnabled: hzOn }),
+          "Stop the siren and the hazard lights, the alarm stays armed"));
+      }
       btns.append(b("disarm", ".danger.al-big", "unlock", "Disarm", "Turn the alarm off"));
     }
     const delay = settings() ? settings().arm_delay_s : null;
     stHint.textContent = l.state === "off"
       ? (delay === 0 ? "The alarm arms at once." : isNum(delay) ? `The alarm arms ${delay} s after you press Arm — time to close the doors and walk away.` : "")
-      : l.state === "triggered" ? "Something happened — see the events below. Disarm turns the alarm off and stops the siren." : "";
+      : l.state === "triggered" ? "Something happened — see the events below. Disarm turns the alarm off and stops the siren and the hazard lights." : "";
 
     // sensor and server
     clear(stKv);
@@ -263,6 +270,7 @@ export function mount(root) {
     renderState(false); // rebuilt only when something shown changed: a button must not vanish under the finger
     renderTilt();
     renderEvents(false);
+    renderHazard();
   }
 
   async function load() {
@@ -516,6 +524,96 @@ export function mount(root) {
     );
   }
 
+  // ───── hazard lights: a relay on the hazard button (docs/contracts/alarm.md, «Аварийка») ─────
+  let hzForm = null;
+  let hzCard;
+  const hzStatus = h("span.al-hzstatus");
+  const hzResult = h(".al-hzres", { hidden: true });
+  const hzTestBtn = h("button.btn", { type: "button", onclick: () => hazardTest(), title: "Flash the hazard lights for 3 s with the saved settings" },
+    icon("hazard"), "Test (3 s)");
+
+  function renderHazard() {
+    const hz = st && st.hazard ? { ...st.hazard } : null;
+    const t = store.online && store.telemetry ? store.telemetry.alarm : null;
+    if (hz && t && typeof t.hazard === "boolean") hz.active = t.hazard; // live: flashing right now
+    const s = hazardStatus(hz);
+    const txt = s ? s.text : st ? "Not reported by the device" : "—";
+    const cls = "al-hzstatus " + (s && s.kind === "bad" ? "red" : s && s.kind === "warn" ? "amber blink" : s && s.kind === "ok" ? "green" : "dim");
+    if (hzStatus.textContent !== txt) hzStatus.textContent = txt;
+    if (hzStatus.className !== cls) hzStatus.className = cls;
+  }
+
+  async function hazardTest() {
+    hzTestBtn.disabled = true;
+    hzResult.hidden = false;
+    hzResult.className = "al-hzres dim";
+    hzResult.textContent = "Sending…";
+    const unsaved = hzForm && hzForm.dirtyFields().length > 0;
+    try {
+      const r = await api.post("/api/alarm/hazard/test");
+      if (stopped) return;
+      if (r && typeof r === "object" && r.state) setStatus(r);
+      hzResult.className = "al-hzres green";
+      hzResult.textContent = "Flashing for 3 s — check the lights." + (unsaved ? " The test uses the saved settings: save your changes first." : "");
+    } catch (e) {
+      hzResult.className = "al-hzres red";
+      hzResult.textContent = e.status === 404 ? "The device software cannot drive the hazard lights yet — update it." : errText(e);
+    } finally {
+      hzTestBtn.disabled = false;
+    }
+  }
+
+  if (!settings() || !settings().hazard) {
+    hzCard = h(".card", null, h("h2", null, "Hazard lights"),
+      banner("warn", "This device cannot drive the hazard lights yet — update the device software."));
+  } else {
+    hzForm = new SettingsForm();
+    const f = (s) => hzForm.add(s);
+    const int = (v) => (Number.isInteger(v) ? null : "Whole number");
+    const P = "alarm.hazard.";
+    const rows = {
+      on: f({ path: P + "on_us", label: "Pulse “on”", type: "number", min: 500, max: 2500, step: 10, unit: "µs", validate: int }),
+      off: f({ path: P + "off_us", label: "Pulse “off”", type: "number", min: 500, max: 2500, step: 10, unit: "µs", validate: int,
+        help: "Pulse widths the RC switch takes for on and off (usually 2000 / 1000 µs; swap them if it works the other way round)." }),
+      low: f({ path: P + "active_low", label: "Active low", type: "switch", switchLabel: "the relay switches on with a low level" }),
+      press: f({ path: P + "press_ms", label: "Press length", type: "number", min: 100, max: 3000, step: 10, unit: "ms", validate: int,
+        help: "How long the relay “presses” the button to switch the hazard lights on, and again to switch them off." }),
+    };
+    // fields of the other signal / button type are hidden (their values are kept)
+    const showRows = () => {
+      const v = hazardFields({ signal: hzForm.get(P + "signal"), mode: hzForm.get(P + "mode") });
+      rows.on.hidden = rows.off.hidden = !v.servo;
+      rows.low.hidden = !v.level;
+      rows.press.hidden = !v.press;
+    };
+    const refresh0 = hzForm.refreshBar.bind(hzForm);
+    hzForm.refreshBar = () => { refresh0(); showRows(); };
+    hzCard = h(".card.al-hzcard", null,
+      h("h2", null, "Hazard lights"),
+      h(".al-hzhead", null,
+        h("span.dim", null, "Status "), hzStatus,
+        h(".grow"),
+        hzTestBtn),
+      hzResult,
+      h(".hint", null, "A relay in parallel with the hazard-lights button flashes them on an alarm. The test works even when this is off and the alarm is not armed."),
+      f({ path: P + "enabled", label: "On alarm", type: "switch", switchLabel: "Flash the hazard lights on alarm" }),
+      f({ path: P + "seconds", label: "Flashing time", hint: "a new event starts it again", type: "number", min: 5, max: 900, step: 1, unit: "s", validate: int }),
+      f({ path: P + "confirm", label: "Arm / Disarm", type: "switch", switchLabel: "Blink once on Arm, twice on Disarm" }),
+      f({ path: P + "signal", label: "Relay signal", type: "select",
+        options: [{ value: "servo", label: "RC switch (PWM pulses, 50 Hz)" }, { value: "level", label: "On/off input" }] }),
+      rows.on, rows.off, rows.low,
+      f({ path: P + "mode", label: "Button type", type: "select",
+        options: [{ value: "hold", label: "Hold the relay while flashing" }, { value: "pulse", label: "Press the hazard button (push-on / push-off)" }],
+        help: "Hold: the relay stays closed all the time the lights flash. Press: for a button that switches the hazard lights on with one press and off with the next." }),
+      rows.press,
+      h("details.al-adv", null, h("summary", null, "Wiring"),
+        f({ path: P + "gpio", label: "GPIO (BCM)", hint: "pin 35 = GPIO19", type: "number", min: 4, max: 27, step: 1, validate: int,
+          help: "Relay signal to header pin 35 (GPIO19), ground to pin 39; an RC switch also takes +5 V from pin 4. Use a relay module with its own coil driver — never a bare coil on the GPIO." })),
+      hzForm.bar,
+    );
+    showRows();
+  }
+
   // ───── layout ─────
   root.append(
     h(".page-head", null, h("h1", null, "Alarm"), headBadge),
@@ -549,9 +647,11 @@ export function mount(root) {
         nBox,
         devBox)),
     setCard,
+    hzCard,
   );
 
   renderState(true);
+  renderHazard();
   renderMeter();
   renderTilt();
   renderEvents(true);
@@ -560,6 +660,7 @@ export function mount(root) {
   const offTel = on("telemetry", () => {
     renderState(false);
     renderMeter();
+    renderHazard();
     const l = live();
     if (l && l.seq !== null && l.seq !== undefined) {
       if (lastSeq !== null && l.seq !== lastSeq) load(); // a new event: fetch the log now
@@ -581,5 +682,6 @@ export function mount(root) {
     offConn();
     offSet();
     if (form) form.destroy();
+    if (hzForm) hzForm.destroy();
   };
 }

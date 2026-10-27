@@ -89,6 +89,30 @@ export function relayText(relay) {
   return { text: "up to date", kind: "ok" };
 }
 
+// ───── hazard lights (docs/contracts/alarm.md, «Аварийка») ─────
+
+/** Which mode-specific fields of settings.alarm.hazard apply: pulse widths (servo), active low (level), press length (pulse). */
+export function hazardFields(hz) {
+  const signal = hz && hz.signal === "level" ? "level" : "servo";
+  return { servo: signal === "servo", level: signal === "level", press: !!hz && hz.mode === "pulse" };
+}
+
+/** Status line from AlarmStatus.hazard {enabled, active, error}: {text, kind}, or null (device without it). */
+export function hazardStatus(hz) {
+  if (!hz || typeof hz !== "object") return null;
+  if (hz.error) return { text: String(hz.error), kind: "bad" };
+  if (hz.active) return { text: "Flashing now", kind: "warn" };
+  if (hz.enabled) return { text: "Ready — they flash when the alarm goes off", kind: "ok" };
+  return { text: "Off — the alarm does not use them", kind: "" };
+}
+
+/** The button that stops the siren and the hazard lights (the alarm stays armed); short enough for a phone. */
+export function silenceLabel({ siren, hazard, hazardEnabled }) {
+  if (hazard && !siren) return "Stop the lights";
+  if (hazard || hazardEnabled) return "Stop siren & lights";
+  return "Stop the siren";
+}
+
 const KINDS = {
   impact: { label: "Impact", icon: "warn", kind: "bad" },
   tilt: { label: "Tilt", icon: "level", kind: "warn" },

@@ -3,8 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  BANNER_S, FLASH_S, alarmBanner, alarmFlash, alarmIndicator, bannerPlace, bannerWord, newAlarmTrack, newestFlash,
-  updateAlarmTrack,
+  BANNER_S, FLASH_S, HAZARD_HZ, alarmBanner, alarmFlash, alarmIndicator, bannerPlace, bannerWord, hazardOn, newAlarmTrack,
+  newestFlash, updateAlarmTrack,
 } from "../../web/display/ui/alarm.js";
 
 const A = (state, seq = 3, extra = {}) => ({ state, arm_in_s: null, level_g: 0.004, sensor_ok: true, siren: false, seq, last: null, ...extra });
@@ -20,6 +20,15 @@ test("alarmIndicator: nothing when off or without the service; ARM n / ARMED / A
   assert.equal(alarmIndicator(A("arming", 3, { arm_in_s: -1 })).text, "ARM 0");
   assert.deepEqual(alarmIndicator(A("armed")), { text: "ARMED", kind: "armed" });
   assert.deepEqual(alarmIndicator(hit("impact")), { text: "ALARM", kind: "triggered" });
+});
+
+test("hazardOn: only telemetry alarm.hazard === true; blinks like real hazard lights", () => {
+  assert.equal(hazardOn(A("triggered", 3, { hazard: true })), true);
+  assert.equal(hazardOn(A("off", 3, { hazard: true })), true, "the 3 s test runs with the alarm off too");
+  assert.equal(hazardOn(A("armed", 3, { hazard: false })), false);
+  assert.equal(hazardOn(A("armed")), false, "older device: no field");
+  assert.equal(hazardOn(null), false);
+  assert.ok(HAZARD_HZ >= 1 && HAZARD_HZ <= 2);
 });
 
 test("bannerWord: impact / tilt / move, anything else is ALARM", () => {

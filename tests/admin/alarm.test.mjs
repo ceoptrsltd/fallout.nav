@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logVal, roundG, impactToSlider, sliderToImpact,
   logTicks, fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, isIos, deviceName,
-  pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix,
+  pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardFields, hazardStatus, silenceLabel,
 } from "../../web/admin/js/alarm-fmt.js";
 
 const UA = {
@@ -165,6 +165,32 @@ test("pushErrorText: server answers and browser errors read well", () => {
   assert.match(pushErrorText(Object.assign(new Error("push service error"), { name: "AbortError" })), /push service: push service error/);
   assert.equal(pushErrorText(new Error("boom")), "boom");
   assert.equal(pushErrorText(null), "Unknown error");
+});
+
+test("hazard lights: mode-specific fields", () => {
+  assert.deepEqual(hazardFields({ signal: "servo", mode: "hold" }), { servo: true, level: false, press: false });
+  assert.deepEqual(hazardFields({ signal: "level", mode: "pulse" }), { servo: false, level: true, press: true });
+  assert.deepEqual(hazardFields({ signal: "level", mode: "hold" }), { servo: false, level: true, press: false });
+  assert.deepEqual(hazardFields(null), { servo: true, level: false, press: false }); // defaults: servo, hold
+  assert.deepEqual(hazardFields({ signal: "weird" }), { servo: true, level: false, press: false });
+});
+
+test("hazard lights: status line", () => {
+  assert.equal(hazardStatus(null), null);
+  assert.equal(hazardStatus(undefined), null);
+  assert.deepEqual(hazardStatus({ enabled: true, active: true, error: null }), { text: "Flashing now", kind: "warn" });
+  assert.deepEqual(hazardStatus({ enabled: false, active: true, error: null }), { text: "Flashing now", kind: "warn" }); // the test
+  assert.equal(hazardStatus({ enabled: true, active: false, error: null }).kind, "ok");
+  assert.equal(hazardStatus({ enabled: false, active: false, error: null }).kind, "");
+  assert.deepEqual(hazardStatus({ enabled: true, active: false, error: "GPIO19 is busy" }), { text: "GPIO19 is busy", kind: "bad" });
+});
+
+test("silence button wording: siren, lights or both", () => {
+  assert.equal(silenceLabel({ siren: true, hazard: true, hazardEnabled: true }), "Stop siren & lights");
+  assert.equal(silenceLabel({ siren: true, hazard: false, hazardEnabled: true }), "Stop siren & lights");
+  assert.equal(silenceLabel({ siren: false, hazard: true, hazardEnabled: true }), "Stop the lights");
+  assert.equal(silenceLabel({ siren: true, hazard: false, hazardEnabled: false }), "Stop the siren");
+  for (const t of ["Stop siren & lights", "Stop the lights", "Stop the siren"]) assert.ok(t.length <= 20, "fits a phone button");
 });
 
 test("toUnix: seconds, milliseconds, ISO, nothing", () => {

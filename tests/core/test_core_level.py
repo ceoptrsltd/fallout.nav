@@ -1,5 +1,6 @@
-"""Уровень: знаки крена/тангажа, калибровка «ноль» (single / two_point), «вперёд» (ось / по разгонам и
-торможениям), подкладки под колёса, проверка неподвижности (409), API."""
+"""Уровень: знаки крена/тангажа, калибровка по эталонному уровню (введённые углы воспроизводятся точно при любой
+установке датчика), «вперёд» (ось / по разгонам и торможениям) с пересчётом «вверх» из эталона, подкладки под
+колёса, проверка неподвижности (409), API."""
 
 from __future__ import annotations
 
@@ -15,7 +16,6 @@ from core_helpers import login, running_app
 from fnav.core.imu import ImuService
 from fnav.core.level import (
     AXES,
-    NEED_ZERO,
     NOT_CONNECTED,
     ROCKING,
     ForwardLearner,
@@ -23,12 +23,15 @@ from fnav.core.level import (
     LevelService,
     basis,
     default_forward,
+    fit_reference,
+    min_rotation,
     nearest_axis,
     still_check,
+    target_vector,
     tilt_angles,
     wheel_raise,
 )
-from fnav.models import AlarmSettings, GpsFix, LevelSettings
+from fnav.models import AlarmSettings, GpsFix, LevelCalibration, LevelSettings
 
 RAD = math.radians
 
@@ -38,10 +41,19 @@ def rot_x(deg: float) -> np.ndarray:
     return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
 
 
+def rot_y(deg: float) -> np.ndarray:
+    c, s = math.cos(RAD(deg)), math.sin(RAD(deg))
+    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+
+
+YAW90 = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]])  # стрелка X датчика — влево, Y — назад
+
+
 def up_in_car(pitch: float, roll: float) -> np.ndarray:
-    """Тяжесть («вверх») в осях машины x — вперёд, y — влево, z — вверх: перед выше на pitch, правый борт — на roll."""
-    p, r = RAD(pitch), RAD(roll)
-    return np.array([math.sin(p), -math.cos(p) * math.sin(r), math.cos(p) * math.cos(r)])
+    """Тяжесть («вверх») в осях машины x — вперёд, y — влево, z — вверх, при которой по контракту тангаж = pitch
+    (перед выше), крен = roll (правый борт выше)."""
+    f, r, u = target_vector(pitch, roll)
+    return np.array([f, -r, u])
 
 
 def angle(a, b) -> float:
@@ -50,7 +62,7 @@ def angle(a, b) -> float:
 
 
 # Датчик стоит «как попало»: стрелка X — влево, Y — назад, плата наклонена на 2° (оси датчика из осей машины: M @ v)
-M = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]]) @ rot_x(2.0)
+M = YAW90 @ rot_x(2.0)
 CAR_UP, CAR_FWD = M @ np.array([0, 0, 1.0]), M @ np.array([1.0, 0, 0])
 
 
@@ -62,7 +74,8 @@ def test_pitch_roll_signs():
     assert np.allclose(r, (0, -1, 0))  # датчик: x — вперёд, y — влево → «вправо» = −y
     assert tilt_angles(up_in_car(2.0, 0.0), f, r, u) == pytest.approx((2.0, 0.0), abs=1e-9)  # перед выше
     assert tilt_angles(up_in_car(0.0, 1.5), f, r, u) == pytest.approx((0.0, 1.5), abs=1e-9)  # правый борт выше
-    assert tilt_angles(up_in_car(-1.0, -2.0), f, r, u) == pytest.approx((-1.0, -2.0), abs=0.01)
+    assert tilt_angles(up_in_car(-1.0, -2.0), f, r, u) == pytest.approx((-1.0, -2.0), abs=1e-9)
+    assert tilt_angles(target_vector(45, -45), *np.eye(3)) == pytest.approx((45.0, -45.0), abs=1e-9)
     # датчик на боку: «вверх» — y+, «вперёд» — z−
     f, r, u = basis(AXES["y+"], AXES["z-"])
     nose_up = np.array([0.0, math.cos(RAD(3)), -math.sin(RAD(3))])
@@ -77,6 +90,20 @@ def test_uncalibrated_axes():
     assert default_forward(AXES["z+"]) == "x+" and default_forward(AXES["x-"]) == "y+"
     with pytest.raises(ValueError):
         basis(AXES["z+"], AXES["z-"])
+
+
+def test_min_rotation():
+    rng = np.random.default_rng(5)
+    for _ in range(20):
+        a, b = rng.normal(size=3), rng.normal(size=3)
+        q = min_rotation(a, b)
+        assert np.allclose(q @ (a / np.linalg.norm(a)), b / np.linalg.norm(b)) and np.allclose(q @ q.T, np.eye(3))
+        assert np.linalg.det(q) == pytest.approx(1.0)
+        axis = np.cross(a, b)
+        assert np.allclose(q @ axis, axis)  # поворот вокруг a × b — наименьший
+    assert np.allclose(min_rotation((0, 0, 1), (0, 0, 2)), np.eye(3))
+    q = min_rotation((0, 0, 1), (0, 0, -1))  # противоположные
+    assert np.allclose(q @ (0, 0, 1), (0, 0, -1)) and np.linalg.det(q) == pytest.approx(1.0)
 
 
 def test_wheel_raise():
@@ -97,6 +124,28 @@ def test_still_check():
     rocking = [tuple(up_in_car(0, 0.5 * math.sin(i / 3))) for i in range(30)]
     ok, spread, ang = still_check(rocking)
     assert not ok and spread < 0.01 and ang > 0.3  # качается
+
+
+# Установка датчика (оси датчика из осей машины), какая ось смотрит вперёд, введённые углы эталона, другое положение
+MOUNTS = [
+    pytest.param(np.eye(3), "x+", (2.3, -1.7), (-1.0, 3.0), id="flat"),
+    pytest.param(rot_x(10), "x+", (-0.8, 0.4), (3.0, -2.0), id="tilted-10-sideways"),
+    pytest.param(YAW90 @ rot_x(10), "y-", (2.3, -1.7), (0.5, 2.5), id="rotated-90-tilted-10"),
+    pytest.param(rot_x(180) @ rot_y(10), "x+", (-3.0, 5.2), (1.0, 1.0), id="upside-down-tilted-10"),
+    pytest.param(rot_x(-90), "x+", (12.5, -8.0), (0.0, 0.0), id="on-a-wall"),
+    pytest.param(YAW90 @ rot_y(-7) @ rot_x(4), "y-", (0.0, 0.0), (-2.0, -2.0), id="crooked"),
+]
+
+
+@pytest.mark.parametrize("mount, fwd_axis, ref, other", MOUNTS)
+def test_fit_reference_reproduces_entered_angles(mount, fwd_axis, ref, other):
+    a = mount @ up_in_car(*ref) * 0.998  # чувствительность датчика не ровно 1 g — не важно
+    up0 = AXES[nearest_axis(a)]
+    up, fwd = fit_reference(a, *ref, up0, AXES[fwd_axis])
+    assert abs(float(up @ fwd)) < 1e-12
+    assert tilt_angles(a, *basis(up, fwd)) == pytest.approx(ref, abs=1e-6)
+    # и любое другое положение машины — почти верно (остаётся лишь крошечное рысканье от наименьшего поворота)
+    assert tilt_angles(mount @ up_in_car(*other), *basis(up, fwd)) == pytest.approx(other, abs=0.1)
 
 
 # ── сервис ──
@@ -144,8 +193,9 @@ class Rig:
             self.imu.feed(batch)
             self.m += 0.1
 
-    async def measure(self, vec, method: str, step: int | None = None):
-        task = asyncio.create_task(self.lv.calibrate_level(method, step))
+    async def reference(self, vec, pitch: float, roll: float):
+        """Эталон: введённые углы, пока «датчик» показывает vec."""
+        task = asyncio.create_task(self.lv.calibrate_reference(pitch, roll))
         await asyncio.sleep(0)
         for _ in range(200):
             if task.done():
@@ -155,64 +205,76 @@ class Rig:
                 await asyncio.sleep(0)
         return await task
 
+    def angles(self, vec) -> tuple[float, float]:
+        self.feed(vec, 8.0)  # постоять: сглаживание (τ = 1 с) дошло до нового положения
+        st = self.lv.status()
+        return st.pitch_deg, st.roll_deg
 
-async def test_single_calibration_zeroes_the_mount():
+
+@pytest.mark.parametrize("mount, fwd_axis, ref, other", MOUNTS)
+async def test_reference_through_the_service(mount, fwd_axis, ref, other):
     rig = Rig()
     rig.connect()
-    a = M @ up_in_car(0.0, 0.0)  # машина ровно, датчик стоит криво
-    rig.feed(a, 3.0)
+    a = mount @ up_in_car(*ref)
+    rig.feed(a, 6.0)
     st = rig.lv.status()
-    assert st.sensor_ok and not st.calibrated and st.still and st.pitch_deg is not None
-    st = await rig.measure(a, "single")
+    assert st.sensor_ok and not st.calibrated and st.still
+    st = await rig.lv.set_forward_axis(fwd_axis)  # «вперёд» — до эталона (без эталона «вверх» не пересчитывается)
+    assert not st.calibrated and rig.saved[-1].ref is None and rig.saved[-1].forward == list(AXES[fwd_axis])
+    st = await rig.reference(a, *ref)
     cal = rig.saved[-1]
-    assert st.calibrated and cal.method == "single" and cal.forward_source == "axis" and cal.axis == "x+"
-    assert angle(cal.up, CAR_UP) < 0.01 and st.pitch_deg == pytest.approx(0.0, abs=0.05)
-    # «вперёд» — ось y− (стрелка Y датчика смотрит назад)
-    st = await rig.lv.set_forward_axis("y-")
-    assert rig.saved[-1].axis == "y-" and rig.saved[-1].forward == [0.0, -1.0, 0.0]
-    rig.feed(M @ up_in_car(1.0, -0.5), 6.0)  # машина: перед выше, левый борт выше
-    st = rig.lv.status()
-    assert st.pitch_deg == pytest.approx(1.0, abs=0.05) and st.roll_deg == pytest.approx(-0.5, abs=0.05)
-    assert st.wheels_cm.fl == 0.0 and st.wheels_cm.rr > st.wheels_cm.rl > 0
-    tel = rig.lv.telemetry()
-    assert tel.calibrated and tel.pitch_deg == st.pitch_deg and tel.wheels_cm == st.wheels_cm
+    assert st.calibrated and cal.method == "reference" and cal.axis == fwd_axis and cal.forward_source == "axis"
+    assert (cal.ref.pitch_deg, cal.ref.roll_deg) == ref and angle(cal.ref.a, a) < 1e-3
+    assert st.pitch_deg == pytest.approx(ref[0], abs=0.05) and st.roll_deg == pytest.approx(ref[1], abs=0.05)
+    assert rig.angles(mount @ up_in_car(*other)) == pytest.approx(other, abs=0.15)
+
+
+async def test_forward_change_recomputes_up_from_the_reference():
+    rig = Rig()
+    rig.connect()
+    ref, other = (2.3, -1.7), (-1.5, 1.0)
+    a = M @ up_in_car(*ref)
+    rig.feed(a, 6.0)
+    await rig.reference(a, *ref)  # «вперёд» по умолчанию x+ — а это левый борт
+    assert rig.lv.status().pitch_deg == pytest.approx(2.3, abs=0.05)  # эталон точен и с неверным «вперёд» …
+    assert rig.angles(M @ up_in_car(*other)) != pytest.approx(other, abs=0.5)  # … а остальное — нет
+    st = await rig.lv.set_forward_axis("y-")  # исправили — «вверх» пересчитан из эталона
+    cal = rig.saved[-1]
+    assert cal.axis == "y-" and cal.ref.pitch_deg == 2.3 and st.calibrated
+    assert rig.angles(a) == pytest.approx(ref, abs=0.05)
+    assert rig.angles(M @ up_in_car(*other)) == pytest.approx(other, abs=0.1)
     with pytest.raises(LevelError) as e:
         await rig.lv.set_forward_axis("z+")  # смотрит вверх
     assert e.value.status == 409
+    tel = rig.lv.telemetry()
+    assert tel.calibrated and tel.wheels_cm is not None
     st = await rig.lv.reset()
     assert not st.calibrated and rig.saved[-1] is None
 
 
-async def test_two_point_cancels_the_slope():
-    rig = Rig()
+async def test_old_calibrations_still_load():
+    old = LevelSettings.model_validate({"calibration": {"up": [0, 0, 1], "forward": [1, 0, 0],
+                                                        "method": "two_point", "axis": "x+", "ts": 1.0}})
+    assert old.calibration.method == "two_point" and old.calibration.ref is None
+    assert LevelCalibration(up=[0, 0, 1], forward=[1, 0, 0]).method == "reference"
+    rig = Rig(old)
     rig.connect()
-    uphill, downhill = M @ up_in_car(4.0, 0.0), M @ up_in_car(-4.0, 0.0)  # уклон площадки 4°
-    assert angle(uphill, CAR_UP) == pytest.approx(4.0, abs=0.01)  # single здесь ошибся бы на 4°
-    rig.feed(uphill, 6.0)
-    st = await rig.measure(uphill, "two_point", 1)
-    assert st.wizard.two_point_step == 1 and not st.calibrated and rig.saved == []
-    rig.feed(downhill, 6.0)  # развернулись на 180° и постояли
-    st = await rig.measure(downhill, "two_point", 2)
-    cal = rig.saved[-1]
-    assert st.wizard.two_point_step == 0 and cal.method == "two_point" and angle(cal.up, CAR_UP) < 0.01
-    await rig.lv.set_forward_axis("y-")
-    rig.feed(uphill, 6.0)
+    rig.feed(up_in_car(1.0, 0.0), 6.0)
     st = rig.lv.status()
-    assert st.pitch_deg == pytest.approx(4.0, abs=0.05) and st.roll_deg == pytest.approx(0.0, abs=0.05)
+    assert st.calibrated and st.pitch_deg == pytest.approx(1.0, abs=0.05)
+    await rig.lv.set_forward_axis("x-")  # без эталона — «вперёд» меняется как раньше, «вверх» тот же
+    assert rig.saved[-1].up == [0, 0, 1] and rig.saved[-1].method == "two_point"
 
 
 async def test_rocking_is_409_and_errors():
     rig = Rig()
     with pytest.raises(LevelError) as e:
-        await rig.lv.calibrate_level("single")
+        await rig.lv.calibrate_reference(1.0, 0.0)
     assert (e.value.status, e.value.detail) == (503, NOT_CONNECTED)
-    with pytest.raises(LevelError) as e:
-        await rig.lv.calibrate_level("two_point", 2)  # без первого замера
-    assert e.value.status == 409
-    for call in (rig.lv.set_forward_axis("x+"), rig.lv.set_learning(True)):
+    for call in (rig.lv.set_forward_axis("x+"), rig.lv.set_learning(True)):  # без датчика «вверх» не узнать
         with pytest.raises(LevelError) as e:
             await call
-        assert (e.value.status, e.value.detail) == (409, NEED_ZERO)
+        assert e.value.status == 503
     rig.connect()
     rig.lv.capture_s = 1.0
 
@@ -222,7 +284,7 @@ async def test_rocking_is_409_and_errors():
     rig.feed(rocking, 3.0)
     assert not rig.lv.status().still
     with pytest.raises(LevelError) as e:
-        await rig.measure(rocking, "single")
+        await rig.reference(rocking, 0.0, 0.0)
     assert (e.value.status, e.value.detail) == (409, ROCKING) and rig.saved == []
 
     def bouncing(t: float):  # подпрыгивает: |a| гуляет ±0.1 g
@@ -230,7 +292,7 @@ async def test_rocking_is_409_and_errors():
 
     rig.feed(bouncing, 3.0)
     with pytest.raises(LevelError) as e:
-        await rig.measure(bouncing, "single")
+        await rig.reference(bouncing, 0.0, 0.0)
     assert e.value.status == 409
 
 
@@ -250,9 +312,9 @@ def route():
             + drive(4, -2.0, 14))
 
 
-def accel_vec(accel: float, rng: random.Random) -> np.ndarray:
+def accel_vec(accel: float, rng: random.Random, up=CAR_UP) -> np.ndarray:
     """Акселерометр (оси датчика) при продольном ускорении accel: «вверх» + accel/g вперёд + шум дороги."""
-    v = CAR_UP + (accel / 9.81) * CAR_FWD
+    v = up + (accel / 9.81) * CAR_FWD
     return v + np.array([rng.gauss(0, 0.005) for _ in range(3)])
 
 
@@ -277,16 +339,18 @@ def test_forward_learned_from_acceleration_and_braking():
     assert lr2.secs == 0.0 and lr2.spread_deg is None and not lr2.done
 
 
-async def test_learning_through_the_service_saves_forward():
+async def test_learning_through_the_service_keeps_the_reference():
     rig = Rig()
     rig.connect()
-    rig.feed(CAR_UP, 6.0)
-    await rig.measure(CAR_UP, "single")
+    ref = (1.4, -0.9)
+    parked = M @ up_in_car(*ref)
+    rig.feed(parked, 6.0)
+    await rig.reference(parked, *ref)  # «вперёд» ещё неверное (x+ — левый борт)
     st = await rig.lv.set_learning(True)
-    assert st.wizard.learning and st.wizard.learn_s == 0.0
+    assert st.wizard.learning and st.wizard.learn_s == 0.0 and st.wizard.learn_spread_deg is None
     rng = random.Random(3)
     for _dt, v, course, acc in route():
-        a = accel_vec(acc, rng)
+        a = accel_vec(acc, rng, up=parked)
         rig.imu.feed([tuple(a)] * 25)  # 0.125 с отсчётов
         rig.m += 0.125
         rig.imu.feed([tuple(a)] * 25)
@@ -296,8 +360,9 @@ async def test_learning_through_the_service_saves_forward():
         if not rig.lv.status().wizard.learning:
             break
     cal = rig.saved[-1]
-    assert cal.forward_source == "driving" and cal.axis is None and cal.method == "single"
+    assert cal.forward_source == "driving" and cal.axis is None and cal.method == "reference" and cal.ref
     assert angle(cal.forward, CAR_FWD) < 3.0 and not rig.lv.status().wizard.learning
+    assert rig.angles(parked) == pytest.approx(ref, abs=0.05)  # эталон по-прежнему точен
     st = await rig.lv.set_learning(True)
     assert st.wizard.learning
     assert not (await rig.lv.set_learning(False)).wizard.learning
@@ -313,16 +378,16 @@ async def test_level_api_mock(data_dir):
         core = c.app.state.core
         st = (await c.get("/api/level")).json()
         assert st["sensor_ok"] is False and st["pitch_deg"] is None and st["wheels_cm"] is None
-        assert st["wizard"] == {"two_point_step": 0, "learning": False, "learn_s": 0.0, "learn_spread_deg": None}
-        r = await c.post("/api/level/calibration/level", json={"method": "single"})
+        assert st["wizard"] == {"learning": False, "learn_s": 0.0, "learn_spread_deg": None}
+        r = await c.post("/api/level/calibration/reference", json={"pitch_deg": 1.0, "roll_deg": -0.5})
         assert r.status_code == 503 and r.json()["detail"] == "Level sensor is not connected"
-        assert (await c.post("/api/level/calibration/level", json={"method": "two_point"})).status_code == 422
-        assert (await c.post("/api/level/calibration/level", json={"method": "two_point", "step": 2})).status_code == 409
+        for bad in ({"pitch_deg": 46, "roll_deg": 0}, {"pitch_deg": 0, "roll_deg": -45.1}, {"pitch_deg": 1}):
+            assert (await c.post("/api/level/calibration/reference", json=bad)).status_code == 422
+        assert (await c.post("/api/level/calibration/level", json={"method": "single"})).status_code == 404
         assert (await c.post("/api/level/calibration/forward", json={})).status_code == 422
         assert (await c.post("/api/level/calibration/forward", json={"axis": "x+", "learn": True})).status_code == 422
         assert (await c.post("/api/level/calibration/forward", json={"axis": "w+"})).status_code == 422
-        r = await c.post("/api/level/calibration/forward", json={"axis": "y+"})
-        assert r.status_code == 409 and r.json()["detail"] == "Calibrate the level first"
+        assert (await c.post("/api/level/calibration/forward", json={"axis": "y+"})).status_code == 503
         # --mock: «датчик» стоит с наклоном тангаж +1.2°, крен −0.6°
         core.level.capture_s = 0.2
         core.imu.start()
@@ -336,21 +401,24 @@ async def test_level_api_mock(data_dir):
         assert st["calibrated"] is False and len(st["raw"]) == 3 and st["wheels_cm"]["fl"] == 0.0
         tel = (await c.get("/api/telemetry")).json()["level"]
         assert tel["sensor_ok"] is True and tel["calibrated"] is False and tel["pitch_deg"] is not None
-        r = await c.post("/api/level/calibration/level", json={"method": "single"})
+        st = (await c.post("/api/level/calibration/forward", json={"axis": "x+"})).json()  # и без эталона
+        assert st["calibrated"] is False and st["calibration"]["ref"] is None
+        r = await c.post("/api/level/calibration/reference", json={"pitch_deg": 2.5, "roll_deg": -1.5})
         assert r.status_code == 200, r.text
         st = r.json()
-        assert st["calibrated"] is True and st["calibration"]["method"] == "single"
-        assert st["pitch_deg"] == pytest.approx(0.0, abs=0.2) and st["roll_deg"] == pytest.approx(0.0, abs=0.2)
+        assert st["calibrated"] is True and st["calibration"]["method"] == "reference"
+        assert st["calibration"]["ref"]["pitch_deg"] == 2.5 and st["calibration"]["ref"]["roll_deg"] == -1.5
+        assert st["pitch_deg"] == pytest.approx(2.5, abs=0.1) and st["roll_deg"] == pytest.approx(-1.5, abs=0.1)
         saved = (await c.get("/api/settings")).json()["level"]["calibration"]
-        assert saved["method"] == "single" and saved["axis"] == "x+" and len(saved["up"]) == 3
+        assert saved["method"] == "reference" and saved["axis"] == "x+" and len(saved["ref"]["a"]) == 3
         assert (await c.post("/api/level/calibration/forward", json={"axis": "z+"})).status_code == 409
         st = (await c.post("/api/level/calibration/forward", json={"axis": "y-"})).json()
-        assert st["calibration"]["axis"] == "y-" and st["calibration"]["forward"] == [0.0, -1.0, 0.0]
+        assert st["calibration"]["axis"] == "y-" and st["calibration"]["ref"]["pitch_deg"] == 2.5
+        assert st["pitch_deg"] == pytest.approx(2.5, abs=0.1) and st["roll_deg"] == pytest.approx(-1.5, abs=0.1)
+        assert (await c.get("/api/telemetry")).json()["level"]["calibrated"] is True
         assert (await c.post("/api/level/calibration/forward", json={"learn": True})).json()["wizard"]["learning"]
         assert not (await c.post("/api/level/calibration/forward", json={"learn": False})).json()["wizard"]["learning"]
-        st = (await c.post("/api/level/calibration/level", json={"method": "two_point", "step": 1})).json()
-        assert st["wizard"]["two_point_step"] == 1
         st = (await c.delete("/api/level/calibration")).json()
-        assert st["calibrated"] is False and st["wizard"]["two_point_step"] == 0
+        assert st["calibrated"] is False and st["calibration"] is None
         assert (await c.get("/api/settings")).json()["level"]["calibration"] is None
         assert (await c.patch("/api/settings", json={"level": {"wheelbase_m": 9}})).status_code == 422

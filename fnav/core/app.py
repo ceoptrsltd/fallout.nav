@@ -691,6 +691,14 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
         await core.alarm.test()
         return await status()
 
+    @app.post("/api/alarm/hazard/test")
+    async def alarm_hazard_test():
+        """Мигнуть аварийкой 3 с текущими настройками (реле не открылось — 503 с причиной)."""
+        why = await core.alarm.hazard_test()
+        if why:
+            return _err(503, f"Hazard relay: {why}")
+        return await status()
+
     @app.delete("/api/alarm/events")
     async def alarm_clear():
         await core.alarm.clear_events()
@@ -707,9 +715,11 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
 # ───────────────────────── уровень (docs/contracts/level.md) ─────────────────────────
 
 
-class LevelBody(BaseModel):
-    method: Literal["single", "two_point"]
-    step: Literal[1, 2] | None = None
+class ReferenceBody(BaseModel):
+    """Углы эталонного уровня на полу машины: > 0 — перед выше / правый борт выше."""
+
+    pitch_deg: float = Field(ge=-45, le=45)
+    roll_deg: float = Field(ge=-45, le=45)
 
 
 class ForwardBody(BaseModel):
@@ -726,11 +736,9 @@ def _register_level(app: FastAPI, core: Core) -> None:
     async def level_status():
         return core.level.status().model_dump(mode="json")
 
-    @app.post("/api/level/calibration/level")
-    async def level_zero(body: LevelBody):
-        if body.method == "two_point" and body.step is None:
-            return _err(422, "Invalid request: step (1 or 2) is required for two_point")
-        return (await core.level.calibrate_level(body.method, body.step)).model_dump(mode="json")
+    @app.post("/api/level/calibration/reference")
+    async def level_reference(body: ReferenceBody):
+        return (await core.level.calibrate_reference(body.pitch_deg, body.roll_deg)).model_dump(mode="json")
 
     @app.post("/api/level/calibration/forward")
     async def level_forward(body: ForwardBody):

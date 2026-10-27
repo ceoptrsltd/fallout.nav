@@ -74,6 +74,10 @@ const CASES = [
   ["flash-on", "Radio off: ALARM ON on its own plate in the radio's place (instead of the weather)", [[0, S({ alarm: OFF })], [3, S({ alarm: OFF })], [3.01, S({ alarm: A("arming", 3, { arm_in_s: 60 }) })], [3.6, S({ alarm: A("arming", 3, { arm_in_s: 59 }) })]], { weather: WX }],
   ["flash-off", "Radio off: ALARM OFF", [[0, S({ alarm: ARMED })], [3, S({ alarm: ARMED })], [3.01, S({ alarm: OFF })], [3.6, S({ alarm: OFF })]], { weather: WX }],
   ["flash-over", "3 s after the toggle: the weather is back", [[0, S({ alarm: ARMED })], [3, S({ alarm: ARMED })], [3.01, S({ alarm: OFF })], [6.2, S({ alarm: OFF })]], { weather: WX }],
+  ["hazard", "Hazard lights flashing (relay on the hazard button): blinking sign above ALARM, lit phase",
+    [[0, S({ alarm: { ...hit("impact", "Impact detected"), hazard: true } })], [0.1, S({ alarm: { ...hit("impact", "Impact detected"), hazard: true } })]]],
+  ["hazard-off-phase", "Hazard lights: dark phase of the blink (only the outline)",
+    [[0, S({ alarm: { ...hit("impact", "Impact detected"), hazard: true } })], [0.5, S({ alarm: { ...hit("impact", "Impact detected"), hazard: true } })]]],
   ["armed-camera", "Armed, camera mode, everything else down", [[0, S({ alarm: ARMED, radio: R })]], { camera: true, down: true }],
   // level
   ["level", "Level: both angles ≤ 0.3° — LEVEL frame instead of the wheels", still(L(0.2, -0.1)), { weather: WX }],
