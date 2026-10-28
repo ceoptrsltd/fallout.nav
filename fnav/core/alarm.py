@@ -275,9 +275,11 @@ class MoveWatch:
 
 
 def make_event(kind: str, data: dict, ts: float) -> AlarmEvent:
-    """Тексты push и журнала (по-английски); время — местное устройства, HH:MM."""
+    """Тексты push и журнала (по-английски); время — местное устройства, HH:MM. События камеры с задней
+    (data.camera == "rear") — свои тексты: «за фургоном»."""
     hm = time.strftime("%H:%M", time.localtime(ts))
     url = "#/alarm"
+    rear = kind in VISION_KINDS and data.get("camera") == "rear"
     if kind == "impact":
         title, body = "Impact detected", f"Hit {data.get('peak_g', 0):.2f} g at {hm}"
     elif kind == "tilt":
@@ -285,13 +287,22 @@ def make_event(kind: str, data: dict, ts: float) -> AlarmEvent:
     elif kind == "move":
         title, body = "Van is moving", f"{data.get('distance_m', 0):.0f} m from the parking spot at {hm}"
         url = "#/tracking"
+    elif kind == "approach" and rear:
+        title, body = "Person approaching behind the van", f"Someone came close to the back of the van at {hm}"
     elif kind == "approach":
         title, body = "Person approaching", f"Someone came close to the van at {hm}"
+    elif kind == "face" and rear:
+        title, body = "Someone is looking into the rear camera", f"A face close to the rear camera at {hm}"
     elif kind == "face":
         title, body = "Someone is looking in", f"A face close to the windshield at {hm}"
     elif kind == "loiter":
         secs = float(data.get("held_s") or 0)
-        title, body = "Someone is lingering at the van", f"A person has stayed close to the van for {secs:.0f} s at {hm}"
+        if rear:
+            title = "Someone is lingering behind the van"
+            body = f"A person has stayed close to the back of the van for {secs:.0f} s at {hm}"
+        else:
+            title = "Someone is lingering at the van"
+            body = f"A person has stayed close to the van for {secs:.0f} s at {hm}"
     else:
         title, body = "Test alarm", f"Alarm notifications work ({hm})"
     return AlarmEvent(id=uuid.uuid4().hex, ts=round(ts, 3), kind=kind, title=title, body=body, url=url,  # type: ignore[arg-type]
@@ -568,7 +579,7 @@ class AlarmService:
         self._last_event_mono: float | None = None
         self.events: list[AlarmEvent] = []  # новые первыми
         self.seq = 0
-        self._last_push: dict[str, float] = {}  # kind → monotonic
+        self._last_push: dict[str, float] = {}  # kind (события задней камеры — kind:rear) → monotonic
         self._pending = 0
         self._notify = get_settings().notify_offline
         self._kick = asyncio.Event()
@@ -801,9 +812,12 @@ class AlarmService:
         await self._enqueue(ev, cooldown=True)
 
     async def vision_event(self, kind: str, data: dict) -> bool:
-        """Событие fnav-watch (человек подошёл / лицо у стекла) → как у датчика, но без сирены."""
+        """Событие fnav-watch (человек подошёл / лицо у стекла / стоит у фургона; data.camera — какая камера) →
+        как у датчика, но без сирены. С задней — только пока alarm.vision.rear (выключили — сервис узнает за ~3 с)."""
         cfg = self.get_settings().vision
         if kind not in VISION_KINDS or not cfg.enabled or not getattr(cfg, kind) or self.state not in DETECTED:
+            return False
+        if data.get("camera") == "rear" and not cfg.rear:
             return False
         await self._fire(Detection(kind, dict(data)))
         return True
@@ -856,11 +870,13 @@ class AlarmService:
         if not self.relay.configured:
             return
         if cooldown:
-            now, last = self.mono(), self._last_push.get(ev.kind)
+            # события камер — порознь по камерам: «подходит сзади» после «подходит спереди» — новость
+            key = f"{ev.kind}:rear" if ev.kind in VISION_KINDS and ev.data.get("camera") == "rear" else ev.kind
+            now, last = self.mono(), self._last_push.get(key)
             if last is not None and now - last < self.get_settings().push_cooldown_s:
-                log.info("alarm: no push for %s (cooldown)", ev.kind)
+                log.info("alarm: no push for %s (cooldown)", key)
                 return
-            self._last_push[ev.kind] = now
+            self._last_push[key] = now
         await asyncio.to_thread(self.outbox.add, ev.model_dump(mode="json"))
         self._pending += 1
         self._kick.set()

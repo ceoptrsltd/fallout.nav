@@ -34,8 +34,11 @@ def create_app(service: WatchService, manage_service: bool = True) -> Starlette:
         s = await asyncio.to_thread(service.reload)
         return JSONResponse({"ok": True, "settings": s.model_dump()})
 
-    async def debug_jpg(_: Request) -> Response:
-        jpg = await asyncio.to_thread(service.debug_jpeg)
+    async def debug_jpg(request: Request) -> Response:
+        camera = request.query_params.get("camera", "front")
+        if camera not in ("front", "rear"):
+            return JSONResponse({"ok": False, "error": "camera is front or rear"}, status_code=400)
+        jpg = await asyncio.to_thread(service.debug_jpeg, camera)
         if jpg is None:
             return JSONResponse({"ok": False, "error": "No processed frame yet (not watching?)"}, status_code=503)
         return Response(jpg, media_type="image/jpeg", headers=NO_CACHE)

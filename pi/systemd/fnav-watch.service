@@ -1,9 +1,10 @@
 [Unit]
-Description=fallout.nav alarm vision (fnav-watch: person approaching / face at the windshield)
+Description=fallout.nav alarm vision (fnav-watch: people at the van, front and rear cameras)
 Documentation=file:///opt/fnav/app/docs/contracts/vision.md
-# Ordering only: frames come from fnav-camera through /dev/shm/fnav-lores; either side may restart on its own,
-# and a crash here never touches recording (fnav-camera) or the alarm itself (fnav-core).
-After=fnav-camera.service
+# Ordering only: frames come from fnav-camera through /dev/shm/fnav-lores and, when the rear camera is on, from
+# fnav-camera-rear through /dev/shm/fnav-lores-rear; any side may restart on its own, and a crash here never touches
+# recording (fnav-camera*) or the alarm itself (fnav-core). One process and one inference thread for both cameras.
+After=fnav-camera.service fnav-camera-rear.service
 StartLimitIntervalSec=0
 
 [Service]

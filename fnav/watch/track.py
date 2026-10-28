@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from .detect import Box, Det, Face
 
-ASPECT = 4 / 3  # ширина/высота кадра: расстояния по x в тех же единицах, что по y
+ASPECT = 4 / 3  # ширина/высота кадра по умолчанию (передняя 768×576): расстояния по x в тех же единицах, что по y
 HISTORY_S = 12.0
 LOST_S = 2.5  # столько без детекций — трек закрыт (минимум; растёт при редком детекторе)
 GROWTH = 1.25
@@ -61,8 +61,8 @@ class Track:
         return sum(1 for t, _, _ in self.hist if t >= since)
 
 
-def _centre(b: Box) -> tuple[float, float]:
-    return (b[0] + b[2]) / 2 * ASPECT, (b[1] + b[3]) / 2
+def _centre(b: Box, aspect: float = ASPECT) -> tuple[float, float]:
+    return (b[0] + b[2]) / 2 * aspect, (b[1] + b[3]) / 2
 
 
 class Tracker:
@@ -70,6 +70,7 @@ class Tracker:
         self.tracks: list[Track] = []
         self._next = 1
         self.interval = 0.5  # средний интервал детектора людей (для окон правил)
+        self.aspect = ASPECT  # ширина/высота кадра (задняя камера — 16:9)
 
     def reset(self) -> None:
         self.tracks.clear()
@@ -85,9 +86,9 @@ class Tracker:
         self.tracks = [tr for tr in self.tracks if t - tr.last_t <= lost]
         pairs = []
         for i, d in enumerate(dets):
-            cx, cy = _centre(d.box)
+            cx, cy = _centre(d.box, self.aspect)
             for j, tr in enumerate(self.tracks):
-                tx, ty = _centre(tr.box)
+                tx, ty = _centre(tr.box, self.aspect)
                 h = max(tr.h, 0.03)
                 gap = max(0.5, t - tr.last_t)
                 dist = math.hypot(cx - tx, cy - ty) / h
@@ -129,7 +130,7 @@ class Tracker:
             tr.growth = hs[-1] / max(1e-3, min(hs))
             if tr.growth >= GROWTH or _ttc(tr) < TTC_S:
                 tr.grew = True
-            tr.sideways = _sideways(tr)
+            tr.sideways = _sideways(tr, self.aspect)
             bottom = tr.box[3]
             if bottom < near_line - LINE_HYST:  # ушёл от линии
                 tr.hold_since = None
@@ -176,13 +177,13 @@ def _ttc(tr: Track) -> float:
     return 1 / slope if slope > 1e-6 else math.inf
 
 
-def _sideways(tr: Track) -> float:
+def _sideways(tr: Track, aspect: float = ASPECT) -> float:
     """Скорость вбок за последние ~2 с, в высотах рамки в секунду."""
     pts = [(t, b) for t, b, _ in tr.hist if t >= tr.last_t - 2.0]
     if len(pts) < 2 or pts[-1][0] - pts[0][0] < 0.4:
         return 0.0
     (t0, b0), (t1, b1) = pts[0], pts[-1]
-    dx = abs(_centre(b1)[0] - _centre(b0)[0])
+    dx = abs(_centre(b1, aspect)[0] - _centre(b0, aspect)[0])
     h = (b0[3] - b0[1] + b1[3] - b1[1]) / 2
     return dx / max(h, 1e-3) / (t1 - t0)
 
@@ -196,14 +197,16 @@ class FaceRule:
         self.attempts: deque[tuple[float, Face | None]] = deque()
         self.fired_t: float | None = None
         self.interval = 0.5
+        self.aspect = ASPECT
 
     def reset(self) -> None:
         self.attempts.clear()
         self.fired_t = None
 
-    def best(self, faces: list[Face], face_min: float, aspect: float = ASPECT) -> Face | None:
+    def best(self, faces: list[Face], face_min: float, aspect: float | None = None) -> Face | None:
         from .detect import face_ok
 
+        aspect = aspect or self.aspect
         ok = [f for f in faces if f.box[2] - f.box[0] >= face_min and f.contrast >= self.MIN_CONTRAST
               and face_ok(f, aspect)]
         return max(ok, key=lambda f: f.box[2] - f.box[0]) if ok else None
@@ -272,6 +275,7 @@ class LoiterRule:
     подход — дело правила approach; пятно внутри машины, которую нашла та же нейросеть, не считается."""
 
     def __init__(self) -> None:
+        self.aspect = ASPECT
         self.reset()
 
     def reset(self) -> None:
@@ -317,12 +321,12 @@ class LoiterRule:
             return h >= LOITER_MIN_H and box[3] >= near_line - LOITER_MARGIN and LOITER_X[0] <= cx <= LOITER_X[1]
 
         near = [tr for tr in tracks
-                if t - tr.last_t <= LOITER_TRACK_AGE_S and close(tr.box) and _sideways(tr) <= SIDEWAYS]
+                if t - tr.last_t <= LOITER_TRACK_AGE_S and close(tr.box) and _sideways(tr, self.aspect) <= SIDEWAYS]
         if near:
             return ("track", max(near, key=lambda tr: tr.h).box)
         blobs = []
         for b in details:
-            w = (b.box[2] - b.box[0]) * ASPECT
+            w = (b.box[2] - b.box[0]) * self.aspect
             if not close(b.box) or b.fill < LOITER_FILL or not LOITER_ASPECT[0] <= w / b.h <= LOITER_ASPECT[1]:
                 continue
             if b.bright >= LOITER_LIGHT[0] and b.level >= LOITER_LIGHT[1] or self._in_vehicle(t, b.box):
@@ -346,7 +350,7 @@ class LoiterRule:
                 self.pos.popleft()
             t0, x0, h0 = self.pos[0]
             if t - t0 >= 2.0:  # прохожий: за ~3 с заметно сместился вбок
-                speed = abs((box[0] + box[2]) / 2 - x0) * ASPECT / (t - t0) / max(1e-3, (h0 + box[3] - box[1]) / 2)
+                speed = abs((box[0] + box[2]) / 2 - x0) * self.aspect / (t - t0) / max(1e-3, (h0 + box[3] - box[1]) / 2)
                 if speed > SIDEWAYS:
                     cand = None
         if cand is not None:

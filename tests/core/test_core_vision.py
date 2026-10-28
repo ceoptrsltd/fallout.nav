@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 
 import httpx
-from test_core_alarm import make_alarm, settle
+from test_core_alarm import FakeRelay, make_alarm, settle
 
+from fnav.core.alarm import make_event
+from fnav.core.tracking import RelayConfig
 from fnav.core.vision import STALE_S, VisionClient
-from fnav.models import AlarmSettings, HazardSettings, VisionSettings
+from fnav.models import AlarmSettings, AlarmVisionCamera, HazardSettings, VisionSettings
 
 JPEG = b"\xff\xd8snapshot\xff\xd9"
 
@@ -65,17 +67,21 @@ class FakeWatch:
         self.events: list[dict] = []
         self.arms: list[bool] = []
         self.up = True
+        self.cameras: dict | None = None  # новые поля /status; None — старый fnav-watch без них
 
-    def add(self, kind: str, ts: float) -> None:
+    def add(self, kind: str, ts: float, **data) -> None:
         self.seq += 1
-        self.events.append({"seq": self.seq, "kind": kind, "ts": ts, "data": {"n": self.seq}})
+        self.events.append({"seq": self.seq, "kind": kind, "ts": ts, "data": {"n": self.seq, **data}})
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         if not self.up:
             raise httpx.ConnectError("refused", request=req)
         if req.url.path == "/status":
-            return httpx.Response(200, json={"watching": self.watching, "seq": self.seq, "events": self.events,
-                                             "people": 1 if self.watching else 0, "error": None})
+            st = {"watching": self.watching, "seq": self.seq, "events": self.events,
+                  "people": 1 if self.watching else 0, "error": None}
+            if self.cameras is not None:
+                st["cameras"] = self.cameras
+            return httpx.Response(200, json=st)
         if req.url.path == "/arm":
             self.watching = json.loads(req.content)["watching"]
             self.arms.append(self.watching)
@@ -174,4 +180,94 @@ async def test_client_forwards_loiter():
     w.add("bogus", 1000.0)  # неизвестный вид — не тревога
     await c.poll()
     assert got == ["loiter"]
+    await c.stop()
+
+
+# ── задняя камера ──
+def test_rear_event_texts_front_unchanged():
+    ts = 1_800_000_000.0
+    front = {k: make_event(k, {"held_s": 9.4, "camera": "front"}, ts) for k in ("approach", "face", "loiter")}
+    assert [front[k].title for k in ("approach", "face", "loiter")] == [
+        "Person approaching", "Someone is looking in", "Someone is lingering at the van"]
+    assert front["face"].body.startswith("A face close to the windshield at ")
+    assert make_event("approach", {}, ts).title == "Person approaching"  # старый fnav-watch: без camera
+    rear = {k: make_event(k, {"held_s": 9.4, "camera": "rear"}, ts) for k in ("approach", "face", "loiter")}
+    assert rear["approach"].title == "Person approaching behind the van"
+    assert rear["approach"].body.startswith("Someone came close to the back of the van at ")
+    assert rear["face"].title == "Someone is looking into the rear camera"
+    assert rear["face"].body.startswith("A face close to the rear camera at ")
+    assert rear["loiter"].title == "Someone is lingering behind the van"
+    assert rear["loiter"].body.startswith("A person has stayed close to the back of the van for 9 s at ")
+    assert all(ev.kind == k and ev.url == "#/alarm" and ev.data["camera"] == "rear" for k, ev in rear.items())
+    assert make_event("impact", {"peak_g": 0.3, "camera": "rear"}, ts).title == "Impact detected"  # не камера
+
+
+async def test_rear_vision_event_no_siren_own_switch_and_own_push_cooldown(tmp_path):
+    relay = FakeRelay()
+    svc, clk, cfg = make_alarm(tmp_path, arm_delay_s=0, siren=True, push_cooldown_s=60,
+                               relay=RelayConfig("http://relay", "tok"), transport=httpx.MockTransport(relay),
+                               vision=VisionSettings(enabled=True))
+    svc.snapshot = _snap
+    sirens: list = []
+
+    async def siren_start(seconds):
+        sirens.append(seconds)
+        return True
+
+    svc.siren.start = siren_start  # type: ignore[method-assign]
+    await svc.start(background=False)
+    await svc.arm()
+    assert await svc.vision_event("approach", {"track": 1, "camera": "front"})
+    clk.tick(10)
+    assert await svc.vision_event("approach", {"track": 2, "camera": "rear"})  # сзади — своя пауза push
+    clk.tick(10)
+    assert await svc.vision_event("approach", {"track": 3, "camera": "rear"})  # в журнал — да, push — нет
+    await settle()
+    assert [e.title for e in svc.events] == ["Person approaching behind the van", "Person approaching behind the van",
+                                             "Person approaching"]
+    assert svc.events[0].data["camera"] == "rear" and svc.events[0].data["snapshot"] is True
+    assert sirens == [] and svc.outbox.count() == 2
+    cfg["s"] = cfg["s"].model_copy(update={"vision": VisionSettings(enabled=True, rear=False)})
+    assert not await svc.vision_event("loiter", {"held_s": 9, "camera": "rear"})  # задняя на охране выключена
+    assert await svc.vision_event("loiter", {"held_s": 9, "camera": "front"})
+    await svc.stop()
+
+
+async def test_client_reports_rear_camera_and_forwards_camera():
+    got: list = []
+
+    async def on_event(kind, data):
+        got.append((kind, data.get("camera")))
+
+    cfg = {"v": VisionSettings(enabled=True)}
+    armed = [True]
+    w = FakeWatch()
+    w.watching = True
+    c = VisionClient(get_settings=lambda: cfg["v"], get_armed=lambda: armed[0], on_event=on_event,
+                     transport=httpx.MockTransport(w), clock=lambda: 1000.0)
+    await c.poll()
+    assert c.status().rear is None  # старый fnav-watch / задняя не смотрится
+    w.cameras = {"front": {"watching": True, "people": 0, "fps": 4.0, "error": None},
+                 "rear": {"watching": True, "people": 2, "fps": 1.0, "error": "No frames from the rear camera"}}
+    w.add("approach", 1000.0, camera="rear")
+    await c.poll()
+    assert got == [("approach", "rear")]
+    st = c.status()
+    assert st.rear == AlarmVisionCamera(watching=True, people=2, error="No frames from the rear camera")
+    assert st.error is None and st.watching
+    armed[0] = False  # охрану сняли: ядро говорит «не смотри», о людях сзади больше не сообщаем
+    await c.poll()
+    assert w.arms[-1] is False and c.status().rear == AlarmVisionCamera(watching=False, people=0,
+                                                                         error="No frames from the rear camera")
+    w.cameras = {"rear": "broken"}
+    await c.poll()
+    assert c.status().rear is None
+    w.up = False
+    await c.poll()
+    assert c.status().rear is None and not c.status().available
+    w.up = True
+    w.cameras = {"rear": {"watching": True, "people": 1, "error": None}}
+    await c.poll()
+    cfg["v"] = VisionSettings(enabled=False)
+    assert c.status().rear is None  # распознавание выключено — о задней не говорим
     await c.stop()

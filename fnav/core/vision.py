@@ -2,8 +2,9 @@
 (docs/contracts/vision.md).
 
 Ядро раз в секунду читает /status: сообщает «смотреть / не смотреть» (охрана + settings.alarm.vision.enabled) через
-POST /arm, если сервис думает иначе, и передаёт новые события в AlarmService.vision_event. Пока распознавание
-выключено и сервис уже не смотрит — не опрашиваем.
+POST /arm, если сервис думает иначе, и передаёт новые события в AlarmService.vision_event (с data.camera — "front" /
+"rear"). Пока распознавание выключено и сервис уже не смотрит — не опрашиваем. Заднюю камеру сервис смотрит сам по
+настройкам; её состояние (cameras.rear в /status) — в AlarmVision.rear.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import httpx
 
 from fnav.core.alarm import VISION_KINDS
 from fnav.core.util import cancel_tasks
-from fnav.models import AlarmVision, VisionSettings
+from fnav.models import AlarmVision, AlarmVisionCamera, VisionSettings
 
 log = logging.getLogger("fnav.core.vision")
 
@@ -44,6 +45,7 @@ class VisionClient:
         self._may_watch = False  # сервис мог остаться смотреть (не отвечал) — сказать «не смотри», когда ответит
         self.people = 0
         self.error: str | None = None
+        self.rear: AlarmVisionCamera | None = None  # cameras.rear из /status (сервис смотрит и заднюю)
         self._seq: int | None = None  # последнее обработанное событие (None — ещё не читали)
         self._logged_down = False
 
@@ -52,8 +54,11 @@ class VisionClient:
         error = self.error if enabled else None
         if enabled and not self.available:
             error = UNAVAILABLE
+        rear = self.rear if enabled and self.available else None
+        if rear is not None and not self.watching:
+            rear = rear.model_copy(update={"watching": False, "people": 0})
         return AlarmVision(enabled=enabled, available=self.available, watching=self.watching,
-                           people=self.people if self.watching else 0, error=error)
+                           people=self.people if self.watching else 0, error=error, rear=rear)
 
     async def start(self, background: bool = True) -> None:
         if background:
@@ -86,6 +91,7 @@ class VisionClient:
                 log.info("vision: %s (%s)", UNAVAILABLE, type(e).__name__)
                 self._logged_down = True
             self.available = self.watching = False
+            self.rear = None
             return
         if self._logged_down or not self.available:
             log.info("vision: fnav-watch is available (%s)", self.base_url)
@@ -94,6 +100,7 @@ class VisionClient:
         self.watching = self._may_watch = bool(st.get("watching"))
         self.people = int(st.get("people") or 0)
         self.error = st.get("error") or None
+        self.rear = _camera(st, "rear")
         await self._take_events(st)
         if self.watching != want and await self._send_arm(want):
             self.watching = self._may_watch = want
@@ -124,3 +131,16 @@ class VisionClient:
         except httpx.HTTPError as e:
             log.warning("vision: cannot send arm state (%s)", type(e).__name__)
             return False
+
+
+def _camera(st: dict, name: str) -> AlarmVisionCamera | None:
+    """cameras.<name> из /status fnav-watch; нет (камеру не смотрит, старый сервис) или кривое — None."""
+    cams = st.get("cameras")
+    cam = cams.get(name) if isinstance(cams, dict) else None
+    if not isinstance(cam, dict):
+        return None
+    try:
+        return AlarmVisionCamera(watching=bool(cam.get("watching")), people=int(cam.get("people") or 0),
+                                 error=cam.get("error") or None)
+    except (TypeError, ValueError):
+        return None

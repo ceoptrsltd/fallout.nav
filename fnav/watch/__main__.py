@@ -15,6 +15,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--port", type=int, default=8082)
     ap.add_argument("--models", type=Path, default=None, help="directory with the ONNX models")
     ap.add_argument("--ring", type=Path, default=None, help="lores frame ring of fnav-camera (default /dev/shm)")
+    ap.add_argument("--ring-rear", type=Path, default=None,
+                    help="lores frame ring of fnav-camera-rear (default /dev/shm/fnav-lores-rear)")
     ap.add_argument("--fps", type=float, default=4.0, help="frames per second while watching")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
@@ -28,12 +30,13 @@ def main(argv: list[str] | None = None) -> None:
 
     import uvicorn
 
-    from fnav.camera.shmring import RingReader
+    from fnav.camera.shmring import RingReader, default_path
 
     from .server import create_app
     from .service import WatchService, default_detectors
 
-    service = WatchService(ring=RingReader(args.ring), detectors=default_detectors(args.models), fps=args.fps)
+    service = WatchService(ring=RingReader(args.ring), ring_rear=RingReader(args.ring_rear or default_path("rear")),
+                           detectors=default_detectors(args.models), fps=args.fps)
     app = create_app(service)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False,
                 timeout_graceful_shutdown=3)

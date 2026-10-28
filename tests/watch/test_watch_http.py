@@ -7,40 +7,19 @@ import asyncio
 import importlib.util
 import inspect
 import json
-import threading
 import time
 
 import httpx
 import numpy as np
 import pytest
-from watchhelpers import StubFace, StubPerson, scene, with_box
+from watchhelpers import Feeder, StubFace, StubPerson, scene, with_box
 
-from fnav.camera.shmring import RingReader, RingWriter
+from fnav.camera.shmring import RingReader
 from fnav.watch import service as watch_service
 from fnav.watch.server import create_app
 from fnav.watch.service import NO_FRAMES, WatchService
 
 needs_cv2 = pytest.mark.skipif(importlib.util.find_spec("cv2") is None, reason="opencv-python-headless")
-
-
-class Feeder:
-    """«Камера»: кладёт кадры в кольцо, пока fnav-watch просит (как CameraService.wants_lores/on_lores)."""
-
-    def __init__(self, path, script) -> None:
-        self.writer = RingWriter(path)
-        self.script = script  # t → картинка Y (576, 768)
-        self.stop = threading.Event()
-        self.t0 = time.monotonic()
-        self.thr = threading.Thread(target=self.run, daemon=True)
-
-    def run(self) -> None:
-        while not self.stop.is_set():
-            if self.writer.wants_frame():
-                y = self.script(time.monotonic() - self.t0)
-                data = np.full((y.shape[0] * 3 // 2, y.shape[1]), 128, np.uint8)
-                data[: y.shape[0]] = y
-                self.writer.write(data, "yuv420", y.shape[1], y.shape[0], {})
-            time.sleep(1 / 30)
 
 
 @pytest.fixture
@@ -54,8 +33,8 @@ def make_service(tmp_path, settings_file, person=None, face=None, fps=8.0):
     ring = RingReader(tmp_path / "ring", cap=768 * 576 * 3)
     person = person or StubPerson(lambda t: [])
     face = face or StubFace(lambda t: [])
-    svc = WatchService(settings_path=settings_file, ring=ring, detectors=lambda: (person, face),
-                       thermal_path=None, fps=fps)
+    svc = WatchService(settings_path=settings_file, ring=ring, ring_rear=RingReader(tmp_path / "ring-rear"),
+                       detectors=lambda: (person, face), thermal_path=None, fps=fps)
     return svc
 
 
@@ -79,7 +58,8 @@ async def test_status_arm_reload(tmp_path, settings_file, monkeypatch):
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://w") as c:
             st = (await c.get("/status")).json()
-            assert st == {"watching": False, "people": 0, "seq": 0, "events": [], "error": None, "fps": None}
+            assert st == {"watching": False, "people": 0, "seq": 0, "events": [], "error": None, "fps": None,
+                          "cameras": {"front": {"watching": False, "people": 0, "fps": None, "error": None}}}
             assert (await c.post("/arm", json={"watching": "yes"})).status_code == 400
             assert (await c.post("/arm", content=b"nope")).status_code == 400
             r = await c.post("/arm", json={"watching": True})

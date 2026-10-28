@@ -3,7 +3,8 @@
 Декодирует .ts (PyAV), берёт ~4 кадра/с по PTS, уменьшает до lores (768×576, как кольцо fnav-camera) и
 прогоняет через Watcher. Печатает события со временем от начала файла, в --out пишет размеченные JPEG: каждое
 событие и (не чаще раза в секунду) кадры с найденными людьми/лицами. --sim-ms N: пропускать кадры, пришедшие,
-пока нейросеть работала N мс (как на CM4, где NanoDet ~0,3 с).
+пока нейросеть работала N мс (как на CM4, где NanoDet ~0,3 с). --camera rear — запись задней камеры: ближняя
+линия — rear_near_line (или --near-line), высота кадра — по пропорциям видео (768×432 для 16:9), как её кольцо.
 """
 
 from __future__ import annotations
@@ -20,8 +21,8 @@ from .frame import Frame
 from .pipeline import Watcher
 
 
-def iter_frames(path: Path, fps: float, w: int, h: int, start: float = 0.0, duration: float | None = None):
-    """(t от начала, I420 (h*3/2, w)) с шагом ~1/fps по PTS."""
+def iter_frames(path: Path, fps: float, w: int, h: int | None, start: float = 0.0, duration: float | None = None):
+    """(t от начала, I420 (h*3/2, w)) с шагом ~1/fps по PTS; h None — по пропорциям видео (чётная)."""
     import av
 
     with av.open(str(path)) as c:
@@ -41,6 +42,8 @@ def iter_frames(path: Path, fps: float, w: int, h: int, start: float = 0.0, dura
             if t + 1e-3 < next_t:
                 continue
             next_t = max(next_t + 1 / fps, t + 0.5 / fps)
+            if h is None:
+                h = max(2, round(w * fr.height / fr.width)) & ~1
             yield t, fr.to_ndarray(width=w, height=h, format="yuv420p")
 
 
@@ -54,8 +57,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--loiter", type=float, default=None, help="loiter_s")
     ap.add_argument("--clock", default=None, help="wall clock of the first frame, HH:MM:SS[.s] (prints event times)")
     ap.add_argument("--settings", type=Path, default=None, help="settings.json to take alarm.vision from")
+    ap.add_argument("--camera", choices=("front", "rear"), default="front",
+                    help="rear: near line from rear_near_line, frame height from the video aspect")
     ap.add_argument("--fps", type=float, default=4.0)
-    ap.add_argument("--size", default="768x576", help="lores size WxH")
+    ap.add_argument("--size", default=None, help="lores size WxH (default 768x576; rear 768 wide, height by aspect)")
     ap.add_argument("--start", type=float, default=0.0, help="skip seconds")
     ap.add_argument("--duration", type=float, default=None)
     ap.add_argument("--sim-ms", type=float, default=0.0, help="simulate person inference time (CM4: ~300)")
@@ -68,19 +73,22 @@ def main(argv: list[str] | None = None) -> int:
     vs = VisionSettings()
     if args.settings:
         vs = Settings.model_validate_json(args.settings.read_text(encoding="utf-8")).alarm.vision
-    upd = {k: v for k, v in (("near_line", args.near_line), ("face_min", args.face_min),
+    line_key = "rear_near_line" if args.camera == "rear" else "near_line"
+    upd = {k: v for k, v in ((line_key, args.near_line), ("face_min", args.face_min),
                              ("approach_hold_s", args.approach_hold), ("face_hold_s", args.face_hold),
                              ("loiter_s", args.loiter)) if v is not None}
     vs = vs.model_copy(update=upd)
-    w, h = (int(v) for v in args.size.lower().split("x"))
+    size = args.size or ("768x" if args.camera == "rear" else "768x576")
+    ws, _, hs = size.lower().partition("x")
+    w, h = int(ws), (int(hs) if hs else None)
 
     from .detect import load_detectors
 
     person, face = load_detectors(args.models)
-    watcher = Watcher(person, face, vs)
+    watcher = Watcher(person, face, vs, camera=args.camera)
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
-    print(f"{args.file.name}: near_line {vs.near_line}, approach_hold {vs.approach_hold_s} s, "
+    print(f"{args.file.name} ({args.camera}): near_line {watcher.near_line}, approach_hold {vs.approach_hold_s} s, "
           f"face_min {vs.face_min}, face_hold {vs.face_hold_s} s, loiter {vs.loiter_s} s", flush=True)
     busy_until = -1.0
     last_saved = -1e9
@@ -90,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     for t, i420 in iter_frames(args.file, args.fps, w, h, args.start, args.duration):
         if t < busy_until:
             continue
-        frame = Frame(t, "yuv420", i420, w, h, wall=t)
+        frame = Frame(t, "yuv420", i420, w, i420.shape[0] * 2 // 3, wall=t)
         runs = watcher.stats.person_runs
         events = watcher.process(frame)
         if args.sim_ms and watcher.stats.person_runs != runs:

@@ -698,14 +698,23 @@ class AlarmHazard(_Model):
     error: str | None = None  # реле не открылось / ошибка вывода
 
 
+class AlarmVisionCamera(_Model):
+    """Одна камера в fnav-watch (задняя; передняя — поля самого AlarmVision)."""
+
+    watching: bool = False  # смотрит в её кадр
+    people: int = 0  # людей в её кадре сейчас
+    error: str | None = None  # например, нет кадров задней камеры (передняя при этом работает)
+
+
 class AlarmVision(_Model):
     """fnav-watch глазами ядра (docs/contracts/vision.md)."""
 
     enabled: bool = False  # settings.alarm.vision.enabled
     available: bool = False  # сервис отвечает
     watching: bool = False  # смотрит в кадр (охрана включена)
-    people: int = 0  # людей в кадре сейчас
-    error: str | None = None
+    people: int = 0  # людей в кадре сейчас (всех камер)
+    error: str | None = None  # сервис или передняя камера; ошибка задней — в rear.error
+    rear: AlarmVisionCamera | None = None  # смотрит и заднюю (alarm.vision.rear и rear_camera.enabled), иначе нет
 
 
 class AlarmStatus(_Model):
