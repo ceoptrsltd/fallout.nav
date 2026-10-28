@@ -137,5 +137,10 @@ def test_settings_migration_key4_to_camera_switch(tmp_path):
     f.write_text(json.dumps({"keypad": {"key4": "video_toggle", "key1": "protect"}}), encoding="utf-8")
     s, warnings = load_settings_file(f)
     assert s.keypad.key4 == "camera_switch" and s.keypad.key1 == "protect" and s.version == 2 and not warnings
+    # видеовыход на другой клавише (у владельца — 5) и на удержании — тоже камеры
+    f.write_text(json.dumps({"keypad": {"key4": "protect", "key5": "video_toggle", "key2_hold": "video_toggle"}}),
+                 encoding="utf-8")
+    s = load_settings_file(f)[0]
+    assert (s.keypad.key4, s.keypad.key5, s.keypad.key2_hold) == ("protect", "camera_switch", "camera_switch")
     f.write_text(json.dumps({"version": 2, "keypad": {"key4": "video_toggle"}}), encoding="utf-8")
     assert load_settings_file(f)[0].keypad.key4 == "video_toggle"  # выбрано после миграции — не трогаем

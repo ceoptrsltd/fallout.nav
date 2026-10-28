@@ -59,10 +59,10 @@ def migrate(data: dict) -> dict:
     if not isinstance(ver, int) or ver >= SETTINGS_VERSION:
         return data
     data = dict(data)
-    if ver < 2:  # клавиша 4: камеры (передняя ↔ задняя) вместо вкл/выкл видеовыхода
+    if ver < 2:  # клавиша видеовыхода (по умолчанию 4, у кого-то другая) — теперь камеры: передняя ↔ задняя
         kp = data.get("keypad")
-        if isinstance(kp, dict) and kp.get("key4") == "video_toggle":
-            data["keypad"] = {**kp, "key4": "camera_switch"}
+        if isinstance(kp, dict):
+            data["keypad"] = {k: "camera_switch" if v == "video_toggle" else v for k, v in kp.items()}
     data["version"] = SETTINGS_VERSION
     return data
 
