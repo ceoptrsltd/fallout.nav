@@ -438,6 +438,8 @@ class CameraService(FrameSink):
                 on_segment_start=lambda _path: self._hk_wake.set(),
             )
             p.recorder.paused = self._no_space
+            if self.rear:  # частоту задаёт камера (бывает переменной): пропуски по интервалам не считаем
+                p.recorder.fps = 0.0
         p.jpeg = JpegWorker(self.hub, cam.lores.fps, cam.lores.jpeg_quality)
         if self.rtsp_url:
             p.rtsp = RtspPublisher(self.rtsp_url, fps=cam.fps, width=cam.out_w, height=cam.out_h)
