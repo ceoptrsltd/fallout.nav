@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>fallout.nav — alarm and level states</title>
+<title>fallout.nav — alarm, level and rear view states</title>
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; background: #16170f; color: #e7ecd6; font: 14px/1.4 system-ui, sans-serif; }
@@ -15,8 +15,9 @@
 </head>
 <body>
 <!--
-  Deterministic stills of the alarm (docs/contracts/alarm.md §4) and the level widget (docs/contracts/level.md)
-  for design review and screenshots: every case is rendered once at fixed times, no animation loop.
+  Deterministic stills of the alarm (docs/contracts/alarm.md §4), the level widget (docs/contracts/level.md) and the
+  rear view (docs/contracts/camera.md "Задняя камера", ui/rear.js) for design review and screenshots: every case is
+  rendered once at fixed times, no animation loop.
   ?case=<id> — only one case; ?bw=1 — grayscale (monochrome CRT); ?ntsc=1 — 720x480 squeeze as on the device;
   ?bg=cam — "camera" background for all cases (no network needed).
 -->
@@ -92,20 +93,30 @@ const CASES = [
   ["level-moving", "Moving 20 km/h: the speedometer", [[0, S({ level: L(1.8, -1.2), speed: 0 })], [3.5, S({ level: L(1.8, -1.2), speed: 0 })], [4, S({ level: L(1.8, -1.2), speed: 20 })]], { weather: WX }],
   ["level-down", "Level + no GPS / no link (warnings column)", still(L(1.2, 2.4)), { down: true, weather: WX }],
   ["level-camera", "Level in camera mode", still(L(-1.4, -0.8)), { camera: true }],
+  // rear view (key 4 / GPS-module button): display.camera = "rear"; the video is mirrored (display.rear_mirror) —
+  // the camera's own caption reads backwards — the HUD is not
+  ["rear", "Rear view: mirrored picture, REAR tag between the clock and the compass", [[0, S({ radio: R, speed: 4 })]], { rear: "ok" }],
+  ["rear-169", "Rear view, 16:9 IP camera: whole frame (contain), bars top and bottom", [[0, S({ speed: 4 })]], { rear: "ok", wide: true, weather: WX }],
+  ["rear-v2", "Rear view with the v2 compass (tape across the top): the tag goes right of the clock, below the tape", [[0, S({ speed: 4 })]], { rear: "ok", style: "v2", orient: "north_up" }],
+  ["rear-nosignal", "Rear camera down (status error/stopped, stream failed or frozen): NO SIGNAL instead of a frozen frame", [[0, S({ radio: R, speed: 4 })]], { rear: "no_signal" }],
+  ["rear-connecting", "Rear camera starting, or the first frame takes more than 1.5 s: CONNECTING", [[0, S({ speed: 0 })]], { rear: "connecting", weather: WX }],
 ];
 
 function state(now, step, o = {}) {
   const down = !!o.down;
   const kmh = step.speed ?? 48;
+  const cam = !!(o.camera || o.rear);
   return {
     now,
     telemetry: { gps: { fix: down ? "none" : "3d", sats_used: down ? 0 : 11, sats_visible: down ? 3 : 19 }, heading: { deg: down ? null : 40, source: down ? "none" : "gps" },
-                 display: { mode: o.camera ? "camera" : "map", orientation: o.orient ?? "heading_up" }, camera: { recording: !down },
+                 display: { mode: cam ? "camera" : "map", orientation: o.orient ?? "heading_up", camera: o.rear ? "rear" : "front", rear_mirror: true },
+                 camera: { recording: !down }, camera_rear: o.rear ? { state: o.rear === "ok" ? "recording" : "error" } : null,
                  system: { internet: !down }, radio: step.radio ?? null, alarm: step.alarm ?? null, level: step.level ?? null,
                  errors: [], speed_limit: null },
     weather: o.weather ?? null,
     settings: { display: { ...DEFAULT_SETTINGS.display, compass_style: o.style ?? "v1", orientation: o.orient ?? "heading_up" }, level: { show_on_screen: true } },
-    view: { mode: o.camera ? "camera" : "map", orientation: o.orient ?? "heading_up", bearingDeg: o.orient === "north_up" ? 0 : 40, headingDeg: down ? null : 40,
+    view: { mode: cam ? "camera" : "map", camera: o.rear ? "rear" : "front", rearSignal: o.rear ?? null,
+            orientation: o.orient ?? "heading_up", bearingDeg: o.orient === "north_up" ? 0 : 40, headingDeg: down ? null : 40,
             compassHeadingDeg: down ? null : 40, vehicleHeadingDeg: down ? null : 40, headingSource: down ? "none" : "gps",
             speedMps: down ? null : kmh / 3.6, zoom: 18, hasFix: !down, connected: !down, internet: !down, recording: !down,
             vehicleX: W / 2, vehicleY: o.orient === "north_up" ? H / 2 : H * 0.67 },
@@ -147,9 +158,29 @@ function camBackground() {
   return c;
 }
 
+// rear camera as the screen shows it: the camera's frame (a sign with text — reads backwards once mirrored) flipped
+// left-right; a 16:9 frame is shown whole (object-fit: contain) with black bars top and bottom
+function rearPicture(wide) {
+  const fw = W, fh = wide ? 432 : H;
+  const f = document.createElement("canvas"); f.width = fw; f.height = fh;
+  const g = f.getContext("2d");
+  g.drawImage(camBackground(), 0, 0, fw, fh);
+  // the sign stands right of the road in the camera's frame — on the screen it is on the left
+  g.fillStyle = "#eee"; g.fillRect(530, fh * 0.3, 170, 64);
+  g.fillStyle = "#222"; g.font = "bold 44px sans-serif"; g.textBaseline = "middle"; g.fillText("EXIT", 564, fh * 0.3 + 34);
+  g.fillStyle = "#555"; g.fillRect(610, fh * 0.3 + 64, 10, fh * 0.2);
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const x = c.getContext("2d");
+  x.fillStyle = "#000"; x.fillRect(0, 0, W, H);
+  x.translate(W, 0); x.scale(-1, 1);
+  x.drawImage(f, 0, (H - fh) / 2);
+  return c;
+}
+
 await loadUi();
 const sat = q.get("bg") === "cam" ? null : await satBackground();
 const cam = camBackground();
+const rear = { ok: rearPicture(false), wide: rearPicture(true) };
 const only = q.get("case");
 for (const [id, caption, steps, opts = {}] of CASES) {
   if (only && only !== id) continue;
@@ -165,8 +196,14 @@ for (const [id, caption, steps, opts = {}] of CASES) {
       drawStandby(g, st);
       continue;
     }
-    g.drawImage(opts.camera || !sat ? cam : sat, 0, 0);
-    if (!opts.camera && sat) drawVehicle(g, st.view.vehicleX, st.view.vehicleY, 0, st);
+    if (opts.rear) {
+      // no picture: the layer is black (map/camera.js .blank), the HUD says why
+      g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+      if (opts.rear === "ok") g.drawImage(opts.wide ? rear.wide : rear.ok, 0, 0);
+    } else {
+      g.drawImage(opts.camera || !sat ? cam : sat, 0, 0);
+      if (!opts.camera && sat) drawVehicle(g, st.view.vehicleX, st.view.vehicleY, 0, st);
+    }
     drawHud(g, st);
   }
   const cap = document.createElement("figcaption"); cap.textContent = `${id}: ${caption}`;

@@ -76,6 +76,17 @@ export function drawHud(ctx, state) {
   plate(ctx, s.x + s.w - 230, s.y + s.h - 40 * flags.length - 8, 230, 40 * flags.length + 8);
   flags.forEach((f, i) => text(ctx, f, s.x + s.w - 12, s.y + s.h - 40 * flags.length + i * 40, 26, "right"));
 
+  // задний вид (основной вариант — ui/rear.js): метка под курсом, нет картинки — надпись по центру
+  if (v.mode === "camera" && v.camera === "rear") {
+    plate(ctx, cx - 70, s.y + 72, 140, 46);
+    text(ctx, "REAR", cx, s.y + 78, 32, "center");
+    if (v.rearSignal === "no_signal" || v.rearSignal === "connecting") {
+      const y = state.canvas.h * 0.52;
+      plate(ctx, cx - 250, y, 500, 56);
+      text(ctx, v.rearSignal === "no_signal" ? "REAR CAMERA — NO SIGNAL" : "REAR CAMERA — CONNECTING", cx, y + 12, 28, "center");
+    }
+  }
+
   // крупные предупреждения — по центру
   const warn = !v.connected ? "NO LINK" : !v.hasFix ? "NO GPS" : null;
   if (warn && Math.floor(state.now * 2) % 2 === 0) {

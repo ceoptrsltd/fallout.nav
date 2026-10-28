@@ -17,6 +17,7 @@ import { activeLayers, layerLevel, planRequests } from "./map/layers.js";
 import { CompassFilter, MotionModel, OrientationBlend, RotationRig, ZoomAnimator, vehicleAnchor } from "./map/motion.js";
 import { Trail } from "./map/trail.js";
 import { CameraLayer } from "./map/camera.js";
+import { RearSignal, rearMirror, viewCamera } from "./map/rearview.js";
 import { RetainedLayer, bumpEpoch } from "./map/retained.js";
 import { armedStandby, standbyDelayMs } from "./map/standby.js";
 import { Link, wsUrl } from "./map/link.js";
@@ -164,8 +165,14 @@ const camera = new CameraLayer(
   document.getElementById("camera-msg"),
   DEMO
     ? { src: params.get("camera") || "camera-demo.jpg", cacheBust: false }
-    : { src: appUrl("api/camera/mjpeg") + (REMOTE ? "?fps=5" : "") },
+    : {
+        src: appUrl("api/camera/mjpeg") + (REMOTE ? "?fps=5" : ""),
+        rearSrc: appUrl("api/camera/rear/mjpeg") + (REMOTE ? "?fps=5" : ""),
+      },
 );
+// задний вид (display.camera = "rear"): есть ли картинка — для слоя видео и надписей HUD (map/rearview.js)
+const rearSignal = new RearSignal();
+let rearShown = false;
 
 function maxZoom() {
   return settings.tiles?.max_zoom ?? 19;
@@ -200,6 +207,7 @@ function onMessage(msg) {
     compass.ingest(msg.heading ? msg.heading.deg : null, t);
     const d = msg.display || {};
     if (Number.isFinite(d.target_zoom)) zoomAnim.setTarget(clamp(d.target_zoom, 1, maxZoom()));
+    camera.setCamera(viewCamera(msg), rearMirror(msg)); // до setVisible: подключиться сразу к нужной камере
     camera.setVisible(d.mode === "camera", t);
     const inet = msg.system ? msg.system.internet : null;
     if (inet === true && lastInternet === false) store.resetFailures(); // сеть вернулась — перезапросить
@@ -382,6 +390,18 @@ function frame(tms) {
   const hasFix = !!(tel.gps && tel.gps.fix && tel.gps.fix !== "none" && tel.gps.lat != null);
   const connected = link.connected(3);
   const mode = tel.display.mode === "camera" ? "camera" : "map";
+  // задний вид: есть ли картинка — без сигнала слой прячет стоп-кадр, HUD пишет REAR и NO SIGNAL
+  const rear = mode === "camera" && camera.which === "rear";
+  let rearSig = null;
+  if (rear) {
+    rearSig = rearSignal.update(tel.camera_rear, camera, t);
+    if (rearSignal.recovered) camera.reconnect(); // старый поток мог оборваться молча (последний кадр висит)
+    camera.setHold(rearSig !== "ok");
+  } else if (rearShown) {
+    rearSignal.reset();
+    camera.setHold(false);
+  }
+  rearShown = rear;
 
   if (ds.show_trail && m.hasPos && hasFix) {
     trail.add(m.mx, m.my, t);
@@ -396,6 +416,8 @@ function frame(tms) {
     settings,
     view: {
       mode,
+      camera: rear ? "rear" : "front", // какая камера в режиме camera (ui/rear.js — метка REAR)
+      rearSignal: rearSig, // задний вид: "ok" | "wait" | "connecting" | "no_signal"; иначе null
       orientation: ds.orientation,
       bearingDeg: pose.bearing,
       headingDeg: m.headingKnown ? m.heading : null,
@@ -499,7 +521,7 @@ function frame(tms) {
       `tiles cache ${store.cache.size}  load ${store.inflight.size}  q ${store.queue.length}  fail ${store.failures.size}`,
       `drawn ${renderer.lastDrawn.tiles}/${renderer.lastDrawn.fallbacks}/${renderer.lastDrawn.missing}  ok ${s.loaded} err ${s.failed} abort ${s.aborted} evict ${s.evicted}`,
       `pos ${m.lat?.toFixed(5) ?? "-"}, ${m.lon?.toFixed(5) ?? "-"}  v ${(m.speed ?? 0).toFixed(1)}  trail ${trail.pts.length}`,
-      `ws ${connected ? "ok" : "LOST"}  mode ${mode}  cam ${camera.ok ? "ok" : "-"}  pad ${gamesMenu?.polling ? "poll" : "-"}`,
+      `ws ${connected ? "ok" : "LOST"}  mode ${mode}  cam ${camera.which} ${camera.ok ? "ok" : "-"}${rearSig ? " " + rearSig : ""}  pad ${gamesMenu?.polling ? "poll" : "-"}`,
       layerStats(),
     ]);
   }

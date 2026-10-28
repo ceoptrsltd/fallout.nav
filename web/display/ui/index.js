@@ -6,6 +6,7 @@ import { drawClock } from "./clock.js";
 import { compassStyles, drawCompass } from "./compass.js";
 import { drawLevel } from "./level.js";
 import { drawAlarmFlash, drawRadio } from "./radio.js";
+import { drawRearSignal, drawRearTag, rearView } from "./rear.js";
 import { SPEED_BOX, drawSpeed } from "./speed.js";
 import { drawStandby } from "./standby.js";
 import { drawIndicators, drawWarnings } from "./status.js";
@@ -70,6 +71,8 @@ export function loadUi() {
  *   Центральная полоса над машиной (дорога впереди) свободна; сработала охрана — 10 с крупная плашка
  *   IMPACT / TILTED / MOVING над машиной, поверх всего (машина стоит, дорога не нужна).
  * view.attribution — внизу по центру подпись источников карты (демо/удалённо): радио поднимается над ней.
+ * Задний вид (view.camera = "rear", ui/rear.js): светлая метка REAR вверху между часами и компасом; нет картинки
+ * (view.rearSignal) — по центру плашка REAR CAMERA / NO SIGNAL или CONNECTING.
  * opts.wind = false — без ветра: app.js рисует его на своём холсте под HUD (тот же вид, но HUD не перерисовывается
  * ради анимации струек).
  */
@@ -85,11 +88,14 @@ export function drawHud(ctx, state, { wind = true } = {}) {
   const style = setting(state, "display.compass_style", "v1");
   const cr = drawCompass(ctx, state, safe, style);
   const clock = setting(state, "display.show_clock", true) ? drawClock(ctx, state, safe, cr) : null;
+  // задний вид (ui/rear.js): метка REAR вверху между часами и компасом
+  const rear = rearView(state);
+  const tag = rear ? drawRearTag(ctx, state, safe, [cr, clock]) : null;
 
   // предупреждения слева; если часы или компас занимают левый верх — ниже них
   const colRight = safe.x + 230;
   let yTop = safe.y + 3;
-  for (const r of [cr, clock]) {
+  for (const r of [cr, clock, tag]) {
     if (r && r.x < colRight && r.y < safe.y + 200) yTop = Math.max(yTop, r.y + r.h + 10);
   }
   drawWarnings(ctx, state, safe, yTop);
@@ -99,6 +105,7 @@ export function drawHud(ctx, state, { wind = true } = {}) {
   const lift = state?.view?.attribution ? 17 : 0;
   // радио выключено — вспышка охраны своей плашкой, иначе погода
   if (!drawRadio(ctx, state, safe, lift) && !drawAlarmFlash(ctx, state, safe, lift)) drawWeather(ctx, state, safe, lift);
-  drawAlarmBanner(ctx, state, safe, [cr, clock]);
+  if (rear) drawRearSignal(ctx, state, safe); // нет картинки задней камеры — вместо стоп-кадра
+  drawAlarmBanner(ctx, state, safe, [cr, clock, tag]);
   ctx.restore();
 }
