@@ -181,7 +181,9 @@ function wheel(c, x, y, r) {
   c.fill();
 }
 
-/** Фургон сбоку, нос вправо: высокий кузов, наклонное лобовое, короткий капот. */
+/** Кемпер-альков на Peugeot Boxer (1994–2006) сбоку, нос вправо: высокий жилой кузов с длинным свесом за задним
+ *  колесом и люком на крыше, альков (спальник) над кабиной с округлым носом, наклонное лобовое, короткий покатый
+ *  капот. Видна левая сторона — входная дверь жилого кузова справа, её нет; окна и багажный люк. */
 function sideSprite() {
   return sprite("level-side", SIL.w, SIL.h, (c) => {
     const ox = SIL.w / 2;
@@ -190,24 +192,35 @@ function sideSprite() {
     c.save();
     c.translate(ox, oy);
     const R = 7; // радиус колеса
-    const wb = 26; // половина базы
-    const yb = -9; // низ кузова
+    const ar = R + 2.5; // радиус арки
+    const fx = 29; // переднее колесо — под кабиной
+    const rx = -15; // заднее — за ним длинный свес кузова
+    const sill = -6; // низ кабины
+    const skirt = -10; // юбка жилого кузова
+    const top = -42; // крыша
+    // арка над колесом от линии низа y до неё же
+    const arch = (x, y) => {
+      const a = Math.asin((y + R) / ar);
+      c.arc(x, -R, ar, a, Math.PI - a, true);
+    };
     const body = () => {
       c.beginPath();
-      c.moveTo(-40, yb);
-      c.lineTo(-40, -37);
-      c.quadraticCurveTo(-40, -40, -37, -40);
-      c.lineTo(19, -40);
-      c.quadraticCurveTo(22, -40, 23.5, -37.5);
-      c.lineTo(31, -24); // лобовое
-      c.lineTo(39, -21.5); // капот
-      c.quadraticCurveTo(41.5, -20.5, 41.5, -17);
-      c.lineTo(41.5, yb);
-      // низ с арками колёс
-      c.lineTo(wb + R + 2.5, yb);
-      c.arc(wb, -R, R + 2.5, -0.05, Math.PI + 0.05, true);
-      c.lineTo(-wb + R + 2.5, yb);
-      c.arc(-wb, -R, R + 2.5, -0.05, Math.PI + 0.05, true);
+      c.moveTo(-44, skirt);
+      c.lineTo(-44, top + 3);
+      c.quadraticCurveTo(-44, top, -41, top);
+      c.lineTo(29, top);
+      c.quadraticCurveTo(38, top, 39.5, top + 5.5); // округлый нос алькова
+      c.lineTo(38.5, -34.5);
+      c.quadraticCurveTo(37.5, -32, 34, -32);
+      c.lineTo(28, -32); // низ алькова → верх лобового
+      c.lineTo(35, -20); // лобовое
+      c.lineTo(41.5, -17); // капот
+      c.quadraticCurveTo(44, -16, 44, -13.5);
+      c.lineTo(44, sill);
+      arch(fx, sill);
+      c.lineTo(14, sill);
+      c.lineTo(12, skirt);
+      arch(rx, skirt);
       c.closePath();
     };
     body();
@@ -217,29 +230,39 @@ function sideSprite() {
     c.stroke();
     c.fillStyle = C.ink;
     c.fill();
+    // люк на крыше
+    c.fillStyle = SHADOW;
+    c.fillRect(-24, top - 3.5, 12, 4);
+    c.fillStyle = C.ink;
+    c.fillRect(-23, top - 2.5, 10, 3);
     // окна и линии — тёмным по светлому
     c.fillStyle = C.dark;
-    c.beginPath(); // окно кабины
-    c.moveTo(13, -36);
-    c.lineTo(21.5, -36);
-    c.lineTo(28.5, -25);
-    c.lineTo(13, -25);
+    c.beginPath(); // окно двери кабины — до стойки лобового
+    c.moveTo(18, -30);
+    c.lineTo(27.5, -30);
+    c.lineTo(31.6, -23.5);
+    c.lineTo(18, -23.5);
     c.closePath();
     c.fill();
-    c.fillRect(-31, -36, 32, 9); // окна салона
-    c.fillRect(11, -24, 2, 14); // дверь кабины
-    c.fillRect(-4, -26, 2, 16); // сдвижная дверь
-    c.fillRect(34, -14, 7.5, 2.5); // бампер
-    c.fillRect(-40, -14, 6, 2.5);
-    c.fillStyle = C.dark;
-    c.fillRect(38.5, -19.5, 3, 3); // фара
-    wheel(c, wb, -R, R);
-    wheel(c, -wb, -R, R);
+    c.fillRect(19, -40, 9, 4.5); // окошко алькова
+    c.fillRect(14, -32.5, 14.5, 1.5); // низ алькова над кабиной
+    c.fillRect(14, -32.5, 1.5, 24); // стык кабины и жилого кузова
+    c.fillRect(-39, -37, 13, 8.5); // окна жилого кузова
+    c.fillRect(-8, -37, 15, 8.5);
+    c.lineWidth = 1.5;
+    c.strokeStyle = C.dark;
+    c.strokeRect(-40.25, -22.75, 10.5, 8.5); // багажный люк
+    c.fillRect(37.5, -10, 6.5, 2.5); // бампер
+    c.fillRect(-44, -13, 5, 2);
+    c.fillRect(41, -15.5, 3, 2.5); // фара
+    wheel(c, fx, -R, R);
+    wheel(c, rx, -R, R);
     c.restore();
   });
 }
 
-/** Фургон сзади: кузов со скруглённой крышей, распашные двери с окнами, фонари, бампер, колёса, зеркала. */
+/** Кемпер сзади: широкий жилой кузов со скруглённой крышей и люком, заднее окно, лестница на крышу, вертикальные
+ *  фонари по углам, бампер с номером, колёса из-под кузова, зеркала кабины на кронштейнах по бокам. */
 function rearSprite() {
   return sprite("level-rear", SIL.w, SIL.h, (c) => {
     const ox = SIL.w / 2;
@@ -247,9 +270,9 @@ function rearSprite() {
     ground(c, 4, SIL.w - 4, oy);
     c.save();
     c.translate(ox, oy);
-    // колёса (шины) — тёмные со светлой обводкой, выглядывают из-под бампера по краям
+    // колёса (шины) — тёмные со светлой обводкой, выглядывают из-под кузова; колея уже кузова
     for (const sx of [-1, 1]) {
-      const x0 = sx * 20 - 7.5;
+      const x0 = sx * 19 - 7.5;
       c.fillStyle = SHADOW;
       c.fillRect(x0 - 1.5, -12, 18, 12);
       c.fillStyle = C.dark;
@@ -260,16 +283,21 @@ function rearSprite() {
       c.fillStyle = C.ink;
       c.fillRect(x0 + 3, -7, 9, 2); // протектор
     }
+    const top = -42;
     const body = () => {
       c.beginPath();
-      c.moveTo(-28, -13);
-      c.lineTo(-28, -36);
-      c.quadraticCurveTo(-28, -41, -23, -41);
-      c.lineTo(23, -41);
-      c.quadraticCurveTo(28, -41, 28, -36);
-      c.lineTo(28, -13);
+      c.moveTo(-29, -12);
+      c.lineTo(-29, top + 5);
+      c.quadraticCurveTo(-29, top, -24, top);
+      c.lineTo(24, top);
+      c.quadraticCurveTo(29, top, 29, top + 5);
+      c.lineTo(29, -12);
       c.closePath();
     };
+    // зеркала на кронштейнах — шире кузова
+    c.fillStyle = SHADOW;
+    c.fillRect(-35.5, -31.5, 7.5, 10);
+    c.fillRect(28, -31.5, 7.5, 10);
     body();
     c.lineJoin = "round";
     c.lineWidth = 4;
@@ -277,20 +305,21 @@ function rearSprite() {
     c.stroke();
     c.fillStyle = C.ink;
     c.fill();
-    // зеркала
+    c.fillRect(-34.5, -30.5, 5.5, 8);
+    c.fillRect(29, -30.5, 5.5, 8);
+    // люк на крыше
     c.fillStyle = SHADOW;
-    c.fillRect(-34.5, -32.5, 7.5, 9);
-    c.fillRect(27, -32.5, 7.5, 9);
+    c.fillRect(-8, top - 3.5, 16, 4);
     c.fillStyle = C.ink;
-    c.fillRect(-33.5, -31.5, 5.5, 7);
-    c.fillRect(28, -31.5, 5.5, 7);
-    // окна, щель дверей, фонари, номер
+    c.fillRect(-7, top - 2.5, 14, 3);
+    // заднее окно, лестница, фонари
     c.fillStyle = C.dark;
-    c.fillRect(-23, -36, 20, 10);
-    c.fillRect(3, -36, 20, 10);
-    c.fillRect(-1, -37, 2, 22);
-    c.fillRect(-26.5, -26, 3.5, 10);
-    c.fillRect(23, -26, 3.5, 10);
+    c.fillRect(-13, -37, 24, 9);
+    c.fillRect(15, top + 1.5, 1.5, 25); // лестница: стойки и ступеньки
+    c.fillRect(20.5, top + 1.5, 1.5, 25);
+    for (let y = top + 4; y < -17; y += 4.5) c.fillRect(15, y, 7, 1.5);
+    c.fillRect(-27, -26, 3.5, 11);
+    c.fillRect(23.5, -26, 3.5, 11);
     // бампер: тёмный зазор и светлая полоса шире кузова, номер — тёмный прямоугольник
     c.fillStyle = SHADOW;
     c.fillRect(-31, -14.5, 62, 7.5);
@@ -410,26 +439,42 @@ function drawWheels(ctx, x, y, w, h, wheels) {
     outlinedText(ctx, "RAISE", x + 2, cy - 12, fontNum(fit[1], 600), { align: "left", lw: 4, fill: C.inkDim });
     outlinedText(ctx, "cm", x + 2, cy + 13, fontNum(fit[1], 600), { align: "left", lw: 4, fill: C.inkDim });
   }
-  // кузов: прямоугольник со скруглённым носом, лобовое — тёмная полоса
+  // кемпер сверху: жилой кузов с округлым краем алькова спереди, из-под него — капот кабины, уже кузова; люк
   ctx.save();
-  ctx.beginPath();
+  const outline = (fill) => {
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = SHADOW;
+    ctx.stroke();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = C.ink;
+    ctx.stroke();
+    ctx.fillStyle = fill;
+    ctx.fill();
+  };
+  const hw = bw / 2 - 4;
+  ctx.beginPath(); // капот
+  ctx.moveTo(cx - hw, top + 9);
+  ctx.lineTo(cx - hw, top + 3);
+  ctx.quadraticCurveTo(cx - hw, top, cx - hw + 3, top);
+  ctx.lineTo(cx + hw - 3, top);
+  ctx.quadraticCurveTo(cx + hw, top, cx + hw, top + 3);
+  ctx.lineTo(cx + hw, top + 9);
+  outline("rgba(236,247,216,0.3)");
+  const bt = top + 6;
+  ctx.beginPath(); // кузов с альковом
   ctx.moveTo(cx - bw / 2, top + bh);
-  ctx.lineTo(cx - bw / 2, top + 8);
-  ctx.quadraticCurveTo(cx - bw / 2, top, cx - bw / 2 + 8, top);
-  ctx.lineTo(cx + bw / 2 - 8, top);
-  ctx.quadraticCurveTo(cx + bw / 2, top, cx + bw / 2, top + 8);
+  ctx.lineTo(cx - bw / 2, bt + 6);
+  ctx.quadraticCurveTo(cx - bw / 2, bt, cx - bw / 2 + 6, bt);
+  ctx.lineTo(cx + bw / 2 - 6, bt);
+  ctx.quadraticCurveTo(cx + bw / 2, bt, cx + bw / 2, bt + 6);
   ctx.lineTo(cx + bw / 2, top + bh);
   ctx.closePath();
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = SHADOW;
-  ctx.stroke();
-  ctx.lineWidth = 2;
+  ctx.fillStyle = C.dark;
+  ctx.fill(); // капот не просвечивает под альковом
+  outline("rgba(236,247,216,0.14)");
+  ctx.lineWidth = 1.5;
   ctx.strokeStyle = C.ink;
-  ctx.stroke();
-  ctx.fillStyle = "rgba(236,247,216,0.14)";
-  ctx.fill();
-  ctx.fillStyle = C.ink;
-  ctx.fillRect(cx - bw / 2 + 4, top + 10, bw - 8, 3); // лобовое (перед — сверху)
+  ctx.strokeRect(cx - 4.5, top + bh * 0.56, 9, 7); // люк
   // колёса и числа
   const spots = {
     fl: { wx: cx - bw / 2 - 3, wy: top + 11, left: true },
