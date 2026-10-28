@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
@@ -161,6 +162,7 @@ class CameraService(FrameSink):
         # lores-кадры для fnav-watch (камера на охране): копируются, только пока он просит
         self.ring = RingWriter(ring_path or ring_default_path(camera_id))
         self._last_video_mono = 0.0
+        self._rate_log: deque[tuple[float, int]] = deque(maxlen=512)
         self._ring_only = False  # кадр нужен только кольцу (JPEG — нет)
         self._ring_want = False
 
@@ -336,9 +338,11 @@ class CameraService(FrameSink):
         fps = kbps = None
         if rec is not None and time.monotonic() - rec.last_frame_mono < 3.0:
             fps, kbps = rec.rates()
+        elif rec is None and live:
+            fps, kbps = self._live_rates()
         exp = dict(getattr(src, "exposure", None) or {})
         error = self._error or (rec.write_error if rec else None)
-        if self._no_space:
+        if self._no_space and rec is not None:  # без записи (задняя, record = false) место не важно
             error = NO_SPACE
         if not self.enabled:
             state, error = "disabled", None
@@ -383,9 +387,11 @@ class CameraService(FrameSink):
         p = self._p
         if p is None:
             return
-        self._last_video_mono = time.monotonic()
+        self._last_video_mono = now = time.monotonic()
         if p.recorder is not None:
             p.recorder.push(au, keyframe, ts_us)
+        else:  # без записи частоту и битрейт считаем здесь
+            self._rate_log.append((now, len(au)))
         if p.rtsp is not None:
             p.rtsp.push(au, keyframe, ts_us)
 
@@ -409,6 +415,16 @@ class CameraService(FrameSink):
     def on_error(self, msg: str) -> None:
         self._source_error = msg
         self._wake.set()
+
+    def _live_rates(self) -> tuple[float | None, float | None]:
+        """(к/с, кбит/с) по последним ~3 с входящего видео (когда регистратора нет)."""
+        log_ = list(self._rate_log)
+        now = time.monotonic()
+        r = [(t, n) for t, n in log_ if now - t <= 3.0]
+        if len(r) < 2 or r[-1][0] - r[0][0] <= 0:
+            return None, None
+        dt = r[-1][0] - r[0][0]
+        return round((len(r) - 1) / dt, 2), round(sum(n for _, n in r[1:]) * 8 / dt / 1000, 1)
 
     def lores_demand_fps(self) -> float:
         """Сколько малых кадров/с нужно сейчас (источник RTSP декодирует столько): зрители MJPEG / недавний снимок —

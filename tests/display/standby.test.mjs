@@ -18,6 +18,12 @@ test("standby only while armed: not arming, not triggered, not off, not without 
   assert.equal(armedStandby(tel("armed"), off), false, "switched off in the settings");
 });
 
+test("the rear view called up by the camera key wakes the armed screen; front again — standby again", () => {
+  const s = DEFAULT_SETTINGS;
+  assert.equal(armedStandby({ ...tel("armed"), display: { camera: "rear" } }, s), false);
+  assert.equal(armedStandby({ ...tel("armed"), display: { camera: "front" } }, s), true);
+});
+
 test("standby redraw timer: to the start of the next second", () => {
   assert.equal(standbyDelayMs(10_000), 1015);
   assert.equal(standbyDelayMs(10_999), 16);

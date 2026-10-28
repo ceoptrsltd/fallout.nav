@@ -201,6 +201,9 @@ def test_rear_without_recording_is_live(tmp_path: Path):
     try:
         assert _wait(lambda: svc.status().state == "live")
         assert svc.status().current_segment is None and not list((tmp_path / "rec").rglob("*.ts"))
+        assert _wait(lambda: (svc.status().fps_actual or 0) > 5)  # частота — по входящему видео
+        svc._no_space = True  # места нет, но записи нет — это не ошибка
+        assert svc.status().state == "live" and svc.status().error is None
     finally:
         svc.stop()
 
