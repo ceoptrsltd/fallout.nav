@@ -226,3 +226,14 @@ test("vibration meter sets the impact threshold: position and steps", () => {
   assert.equal(stepThreshold(0.02, -1), IMPACT_MIN);
   assert.ok(IMPACT_STEPS.every((x, i) => i === 0 || x > IMPACT_STEPS[i - 1]));
 });
+
+test("rear camera: event labels and the rear camera's problem in the watch status", () => {
+  assert.equal(kindInfo("approach", "rear").label, "Approaching behind the van");
+  assert.equal(kindInfo("approach").label, "Person approaching");
+  assert.equal(kindInfo("impact", "rear").label, "Impact");
+  const v = { enabled: true, available: true, watching: true, people: 0, error: null };
+  assert.deepEqual(visionStatus({ ...v, rear: { watching: false, people: 0, error: "No frames from the rear camera" } }),
+    { text: "Watching · Rear camera: No frames from the rear camera", kind: "warn" });
+  assert.deepEqual(visionStatus({ ...v, rear: { watching: true, people: 0, error: null } }), { text: "Watching", kind: "ok" });
+  assert.equal(visionStatus({ ...v, enabled: false, rear: { error: "x" } }).text, "Off — the camera does not guard the van");
+});

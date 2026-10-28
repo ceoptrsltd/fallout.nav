@@ -116,8 +116,16 @@ export function hazardStatus(hz) {
   return { text: "Off — the alarm does not use them", kind: "" };
 }
 
-/** Camera watch (fnav-watch) status line: {text, kind} or null when the device does not report it. */
+/** Camera watch (fnav-watch) status line: {text, kind} or null when the device does not report it.
+ *  A problem with the rear camera only (v.rear.error, e.g. no frames) is added to the front's line as a warning. */
 export function visionStatus(v) {
+  const st = visionStatusFront(v);
+  const r = v && typeof v === "object" ? v.rear : null;
+  if (!st || !r || typeof r !== "object" || !r.error || !v.enabled || !v.available || v.error) return st;
+  return { text: `${st.text} · Rear camera: ${r.error}`, kind: st.kind === "bad" ? "bad" : "warn" };
+}
+
+function visionStatusFront(v) {
   if (!v || typeof v !== "object") return null;
   if (!v.enabled) return { text: "Off — the camera does not guard the van", kind: "" };
   if (v.error) return { text: String(v.error), kind: "bad" };
@@ -147,8 +155,13 @@ const KINDS = {
 };
 
 /** Event kind for the log: {label, icon, kind}. */
-export function kindInfo(kind) {
-  return KINDS[kind] || { label: kind ? String(kind) : "Event", icon: "info", kind: "" };
+// events of the rear camera (data.camera === "rear")
+const REAR_LABELS = { approach: "Approaching behind the van", face: "Face at the rear camera", loiter: "Lingering behind the van" };
+
+/** Label, icon and tone of an event kind; camera "rear" — the rear camera's wording for camera events. */
+export function kindInfo(kind, camera) {
+  const k = KINDS[kind] || { label: kind ? String(kind) : "Event", icon: "info", kind: "" };
+  return camera === "rear" && REAR_LABELS[kind] ? { ...k, label: REAR_LABELS[kind] } : k;
 }
 
 /** Change marker of the event list (re-render the log only when it changed). */

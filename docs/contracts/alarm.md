@@ -123,11 +123,17 @@ url: str, data: object}` — `url` относительно каталога а�
 close to the van at 14:03»; `face` — «Someone is looking in» / «A face close to the windshield at 14:03»; `loiter` — «Someone is lingering at the van» /
 «A person has stayed close to the van for 8 s at 14:03» (секунды — `data.held_s`); `test` — «Test alarm» / «Alarm notifications
 work (14:03)». Время — локальное устройства, `HH:MM`.
+События камер несут `data.camera` (`"front"` / `"rear"`). С задней — свои тексты: `approach` — «Person approaching behind
+the van» / «Someone came close to the back of the van at 14:03»; `face` — «Someone is looking into the rear camera» /
+«A face close to the rear camera at 14:03»; `loiter` — «Someone is lingering behind the van» / «A person has stayed close
+to the back of the van for 8 s at 14:03». Пауза между push (`push_cooldown_s`) для событий камер — отдельно по камерам.
+При любом срабатывании защищаются и снимаются обе камеры (задняя — если включена): `data.segment`, `data.snapshot`,
+`data.segment_rear`, `data.snapshot_rear`; снимок задней — `GET /api/alarm/snapshot/{id}-rear.jpg`.
 
 `AlarmStatus = {state, armed_at: float|null, arm_in_s: int|null, sensor: {ok: bool, model: str|null, address: int,
 error: str|null}, level_g: float|null, tilt_deg: float|null (текущий угол от базы, null вне armed), siren: bool
 (звучит), events: AlarmEvent[] (новые первыми, ≤ 100), relay: {configured: bool, pending: int}, hazard: {…},
-vision: {enabled, available, watching, people, error} ([vision.md](vision.md))}`
+vision: {enabled, available, watching, people, error, rear: {watching, people, error} | null} ([vision.md](vision.md))}`
 
 | Метод | Путь | Ответ |
 |---|---|---|
@@ -138,7 +144,7 @@ vision: {enabled, available, watching, people, error} ([vision.md](vision.md))}`
 | POST | `/api/alarm/test` | `AlarmStatus` — событие `test` идёт всем путём (журнал → сервер → push), без сирены |
 | GET | `/api/alarm/snapshot/{id}.jpg` | снимок камеры к событию журнала; 404 — нет |
 | DELETE | `/api/alarm/events` | `AlarmStatus` (и снимки) |
-| POST | `/api/alarm/simulate` | только в `--mock`: `{"kind": "impact"|"tilt"|"move"|"approach"|"face"|"loiter", "g": 0.5}` → как настоящее событие (если `armed`; камера — с учётом `settings.alarm.vision`) |
+| POST | `/api/alarm/simulate` | только в `--mock`: `{"kind": "impact"|"tilt"|"move"|"approach"|"face"|"loiter", "g": 0.5, "camera": "front"|"rear"}` → как настоящее событие (если `armed`; камера — с учётом `settings.alarm.vision`) |
 
 Настройки — общим механизмом `settings` (как остальные разделы).
 

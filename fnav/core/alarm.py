@@ -901,12 +901,12 @@ class AlarmService:
             with contextlib.suppress(OSError):
                 p.unlink()
 
-    async def simulate(self, kind: str, g: float = 0.5) -> AlarmStatus:
+    async def simulate(self, kind: str, g: float = 0.5, camera: str = "front") -> AlarmStatus:
         """Только --mock. Удар и наклон — через «датчик», если он читается: виден на уровне вибрации, событие даёт
         настоящее обнаружение (удар — через 1 с, наклон — через ~10 с). Иначе и для сдвига — сразу событие.
         Как у настоящих событий — только в armed/triggered."""
         if kind in VISION_KINDS:  # как от fnav-watch: с учётом настроек alarm.vision
-            await self.vision_event(kind, {"simulated": True})
+            await self.vision_event(kind, {"simulated": True, "camera": camera})
             return self.status()
         cfg = self.get_settings()
         fake = self.imu.fake if self.imu.running else None

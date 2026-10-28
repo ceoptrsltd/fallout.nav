@@ -342,7 +342,7 @@ class CameraService(FrameSink):
             fps, kbps = self._live_rates()
         exp = dict(getattr(src, "exposure", None) or {})
         error = self._error or (rec.write_error if rec else None)
-        if self._no_space and rec is not None:  # без записи (задняя, record = false) место не важно
+        if self._no_space and not (self.rear and not self.settings.rear_camera.record):  # без записи место не важно
             error = NO_SPACE
         if not self.enabled:
             state, error = "disabled", None

@@ -233,7 +233,7 @@ export function mount(root) {
     }
     const now = nowS();
     for (const ev of list) {
-      const ki = kindInfo(ev.kind);
+      const ki = kindInfo(ev.kind, ev.data && ev.data.camera);
       const x = eventExtras(ev);
       const when = h("span.when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, eventAgo(ev.ts, now));
       whens.push([when, ev.ts]);

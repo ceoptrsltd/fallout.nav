@@ -298,7 +298,7 @@ export function mount(root) {
     }
     const now = nowS();
     for (const ev of list) {
-      const ki = kindInfo(ev.kind);
+      const ki = kindInfo(ev.kind, ev.data && ev.data.camera);
       const link = eventLink(ev);
       // the front camera's snapshot / kept recording, and the rear's when it is on (data.snapshot_rear, data.segment_rear)
       const x = eventExtras(ev);

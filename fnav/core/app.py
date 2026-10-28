@@ -715,6 +715,7 @@ def _register_games(app: FastAPI, core: Core) -> None:
 class SimulateBody(BaseModel):
     kind: Literal["impact", "tilt", "move", "approach", "face", "loiter"]
     g: float = Field(0.5, gt=0, le=16)
+    camera: Literal["front", "rear"] = "front"  # события камеры: какая их «увидела»
 
 
 def _register_alarm(app: FastAPI, core: Core) -> None:
@@ -778,7 +779,7 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
         @app.post("/api/alarm/simulate")
         async def alarm_simulate(body: SimulateBody):
             """Только --mock: событие как от датчика / GPS (если охрана включена)."""
-            await core.alarm.simulate(body.kind, body.g)
+            await core.alarm.simulate(body.kind, body.g, camera=body.camera)
             return await status()
 
 
