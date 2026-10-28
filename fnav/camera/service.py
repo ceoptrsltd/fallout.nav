@@ -1,5 +1,6 @@
 """Сервис камеры: источник → (регистратор, RTSP, MJPEG, кольцо lores для fnav-watch), супервизор с повтором,
-обслуживание хранилища."""
+обслуживание хранилища. Два экземпляра: передняя (Picamera2) и задняя (IP-камера по RTSP, ``camera_id="rear"``:
+записи в recordings/rear/, свой порт, своё кольцо, путь MediaMTX rear)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from fnav import paths
-from fnav.models import CameraSettings, CameraStatus, Settings
+from fnav.core.secretsfile import KEY_REAR_CAMERA_PASSWORD, read_secrets
+from fnav.models import CameraId, CameraSettings, CameraStatus, Settings
 
 from .jpeg import LoresFrame
 from .live import LiveHub, LiveMux
@@ -18,12 +20,17 @@ from .mjpeg import JpegWorker, MjpegHub
 from .recorder import Recorder, TimeSync
 from .rtsp import DEFAULT_URL, RtspPublisher
 from .shmring import RingWriter
+from .shmring import default_path as ring_default_path
 from .sources import FakeSource, FrameSink, Source
 from .storage import GB, cleanup, disk_free, repair_latest, segment_reserve_bytes, stats
 
 log = logging.getLogger("fnav.camera")
 
 NO_SPACE = "No space left: all recordings are protected"
+REAR_DIR = "rear"  # записи задней камеры: {recordings_dir}/rear/YYYY-MM-DD/…
+REAR_RTSP_URL = "rtsp://127.0.0.1:8554/rear"
+REAR_PORT = 8083
+BUSY_S = 120.0  # чужой файл моложе — текущий сегмент другой камеры: очистка его не трогает
 
 SourceFactory = Callable[[Settings, FrameSink], Source]
 
@@ -45,8 +52,31 @@ def max_frame_us(cam: CameraSettings, moving: bool | None) -> int:
     return max(round(1e6 / cam.fps), ms * 1000)
 
 
-def default_source_factory(fake: bool) -> SourceFactory:
+def rear_camera_settings(s: Settings) -> CameraSettings:
+    """Параметры конвейера для задней камеры: частота/битрейт — оценки (поток задаёт камера), lores — свои,
+    длина сегмента и fsync — общие с передней. GOP у IP-камер длинный — ждём ключевой кадр терпеливее."""
+    r = s.rear_camera
+    return s.camera.model_copy(update={
+        "fps": r.fps, "gop": r.fps * 4, "bitrate_kbps": r.bitrate_kbps, "lores": r.lores,
+        "hflip": False, "vflip": False, "overlay_timestamp": False,
+    })
+
+
+def read_rear_password(path: Path | None = None) -> str:
+    try:
+        return read_secrets(path).get(KEY_REAR_CAMERA_PASSWORD, "")
+    except OSError:
+        return ""
+
+
+def default_source_factory(fake: bool, camera_id: CameraId = "front") -> SourceFactory:
     def make(settings: Settings, sink: FrameSink) -> Source:
+        if camera_id == "rear":
+            if fake:
+                return FakeSource(rear_camera_settings(settings), sink, size=(1280, 720))
+            from .rtspsrc import RtspCameraSource
+
+            return RtspCameraSource(settings.rear_camera, sink, password=read_rear_password())
         if fake:
             return FakeSource(settings.camera, sink)
         from .picam import PicameraSource  # лениво: на ПК picamera2 нет
@@ -82,26 +112,34 @@ class CameraService(FrameSink):
         housekeeping_s: float = 30.0,
         live_grace_s: float = 5.0,
         ring_path: Path | None = None,
+        camera_id: CameraId = "front",
     ) -> None:
         self.fake = fake
-        self.root = Path(root) if root else paths.recordings_dir()
+        self.camera_id: CameraId = camera_id
+        self.rear = camera_id == "rear"
+        self.rel_prefix = f"{REAR_DIR}/" if self.rear else ""  # пути записей — от общего каталога записей
+        self.root = Path(root) if root else (
+            paths.recordings_dir() / REAR_DIR if self.rear else paths.recordings_dir())
         self.settings_path = Path(settings_path) if settings_path else paths.settings_file()
         self.settings = load_settings(self.settings_path)
-        self.source_factory = source_factory or default_source_factory(fake)
+        self.source_factory = source_factory or default_source_factory(fake, camera_id)
+        self._password = read_rear_password() if self.rear else ""
         self.rtsp_url = rtsp_url
         self.segment_s_override = segment_s_override
         self.time_sync = time_sync or TimeSync()
         self.free_fn = free_fn
         self.retry_s = retry_s
-        self.frame_timeout_s = frame_timeout_s
+        # IP-камера по Wi-Fi подключается дольше (RTSP, до 10 с)
+        self.frame_timeout_s = max(frame_timeout_s, 15.0) if self.rear else frame_timeout_s
+        self._fails = 0  # подряд неудачных запусков: задняя камера недоступна — пауза растёт до 30 с
         self.housekeeping_s = housekeeping_s
         self.hub = MjpegHub()
         # живое видео (/live.ts): второй энкодер на lores, только пока есть зрители
         self.live = LiveHub(self.set_live_demand, grace_s=live_grace_s)
         self._live_wanted = False
         self._live_src: Source | None = None  # источник, на котором сейчас работает live-энкодер
-        self._live_mux = LiveMux(self.settings.camera.fps)
-        self._live_bitrate = self.settings.camera.live_bitrate_kbps
+        self._live_mux = LiveMux(self.cam.fps)
+        self._live_bitrate = self.cam.live_bitrate_kbps
 
         self._p: _Pipeline | None = None
         self._lock = threading.RLock()
@@ -121,9 +159,19 @@ class CameraService(FrameSink):
         self.recordings_bytes = 0
         self.moving: bool | None = None  # сообщает ядро (POST /motion); от этого — предел выдержки ночью
         # lores-кадры для fnav-watch (камера на охране): копируются, только пока он просит
-        self.ring = RingWriter(ring_path)
+        self.ring = RingWriter(ring_path or ring_default_path(camera_id))
+        self._last_video_mono = 0.0
         self._ring_only = False  # кадр нужен только кольцу (JPEG — нет)
         self._ring_want = False
+
+    @property
+    def cam(self) -> CameraSettings:
+        """Параметры конвейера этой камеры."""
+        return rear_camera_settings(self.settings) if self.rear else self.settings.camera
+
+    @property
+    def enabled(self) -> bool:
+        return not self.rear or self.settings.rear_camera.enabled
 
     # ───────────── публичный API ─────────────
     def start(self) -> None:
@@ -154,9 +202,17 @@ class CameraService(FrameSink):
         Битрейт живого видео запись не трогает: перезапускается только live-энкодер (если он работает).
         Пределы выдержки применяются на ходу."""
         new = load_settings(self.settings_path, fallback=self.settings)
-        old_cam, new_cam = self.settings.camera, new.camera
-        changed = _rec_params(new_cam) != _rec_params(old_cam)
+        old_cam = self.cam
+        old_rear = self.settings.rear_camera
         self.settings = new
+        new_cam = self.cam
+        changed = _rec_params(new_cam) != _rec_params(old_cam)
+        if self.rear:
+            pw = read_rear_password()
+            # зеркало — только экран в машине; остальное (адрес, логин, пароль, запись…) — перезапуск
+            changed = changed or pw != self._password or (
+                old_rear.model_copy(update={"mirror": False}) != new.rear_camera.model_copy(update={"mirror": False}))
+            self._password = pw
         self._hk_wake.set()
         if changed:
             log.info("camera settings changed -> restart")
@@ -200,7 +256,7 @@ class CameraService(FrameSink):
             start = getattr(src, "start_live", None)
             if start is None:
                 return "Live stream is not supported by this camera source"
-            cam = self.settings.camera
+            cam = self.cam
             self._live_mux.new_session(cam.fps)
             try:
                 start(cam.live_bitrate_kbps, self._on_live_video)
@@ -239,14 +295,16 @@ class CameraService(FrameSink):
             return
         self.moving = moving
         log.info("vehicle %s: max exposure %.0f ms", {True: "moving", False: "parked", None: "unknown"}[moving],
-                 max_frame_us(self.settings.camera, moving) / 1000)
+                 max_frame_us(self.cam, moving) / 1000)
         with self._lock:
             p = self._p
             if p is not None:
                 self._apply_exposure_limit(p)
 
     def _apply_exposure_limit(self, p: _Pipeline) -> None:
-        cam = self.settings.camera
+        cam = self.cam
+        if self.rear:  # экспозицией IP-камера управляет сама
+            return
         us = max_frame_us(cam, self.moving)
         if p.recorder is not None:  # длинные ночные кадры — не «потерянные»
             p.recorder.fps = float(cam.fps) if us <= round(1e6 / cam.fps) else 1e6 / us
@@ -263,6 +321,7 @@ class CameraService(FrameSink):
             return None
         rel = p.recorder.protect_current()
         if rel:
+            rel = self.rel_prefix + rel
             log.info("protected: %s", rel)
         return rel
 
@@ -271,6 +330,9 @@ class CameraService(FrameSink):
         rec = p.recorder if p else None
         src = p.source if p else None
         seg = rec.segment_rel if rec else None
+        if seg:
+            seg = self.rel_prefix + seg
+        live = p is not None and time.monotonic() - self._last_video_mono < 3.0
         fps = kbps = None
         if rec is not None and time.monotonic() - rec.last_frame_mono < 3.0:
             fps, kbps = rec.rates()
@@ -278,16 +340,21 @@ class CameraService(FrameSink):
         error = self._error or (rec.write_error if rec else None)
         if self._no_space:
             error = NO_SPACE
-        if error:
+        if not self.enabled:
+            state, error = "disabled", None
+        elif error:
             state = "error"
         elif p is None:
             state = "starting" if self._state_starting else "stopped"
         elif seg:
             state = "recording"
+        elif live and rec is None:
+            state = "live"  # задняя без записи (rear_camera.record = false)
         else:
             state = "starting"
         return CameraStatus(
             state=state,
+            camera=self.camera_id,
             recording=bool(seg),
             current_segment=seg,
             segment_started_utc=rec.segment_started_utc if seg and rec else None,
@@ -302,10 +369,13 @@ class CameraService(FrameSink):
             free_gb=round(self.free_gb, 2) if self.free_gb is not None else None,
             time_synced=rec.segment_time_synced if seg and rec else self.time_sync.value,
             moving=self.moving,
-            max_exposure_ms=max_frame_us(self.settings.camera, self.moving) / 1000,
+            max_exposure_ms=None if self.rear else max_frame_us(self.cam, self.moving) / 1000,
             exposure_ms=round(exp["ExposureTime"] / 1000, 1) if "ExposureTime" in exp else None,
             gain=round(exp["AnalogueGain"] * exp.get("DigitalGain", 1.0), 2) if "AnalogueGain" in exp else None,
             lux=round(exp["Lux"], 1) if "Lux" in exp else None,
+            codec=getattr(src, "codec", None),
+            stream_fps=getattr(src, "stream_fps", None),
+            password_set=bool(self._password) if self.rear else None,
         )
 
     # ───────────── FrameSink (вызывается из потока источника) ─────────────
@@ -313,6 +383,7 @@ class CameraService(FrameSink):
         p = self._p
         if p is None:
             return
+        self._last_video_mono = time.monotonic()
         if p.recorder is not None:
             p.recorder.push(au, keyframe, ts_us)
         if p.rtsp is not None:
@@ -339,30 +410,44 @@ class CameraService(FrameSink):
         self._source_error = msg
         self._wake.set()
 
+    def lores_demand_fps(self) -> float:
+        """Сколько малых кадров/с нужно сейчас (источник RTSP декодирует столько): зрители MJPEG / недавний снимок —
+        lores.fps (или наибольшая из запрошенных ?fps), fnav-watch — его частота, иначе 1 (только ключевые кадры:
+        свежий снимок к тревоге)."""
+        cam = self.cam
+        fps = 1.0
+        if self.hub.demand:
+            rate = self.hub.max_rate()
+            fps = float(min(cam.lores.fps, rate) if rate else cam.lores.fps)
+        return max(fps, self.ring.demand_fps())
+
     # ───────────── конвейер ─────────────
     def _segment_s(self) -> float:
         if self.segment_s_override:
             return self.segment_s_override
-        return self.settings.camera.segment_minutes * 60.0
+        return self.cam.segment_minutes * 60.0
 
     def _start_pipeline(self) -> None:
         s = self.settings
-        cam = s.camera
+        cam = self.cam
         p = _Pipeline()
-        p.recorder = Recorder(
-            self.root, segment_s=self._segment_s(), fsync_interval_s=cam.fsync_interval_s, gop=cam.gop,
-            fps=cam.fps, time_sync=self.time_sync, request_keyframe=self._request_keyframe,
-            on_segment_start=lambda _path: self._hk_wake.set(),
-        )
-        p.recorder.paused = self._no_space
+        if not self.rear or s.rear_camera.record:
+            p.recorder = Recorder(
+                self.root, segment_s=self._segment_s(), fsync_interval_s=cam.fsync_interval_s, gop=cam.gop,
+                fps=cam.fps, time_sync=self.time_sync, request_keyframe=self._request_keyframe,
+                on_segment_start=lambda _path: self._hk_wake.set(),
+            )
+            p.recorder.paused = self._no_space
         p.jpeg = JpegWorker(self.hub, cam.lores.fps, cam.lores.jpeg_quality)
         if self.rtsp_url:
             p.rtsp = RtspPublisher(self.rtsp_url, fps=cam.fps, width=cam.out_w, height=cam.out_h)
-        p.recorder.start()
+        if p.recorder is not None:
+            p.recorder.start()
         p.jpeg.start()
         if p.rtsp:
             p.rtsp.start()
         self._source_error = None
+        self._last_video_mono = 0.0
         self._p = p  # sink начинает принимать кадры
         p.source = self.source_factory(s, self)
         self._apply_exposure_limit(p)  # до start(): предел попадёт в начальные controls
@@ -400,28 +485,44 @@ class CameraService(FrameSink):
                 except Exception:
                     log.exception("stop %s failed", type(part).__name__)
 
+    def _retry_delay(self) -> float:
+        if not self.rear:
+            return self.retry_s
+        return min(30.0, self.retry_s * 2 ** max(0, min(self._fails - 1, 4)))
+
     def _supervise(self) -> None:
+        label = "Rear camera" if self.rear else "Camera"
         if not self._repaired:
             self._repaired = True
             try:
-                repair_latest(self.root)
+                repair_latest(self.root, exclude=() if self.rear else (REAR_DIR,))
             except Exception:
                 log.exception("repair failed")
         while not self._stop.is_set():
             if self._restart.is_set():
                 self._restart.clear()
                 self._stop_pipeline()
+                self._fails = 0
+            if not self.enabled:  # задняя выключена в настройках: ничего не держим, ждём /reload
+                if self._p is not None:
+                    self._stop_pipeline()
+                self._error, self._fails = None, 0
+                self._wake.wait(1.0)
+                self._wake.clear()
+                continue
             if self._p is None:
                 self._state_starting = True
                 try:
                     self._start_pipeline()
                     log.info("pipeline started")
                 except Exception as e:
-                    log.exception("pipeline start failed")
-                    self._error = f"Camera: {e}"
+                    self._fails += 1
+                    if self._fails <= 3 or not self.rear:
+                        log.exception("pipeline start failed")
+                    self._error = f"{label}: {e}"
                     self._stop_pipeline()
                     self._state_starting = False
-                    self._wake.wait(self.retry_s)
+                    self._wake.wait(self._retry_delay())
                     self._wake.clear()
                     continue
                 finally:
@@ -431,18 +532,23 @@ class CameraService(FrameSink):
             rec = p.recorder
             problem = self._source_error
             now = time.monotonic()
-            last = rec.last_frame_mono if rec else 0.0
+            last = max(rec.last_frame_mono if rec else 0.0, self._last_video_mono)
             if problem is None and now - max(last, p.started_mono) > self.frame_timeout_s:
-                problem = f"Camera: no frames for {self.frame_timeout_s:.0f} s"
+                problem = f"{label}: no video for {self.frame_timeout_s:.0f} s"
             if problem:
-                log.error("%s — restarting in %.0f s", problem, self.retry_s)
+                self._fails += 1
+                delay = self._retry_delay()
+                if self._fails <= 3 or not self.rear:
+                    log.error("%s — restarting in %.0f s", problem, delay)
                 self._error = problem
                 self._stop_pipeline()
-                if self._stop.wait(self.retry_s):
+                if self._stop.wait(delay):
                     break
                 continue
-            if self._error and rec and rec.segment_rel:
-                self._error = None  # снова пишем
+            if self._last_video_mono:
+                self._fails = 0
+            if self._error and ((rec and rec.segment_rel) or (rec is None and self._last_video_mono)):
+                self._error = None  # снова пишем (или показываем)
             self._wake.wait(0.5)
             self._wake.clear()
         self._stop_pipeline()
@@ -450,14 +556,17 @@ class CameraService(FrameSink):
     # ───────────── обслуживание хранилища ─────────────
     def housekeeping_once(self) -> None:
         s = self.settings
-        reserve = segment_reserve_bytes(s.camera.bitrate_kbps, s.camera.segment_minutes)
+        cam = self.cam
+        reserve = segment_reserve_bytes(cam.bitrate_kbps, cam.segment_minutes)
         min_free = int(s.storage.min_free_gb * GB)
         p = self._p
         rec = p.recorder if p else None
         # лимит объёма — с местом под следующий сегмент: после очистки записи + сегмент ≤ лимита
         max_total = max(0, int(s.storage.max_recordings_gb * GB) - reserve)
+        # передняя чистит все записи (и задней: самые старые — первыми), кроме чужого текущего сегмента;
+        # задняя — только свои (если передняя не работает)
         res = cleanup(self.root, min_free + reserve, current=rec.current_path if rec else None,
-                      free_fn=self.free_fn, max_total_bytes=max_total)
+                      free_fn=self.free_fn, max_total_bytes=max_total, skip_recent_s=0.0 if self.rear else BUSY_S)
         self.free_gb = res.free_gb
         if res.over_limit and not self._over_limit:
             log.warning("recordings take %.2f GB > limit %.1f GB: only protected recordings are left to delete",
@@ -472,7 +581,7 @@ class CameraService(FrameSink):
             self._no_space = False
         if rec is not None:
             rec.paused = self._no_space
-        self.recordings_count, self.recordings_bytes = stats(self.root)
+        self.recordings_count, self.recordings_bytes = stats(self.root, () if self.rear else (REAR_DIR,))
 
     def _housekeeping(self) -> None:
         last_clean = 0.0

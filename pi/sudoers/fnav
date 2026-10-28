@@ -20,6 +20,9 @@ Cmnd_Alias FNAV_SERVICES = \
     /usr/bin/systemctl stop fnav-camera, \
     /usr/bin/systemctl start fnav-camera, \
     /usr/bin/systemctl restart fnav-camera, \
+    /usr/bin/systemctl stop fnav-camera-rear, \
+    /usr/bin/systemctl start fnav-camera-rear, \
+    /usr/bin/systemctl restart fnav-camera-rear, \
     /usr/bin/systemctl stop fnav-display, \
     /usr/bin/systemctl start fnav-display, \
     /usr/bin/systemctl restart fnav-display, \

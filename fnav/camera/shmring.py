@@ -44,13 +44,16 @@ EXPOSURE_KEYS = ("ExposureTime", "AnalogueGain", "DigitalGain", "Lux")
 CHECK_S = 1.0  # писатель: как часто проверять файл, пока его нет / читатель молчит
 
 
-def default_path() -> Path:
-    """FNAV_LORES_RING или /dev/shm/fnav-lores (на ПК — во временном каталоге)."""
-    env = os.environ.get("FNAV_LORES_RING")
+def default_path(camera: str = "front") -> Path:
+    """FNAV_LORES_RING или /dev/shm/fnav-lores (на ПК — во временном каталоге); задняя камера —
+    FNAV_LORES_RING_REAR или …/fnav-lores-rear."""
+    rear = camera == "rear"
+    env = os.environ.get("FNAV_LORES_RING_REAR" if rear else "FNAV_LORES_RING")
     if env:
         return Path(env)
+    name = "fnav-lores-rear" if rear else "fnav-lores"
     shm = Path("/dev/shm")
-    return shm / "fnav-lores" if shm.is_dir() else Path(tempfile.gettempdir()) / "fnav-lores"
+    return shm / name if shm.is_dir() else Path(tempfile.gettempdir()) / name
 
 
 def _round64(n: int) -> int:
@@ -158,6 +161,23 @@ class RingWriter:
         except Exception as e:  # noqa: BLE001
             self._log_once(f"lores ring: {e}")
             return False
+
+    def demand_fps(self) -> float:
+        """Сколько кадров/с просит читатель сейчас (0 — не просит). Без учёта момента последней записи."""
+        try:
+            now = self.clock()
+            if self._m is None:
+                if now < self._next_check:
+                    return 0.0
+                self._check(now)
+            m = self._m
+            if m is None:
+                return 0.0
+            until, fps = struct.unpack_from("<dd", m.mm, OFF_WANT)
+            return float(fps) if now <= until and fps > 0 else 0.0
+        except Exception as e:  # noqa: BLE001
+            self._log_once(f"lores ring: {e}")
+            return 0.0
 
     def write(self, data: np.ndarray, kind: str, w: int, h: int, exposure: dict | None = None) -> bool:
         """Положить кадр (yuv420: (h*3/2, stride); rgb: (h, w, 3)). False — не записан (ошибка — в лог один раз)."""

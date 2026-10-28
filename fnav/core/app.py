@@ -64,6 +64,15 @@ class ButtonBody(BaseModel):
     event: Literal["press", "long_press"] = "press"
 
 
+class RearCredentialsBody(BaseModel):
+    username: str | None = Field(None, max_length=128)
+    password: str | None = Field(None, max_length=256)  # "" — удалить; None — не менять
+
+
+class CameraViewBody(BaseModel):
+    camera: Literal["front", "rear"] | None = None  # None — переключить
+
+
 class NoCacheStatic(StaticFiles):
     """Статика других агентов меняется часто — браузер всегда перепроверяет (ETag/Last-Modified)."""
 
@@ -352,54 +361,82 @@ def _register_recordings(app: FastAPI, core: Core) -> None:
 
 
 def _register_camera(app: FastAPI, core: Core) -> None:
-    @app.get("/api/camera/status")
-    async def cam_status():
-        st = await core.camera.poll()
-        return {**st.model_dump(mode="json"), "mock": core.camera.using_mock}
+    """Одни и те же маршруты для передней (/api/camera/…) и задней (/api/camera/rear/…) камеры."""
+    _register_one_camera(app, core, "/api/camera", lambda: core.camera)
+    _register_one_camera(app, core, "/api/camera/rear", lambda: core.camera_rear)
 
-    @app.get("/api/camera/mjpeg")
+    @app.post("/api/camera/rear/credentials")
+    async def rear_credentials(body: RearCredentialsBody):
+        """Логин и пароль RTSP задней камеры: пароль — в secrets.env, наружу не отдаётся (только password_set)."""
+        return await core.set_rear_credentials(body.username, body.password)
+
+    @app.get("/api/camera/view")
+    async def camera_view_get():
+        return {"camera": core.view_camera, "rear_enabled": core.camera_rear.enabled}
+
+    @app.post("/api/camera/view")
+    async def camera_view_set(body: CameraViewBody):
+        """Экран в машине: передняя ↔ задняя камера (как кнопка «камеры»)."""
+        if body.camera is None or body.camera != core.view_camera:
+            res = await core.switch_camera()
+            if res and not res.get("ok"):
+                return _err(409, res.get("error") or "Rear camera is off")
+        return {"camera": core.view_camera, "rear_enabled": core.camera_rear.enabled}
+
+
+def _register_one_camera(app: FastAPI, core: Core, prefix: str, cam_of) -> None:
+    whep_api = prefix + "/whep"
+
+    @app.get(prefix + "/status")
+    async def cam_status():
+        cam = cam_of()
+        st = await cam.poll()
+        return {**st.model_dump(mode="json"), "mock": cam.using_mock, "enabled": cam.enabled}
+
+    @app.get(prefix + "/mjpeg")
     async def cam_mjpeg(request: Request):
         try:  # ?fps=N (1…30) — прореживание (удалённый просмотр), иначе полная частота
             fps = min(30, max(1, int(request.query_params["fps"])))
         except (KeyError, ValueError):
             fps = None
-        ct, stream = await core.camera.open_mjpeg(fps)
+        ct, stream = await cam_of().open_mjpeg(fps)
         return StreamingResponse(stream, media_type=ct,
                                  headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"})
 
-    @app.get("/api/camera/live.ts")
+    @app.get(prefix + "/live.ts")
     async def cam_live():
         # живое видео по требованию: второй энкодер камеры работает, только пока этот поток открыт
-        stream, close = await core.camera.open_live()
+        stream, close = await cam_of().open_live()
         return ClosingStreamingResponse(stream, close, media_type="video/mp2t",
                                         headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"})
 
-    @app.get("/api/camera/snapshot.jpg")
+    @app.get(prefix + "/snapshot.jpg")
     async def cam_snapshot():
-        return Response(await core.camera.snapshot(), media_type="image/jpeg",
+        return Response(await cam_of().snapshot(), media_type="image/jpeg",
                         headers={"Cache-Control": "no-store"})
 
-    @app.post("/api/camera/restart")
+    @app.post(prefix + "/restart")
     async def cam_restart():
-        return await core.camera.restart()
+        return await cam_of().restart()
 
     async def _whep(request: Request, subpath: str) -> Response:
+        cam = cam_of()
         body = await request.body()
-        r = await core.camera.whep(request.method, subpath, body, dict(request.headers))
+        r = await cam.whep(request.method, subpath, body, dict(request.headers))
         headers = {}
         for h in ("Location", "ETag", "Link", "Accept-Patch", "Content-Type", "Access-Control-Expose-Headers"):
             v = r.headers.get(h)
             if v is not None:
-                headers[h] = rewrite_whep_location(v, core.camera.whep_url) if h == "Location" else v
+                headers[h] = rewrite_whep_location(v, cam.whep_url, whep_api) if h == "Location" else v
         if "link" in r.headers:
             headers["Link"] = ", ".join(r.headers.get_list("link"))
         return Response(r.content, status_code=r.status_code, headers=headers)
 
-    @app.api_route("/api/camera/whep", methods=["POST", "OPTIONS"])
+    @app.api_route(whep_api, methods=["POST", "OPTIONS"])
     async def whep_root(request: Request):
         return await _whep(request, "")
 
-    @app.api_route("/api/camera/whep/{subpath:path}", methods=["PATCH", "DELETE", "GET", "OPTIONS"])
+    @app.api_route(whep_api + "/{subpath:path}", methods=["PATCH", "DELETE", "GET", "OPTIONS"])
     async def whep_sub(subpath: str, request: Request):
         if ".." in subpath.split("/"):
             return _err(400, "Invalid path")
@@ -723,8 +760,11 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
 
     @app.get("/api/alarm/snapshot/{event_id}.jpg")
     async def alarm_snapshot(event_id: str):
-        """Снимок камеры в момент события журнала (если камера работала)."""
-        p = core.alarm.snapshot_path(event_id)
+        """Снимок камеры в момент события журнала (если камера работала); `<id>-rear.jpg` — задней."""
+        camera = "front"
+        if event_id.endswith("-rear"):
+            event_id, camera = event_id[:-5], "rear"
+        p = core.alarm.snapshot_path(event_id, camera)
         if p is None:
             return _err(404, "No snapshot for this event")
         return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})

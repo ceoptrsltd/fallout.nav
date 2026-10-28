@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,12 +42,15 @@ def remove_sidecar(ts: Path) -> None:
         pass
 
 
-def list_recordings(root: Path) -> list[Path]:
-    """Все .ts под root, от старых к новым (по mtime, затем по имени)."""
+def list_recordings(root: Path, exclude: tuple[str, ...] = ()) -> list[Path]:
+    """Все .ts под root, от старых к новым (по mtime, затем по имени). exclude — каталоги верхнего уровня, которые
+    не смотреть (записи задней камеры в rear/ — их пишет и чинит другой процесс)."""
     if not root.is_dir():
         return []
     items = []
     for p in root.rglob("*.ts"):
+        if exclude and len(p.relative_to(root).parts) > 1 and p.relative_to(root).parts[0] in exclude:
+            continue
         try:
             items.append((p.stat().st_mtime, p.as_posix(), p))
         except OSError:
@@ -55,10 +59,10 @@ def list_recordings(root: Path) -> list[Path]:
     return [p for _, _, p in items]
 
 
-def stats(root: Path) -> tuple[int, int]:
+def stats(root: Path, exclude: tuple[str, ...] = ()) -> tuple[int, int]:
     """(число файлов, байт)."""
     n = total = 0
-    for p in list_recordings(root):
+    for p in list_recordings(root, exclude):
         try:
             total += p.stat().st_size
             n += 1
@@ -106,9 +110,11 @@ def cleanup(
     current: Path | None = None,
     free_fn: DiskFree = disk_free,
     max_total_bytes: int | None = None,
+    skip_recent_s: float = 0.0,
 ) -> CleanupResult:
     """Удалять самые старые незащищённые .ts (кроме текущего), пока свободно < target или все записи
-    вместе (с защищёнными) занимают > max_total_bytes. Защищённые не удаляются никогда."""
+    вместе (с защищёнными) занимают > max_total_bytes. Защищённые не удаляются никогда.
+    skip_recent_s — не трогать файлы, изменённые недавно (текущий сегмент другой камеры: его пишет другой процесс)."""
     res = CleanupResult(target_bytes=target_free_bytes)
     files: list[tuple[Path, int]] = []
     for p in list_recordings(root):
@@ -132,6 +138,8 @@ def cleanup(
             try:
                 if cur is not None and p.resolve() == cur:
                     continue
+                if skip_recent_s and time.time() - p.stat().st_mtime < skip_recent_s:
+                    continue
                 p.unlink()
                 remove_sidecar(p)
                 res.deleted.append(p)
@@ -150,10 +158,10 @@ def cleanup(
     return res
 
 
-def repair_latest(root: Path, count: int = 3) -> list[tuple[Path, int, int]]:
+def repair_latest(root: Path, count: int = 3, exclude: tuple[str, ...] = ()) -> list[tuple[Path, int, int]]:
     """Восстановить последние файлы (обрыв питания). Пустые/без кадров — удалить."""
     out = []
-    for p in list_recordings(root)[-count:]:
+    for p in list_recordings(root, exclude)[-count:]:
         try:
             before, after = repair_ts(p)
         except OSError as e:

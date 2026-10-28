@@ -15,7 +15,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from fnav import paths
-from fnav.models import Settings
+from fnav.models import SETTINGS_VERSION, Settings
 
 log = logging.getLogger("fnav.core.config")
 
@@ -53,6 +53,20 @@ def format_validation_error(e: ValidationError) -> SettingsError:
     return SettingsError("Invalid settings: " + "; ".join(parts), errs)
 
 
+def migrate(data: dict) -> dict:
+    """Сохранённые настройки старых версий → текущая (SETTINGS_VERSION). Только то, что умолчания не покрывают."""
+    ver = data.get("version", 1)
+    if not isinstance(ver, int) or ver >= SETTINGS_VERSION:
+        return data
+    data = dict(data)
+    if ver < 2:  # клавиша 4: камеры (передняя ↔ задняя) вместо вкл/выкл видеовыхода
+        kp = data.get("keypad")
+        if isinstance(kp, dict) and kp.get("key4") == "video_toggle":
+            data["keypad"] = {**kp, "key4": "camera_switch"}
+    data["version"] = SETTINGS_VERSION
+    return data
+
+
 def validate_settings(data: Any) -> Settings:
     if not isinstance(data, dict):
         raise SettingsError("Invalid settings: a JSON object is expected")
@@ -84,6 +98,7 @@ def load_settings_file(path: Path) -> tuple[Settings, list[str]]:
                         " - using defaults")
         _backup_bad(path)
         return Settings(), warnings
+    data = migrate(data)
     try:
         return validate_settings(data), warnings
     except SettingsError as e:

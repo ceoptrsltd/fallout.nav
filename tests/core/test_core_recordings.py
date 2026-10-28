@@ -90,7 +90,8 @@ async def test_recordings_api(data_dir):
         assert by[CURRENT]["in_progress"] is True
         assert by["2026-10-19/2026-10-19_10-00-00.ts"]["protected"] is True
         assert by["2026-10-20/2026-10-20_16-40-00.ts"] | {} == {
-            "path": "2026-10-20/2026-10-20_16-40-00.ts", "date": "2026-10-20", "start": "2026-10-20T16:40:00",
+            "path": "2026-10-20/2026-10-20_16-40-00.ts", "camera": "front", "date": "2026-10-20",
+            "start": "2026-10-20T16:40:00",
             "size_bytes": 10240, "duration_s": None, "protected": False, "in_progress": False, "events": []}
         assert by["nosync/boot-abcd1234_0001.ts"]["start"] is None
 
@@ -303,16 +304,28 @@ async def test_button_press_mock(data_dir):
         assert core.hub.led == "blink_slow"
 
 
-async def test_button_short_press_toggles_video_output(data_dir):
+async def test_button_short_press_switches_cameras_video_output_stays_in_the_api(data_dir):
+    """Кнопка GPS-модуля (коротко) — передняя ↔ задняя камера на экране; видеовыход — только через API / клавишу,
+    если её назначить на video_toggle."""
     async with running_app() as c:
         core = c.app.state.core
         await login(c)
-        r = await c.get("/api/display/output")
-        assert r.json()["on"] is True
+        r = await c.post("/api/mock/button", json={"event": "press"})  # задняя выключена — экран не меняется
+        assert r.json()["result"] == {"ok": False, "camera": "front", "error": "Rear camera is off"}
+        assert (await c.post("/api/camera/view", json={"camera": "rear"})).status_code == 409
+        await c.patch("/api/settings", json={"rear_camera": {"enabled": True}})
         r = await c.post("/api/mock/button", json={"event": "press"})
-        assert r.json()["result"] == {"ok": True, "on": False}
-        assert core.hub.led == "off"  # подтверждение: LED гаснет
-        r = await c.post("/api/display/output", json={"on": True})
+        assert r.json()["result"] == {"ok": True, "camera": "rear"}
+        disp = core.build_telemetry().display
+        assert (disp.mode, disp.reason, disp.camera, disp.rear_mirror) == ("camera", "rear", "rear", True)
+        assert core.build_telemetry().camera_rear is not None
+        r = await c.post("/api/camera/view", json={})  # без camera — переключить
+        assert r.json() == {"camera": "front", "rear_enabled": True}
+        assert core.build_telemetry().display.camera == "front"
+        await c.post("/api/camera/view", json={"camera": "rear"})
+        await c.patch("/api/settings", json={"rear_camera": {"enabled": False}})  # выключили — экран вернулся
+        assert core.view_camera == "front" and core.build_telemetry().camera_rear is None
+        r = await c.get("/api/display/output")
         assert r.json()["on"] is True
         r = await c.post("/api/display/output", json={})  # без "on" — переключить
         assert r.json()["on"] is False

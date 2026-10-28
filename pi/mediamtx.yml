@@ -52,3 +52,8 @@ paths:
     source: publisher
     # Recording is off: the fnav-camera recorder owns it.
     record: no
+  # Rear camera: fnav-camera --camera rear pulls the IP camera once and publishes the same H.264 here (WebRTC in
+  # the admin); the camera itself sees a single client.
+  rear:
+    source: publisher
+    record: no

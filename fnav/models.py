@@ -126,6 +126,24 @@ class CameraSettings(_Model):
     lores: LoresSettings = LoresSettings()
 
 
+class RearCameraSettings(_Model):
+    """Камера заднего вида: IP-камера по RTSP (H.264) в той же сети Wi-Fi (docs/contracts/camera.md «Задняя камера»).
+    Поток не перекодируется: запись, живое видео и публикация в MediaMTX — тот же H.264. Пароль — не здесь, а в
+    secrets.env (FNAV_REAR_CAMERA_PASSWORD), его задают через POST /api/camera/rear/credentials."""
+
+    enabled: bool = False
+    url: str = Field("", max_length=512)  # rtsp://адрес[:порт]/путь — основной поток, без логина и пароля
+    username: str = Field("", max_length=128)
+    # второй поток камеры (меньше разрешение): экран в машине, снимки, распознавание; пусто — основной
+    lores_url: str = Field("", max_length=512)
+    transport: Literal["tcp", "udp"] = "tcp"
+    record: bool = True  # писать на диск (иначе только живое видео)
+    fps: int = Field(25, ge=1, le=60)  # ожидаемая частота (пока камера не сообщила свою)
+    bitrate_kbps: int = Field(4000, ge=200, le=25000)  # оценка — запас места под следующий сегмент
+    mirror: bool = True  # на экране в машине — зеркально, как в зеркале заднего вида
+    lores: LoresSettings = LoresSettings(w=768, h=432)  # высота подгоняется под пропорции потока
+
+
 class StorageSettings(_Model):
     tile_cache_mb: int = Field(1024, ge=50)
     min_free_gb: float = Field(2.0, ge=0.5)  # столько свободного места держим всегда (резерв системы)
@@ -252,7 +270,7 @@ class RadioSettings(_Model):
 
 # действия клавиш мини-клавиатуры (fnav/core/keypad.py); "none" — клавиша ничего не делает
 KeypadAction = Literal["none", "station_prev", "station_next", "radio_toggle", "shuffle", "favorite", "volume_down",
-                       "volume_up", "view_toggle", "video_toggle", "protect", "alarm"]
+                       "volume_up", "view_toggle", "video_toggle", "camera_switch", "protect", "alarm"]
 
 
 class KeypadSettings(_Model):
@@ -264,7 +282,7 @@ class KeypadSettings(_Model):
     key1: KeypadAction = "station_prev"
     key2: KeypadAction = "station_next"
     key3: KeypadAction = "view_toggle"
-    key4: KeypadAction = "video_toggle"
+    key4: KeypadAction = "camera_switch"
     key5: KeypadAction = "protect"
     key6: KeypadAction = "shuffle"
     knob_left: KeypadAction = "volume_down"
@@ -370,12 +388,16 @@ class LevelSettings(_Model):
     calibration: LevelCalibration | None = None
 
 
+SETTINGS_VERSION = 2  # 2: клавиша 4 — переключение камер вместо видеовыхода (fnav/core/config.py migrate)
+
+
 class Settings(_Model):
-    version: int = 1
+    version: int = SETTINGS_VERSION
     display: DisplaySettings = DisplaySettings()
     nav: NavSettings = NavSettings()
     heading: HeadingSettings = HeadingSettings()
     camera: CameraSettings = CameraSettings()
+    rear_camera: RearCameraSettings = RearCameraSettings()
     storage: StorageSettings = StorageSettings()
     tiles: TileSettings = TileSettings()
     gps: GpsSettings = GpsSettings()
@@ -454,8 +476,13 @@ class SensorSnapshot(_Model):
 # ───────────────────────────── Камера ─────────────────────────────
 
 
+CameraId = Literal["front", "rear"]
+
+
 class CameraStatus(_Model):
-    state: Literal["starting", "recording", "stopped", "error"] = "stopped"
+    # disabled — задняя камера выключена в настройках; live — работает, но запись выключена (rear_camera.record)
+    state: Literal["starting", "recording", "live", "stopped", "error", "disabled"] = "stopped"
+    camera: CameraId = "front"
     recording: bool = False
     current_segment: str | None = None  # путь относительно recordings_dir
     segment_started_utc: str | None = None
@@ -475,6 +502,10 @@ class CameraStatus(_Model):
     exposure_ms: float | None = None
     gain: float | None = None  # аналоговое × цифровое
     lux: float | None = None  # оценка освещённости от libcamera
+    # задняя (RTSP): что сообщила камера и есть ли пароль в secrets.env
+    codec: str | None = None  # "h264"
+    stream_fps: float | None = None  # частота потока по данным камеры
+    password_set: bool | None = None
 
 
 # ───────────────────────────── Телеметрия (WebSocket) ─────────────────────────────
@@ -482,7 +513,10 @@ class CameraStatus(_Model):
 
 class DisplayState(_Model):
     mode: Literal["map", "camera"] = "camera"
-    reason: Literal["speed", "no_fix", "forced", "startup"] = "startup"
+    reason: Literal["speed", "no_fix", "forced", "startup", "rear"] = "startup"
+    # какая камера в режиме camera: rear — задний вид (кнопка «камеры»), поверх авто-логики карта/камера
+    camera: CameraId = "front"
+    rear_mirror: bool = True  # задний вид на экране — зеркально (rear_camera.mirror)
     target_zoom: float = 19
     orientation: Literal["heading_up", "north_up"] = "heading_up"
     gamepad: bool = False  # подключён геймпад: только тогда экран опрашивает его (меню игр)
@@ -746,6 +780,7 @@ class Telemetry(_Model):
     compass_cal: AutoCalStatus | None = None
     display: DisplayState
     camera: CameraStatus
+    camera_rear: CameraStatus | None = None  # None — задняя камера выключена в настройках
     disk: DiskStatus = DiskStatus()
     system: SystemStatus = SystemStatus()
     radio: RadioStatus | None = None

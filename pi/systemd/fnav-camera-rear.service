@@ -1,0 +1,38 @@
+[Unit]
+Description=fallout.nav rear camera (IP camera over RTSP: recorder + MediaMTX publisher + MJPEG)
+Documentation=file:///opt/fnav/app/docs/contracts/camera.md
+# Ordering only, NOT a dependency: like the front camera, it must not depend on MediaMTX or fnav-core.
+# Disabled in settings (rear_camera.enabled = false) it idles: no connection, no decoding.
+After=local-fs.target network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/fnav
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fnav
+Group=fnav
+SupplementaryGroups=video render
+WorkingDirectory=/opt/fnav/app
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPYCACHEPREFIX=/var/cache/fnav/pycache
+Environment=FNAV_DATA_DIR=/var/lib/fnav
+# the RTSP password (FNAV_REAR_CAMERA_PASSWORD) is read from here, not from the environment
+Environment=FNAV_SECRETS=/etc/fnav/secrets.env
+ExecStart=/opt/fnav/venv/bin/python -m fnav.camera --camera rear
+
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Below the front camera (Nice -5): the windshield camera stays the main job.
+Nice=0
+IOSchedulingClass=best-effort
+IOSchedulingPriority=3
+OOMScoreAdjust=-800
+LimitNOFILE=4096
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

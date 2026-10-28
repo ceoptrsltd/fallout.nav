@@ -21,6 +21,7 @@ from fnav import paths
 
 KEY_HASH = "FNAV_PASSWORD_HASH"
 KEY_SECRET = "FNAV_SESSION_SECRET"
+KEY_REAR_CAMERA_PASSWORD = "FNAV_REAR_CAMERA_PASSWORD"  # пароль RTSP задней камеры (читает fnav-camera rear)
 
 SCRYPT_N = 2**14
 SCRYPT_R = 8

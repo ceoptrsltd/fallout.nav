@@ -9,7 +9,7 @@
 - `POST /api/logout` → удаляет cookie. `GET /api/session` → `{"authenticated": bool}`.
 - Пароль хранится как хэш `hashlib.scrypt` в `secrets.env` (`FNAV_PASSWORD_HASH=scrypt$<n>$<r>$<p>$<salt_b64>$<hash_b64>`), секрет подписи сессий — `FNAV_SESSION_SECRET`.
 - **Без авторизации доступно:** `/api/login`, `/api/session`, `/admin/login.html` и статика логина;
-  а с адреса `127.0.0.1` (киоск Chromium на самом устройстве) — также `/display/**`, `/ws`, `/tiles/**`, `/api/camera/mjpeg`, `/api/settings` (GET).
+  а с адреса `127.0.0.1` (киоск Chromium на самом устройстве) — также `/display/**`, `/ws`, `/tiles/**`, `/api/camera/mjpeg`, `/api/camera/rear/mjpeg`, `/api/settings` (GET).
 - Всё остальное без сессии → `401` (API) или редирект на `/admin/login.html` (страницы).
 - Установленное приложение (PWA, `display-mode: standalone` / iOS Home Screen) при первом запуске на устройстве
   спрашивает пароль, даже если браузер уже вошёл (на Android приложение делит cookie с Chrome): метка
@@ -57,14 +57,16 @@
 
 ## Записи
 
-Файлы: `{recordings_dir}/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS.ts`, защищено = рядом `…ts.lock`, индекс ключевых кадров — `…ts.idx`. Подробно — `camera.md`.
+Файлы: `{recordings_dir}/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS.ts` (задняя камера — `{recordings_dir}/rear/YYYY-MM-DD/…`, путь
+записи `rear/ДАТА/ИМЯ.ts`), защищено = рядом `…ts.lock`, индекс ключевых кадров — `…ts.idx`. Подробно — `camera.md`.
 
-- `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","date":"2026-10-20","start":"2026-10-20T16:40:00","size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool}]` (новые сверху).
+- `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","camera":"front"|"rear","date":"2026-10-20","start":"2026-10-20T16:40:00","size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool,"events":[…]}]` (обе камеры, новые сверху).
 - `GET /api/recordings/file/{path}` — отдача файла с поддержкой `Range` (`video/mp2t`).
 - `GET /api/recordings/hls/{path}.m3u8` (`…/2026-10-20/2026-10-20_16-40-00.ts.m3u8`) — плейлист HLS по записи
   (`application/vnd.apple.mpegurl`, `Cache-Control: no-cache`) для перемотки в любое место без докачки:
   `EXT-X-VERSION:4`, `PLAYLIST-TYPE:EVENT`, `EXT-X-START:TIME-OFFSET=0`; куски ~3 с (≤ 3 МБ) —
-  `EXT-X-BYTERANGE` того же `.ts` по относительному адресу `../../file/{path}` (работает и под `/fnadmin/`),
+  `EXT-X-BYTERANGE` того же `.ts` по относительному адресу `../../file/{path}` (задняя — `../../../file/rear/…`;
+  работает и под `/fnadmin/`),
   каждый начинается с PAT/PMT и ключевого кадра, `EXTINF` — точно по PTS. Запись закончена — `EXT-X-ENDLIST`;
   идёт запись — без него, только законченные куски (плеер перечитывает, старые куски не меняются).
   Ключевые кадры — из `.ts.idx` регистратора или поиском по файлу (camera.md). Не MPEG-TS — плейлист без кусков.
@@ -74,13 +76,26 @@
   вместе с записью удаляются `.lock` и индекс `.ts.idx`.
 - Защита от выхода за каталог (`..`, абсолютные пути) обязательна.
 
-## Камера (прокси к fnav-camera `127.0.0.1:8081`)
+## Камера (прокси к fnav-camera `127.0.0.1:8081`, задняя — fnav-camera-rear `127.0.0.1:8083`)
 
+Задняя камера — те же маршруты под `/api/camera/rear/…` (`status`, `mjpeg`, `snapshot.jpg`, `live.ts`, `restart`,
+`whep` → MediaMTX `…/rear/whep`). Выключена (`rear_camera.enabled = false`) — `status` = `{"state":"disabled"}`,
+остальное `503 "Rear camera is off…"`. В `status` обеих — `"camera":"front"|"rear"`, `"enabled"`, `"mock"`.
+
+- `POST /api/camera/rear/credentials` `{"username"?: str, "password"?: str}` — логин в `settings.rear_camera.username`,
+  пароль в `secrets.env` (`FNAV_REAR_CAMERA_PASSWORD`; `""` — удалить, нет поля — не менять), камере — `/reload`.
+  → `{"ok":true,"username":…,"password_set":bool}`. Пароль наружу не отдаётся (в статусе задней — `password_set`).
+- `GET /api/camera/view` → `{"camera":"front"|"rear","rear_enabled":bool}` — что показывает экран в режиме камеры;
+  `POST /api/camera/view` `{"camera"?: "front"|"rear"}` (без поля — переключить; задняя выключена — `409`).
+  Телеметрия: `display.camera`, `display.reason = "rear"`, `display.rear_mirror`; `camera_rear` — статус задней или `null`.
 - `GET /api/camera/status` → `CameraStatus`.
 - `GET /api/camera/mjpeg` → поток `multipart/x-mixed-replace` 768×576 (для экрана и превью).
 - `GET /api/camera/snapshot.jpg`.
 - `POST /api/camera/whep` — прокси WebRTC WHEP к MediaMTX `http://127.0.0.1:8889/cam/whep` (тело SDP и заголовки `Content-Type`/`Location` проброшены; `PATCH`/`DELETE` по `Location` — тоже через `/api/camera/whep/...`).
-- Кнопка на GPS-модуле: `press` (короткое) → вкл/выкл видеовыход на монитор (`POST /api/display/output`, wlr-randr у cage, ЦАП обесточивается); `long_press` (2 с) → `POST 127.0.0.1:8081/protect-current` + событие WS + сигнал.
+- Кнопка на GPS-модуле: `press` (короткое) → передняя ↔ задняя камера на экране (как `camera_switch` клавиши 4; задняя
+  выключена — длинный сигнал и подсказка); `long_press` (2 с) → защитить текущие записи обеих камер + событие WS + сигнал.
+  Видеовыход на монитор (`POST /api/display/output`, wlr-randr у cage) — по API и действием `video_toggle`, если его
+  назначить клавише.
 - LED на модуле: `recording` → `blink_slow` (мигает), `error` → `blink_fast`, нет записи → `off`; после нажатия кнопки 3 с подтверждение: `on` (защищено) или `blink_fast` (ошибка).
 
 ## Датчики
@@ -96,7 +111,7 @@
 Полностью — в отдельных контрактах, здесь только перечень:
 
 - **Охрана** — [alarm.md](alarm.md) §4: `GET /api/alarm`, `POST /api/alarm/arm|disarm|silence|test|hazard/test`,
-  `GET /api/alarm/snapshot/{id}.jpg`, `DELETE /api/alarm/events`, `POST /api/alarm/simulate` (только `--mock`, иначе 404). Настройки — `settings.alarm`,
+  `GET /api/alarm/snapshot/{id}.jpg` (задней камеры — `{id}-rear.jpg`; в событии `data.snapshot_rear`, `data.segment_rear`), `DELETE /api/alarm/events`, `POST /api/alarm/simulate` (только `--mock`, иначе 404). Настройки — `settings.alarm`,
   телеметрия — `Telemetry.alarm`, клавиша — действие `"alarm"`. Камера на охране (fnav-watch) — [vision.md](vision.md).
 - **Уровень** — [level.md](level.md): `GET /api/level`, `POST /api/level/calibration/reference|forward`,
   `DELETE /api/level/calibration`. Настройки и калибровка — `settings.level`, телеметрия — `Telemetry.level`.

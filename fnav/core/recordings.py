@@ -22,6 +22,7 @@ _DIR_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 _FILE_RE = re.compile(r"^[A-Za-z0-9_\-.]{1,128}\.ts$")
 _NAME_DT_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})")
 _DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+REAR_DIR = "rear"  # записи задней камеры: rear/ДАТА/ИМЯ.ts (fnav-camera-rear)
 TS_PACKET = 188
 _PROBE_BYTES = 256 * 1024
 IN_PROGRESS_MTIME_S = 3.0
@@ -36,11 +37,16 @@ class RecordingError(Exception):
 
 
 def safe_rel_path(rel: str) -> PurePosixPath:
-    """Проверить относительный путь записи `ДАТА/ИМЯ.ts`. Любой выход за каталог → ошибка 400."""
+    """Проверить относительный путь записи `ДАТА/ИМЯ.ts` (задняя камера — `rear/ДАТА/ИМЯ.ts`).
+    Любой выход за каталог → ошибка 400."""
     if not rel or "\\" in rel or "\x00" in rel or rel.startswith("/") or ":" in rel:
         raise RecordingError(400, "Invalid path")
     p = PurePosixPath(rel)
     parts = p.parts
+    if len(parts) == 3 and parts[0] == REAR_DIR:
+        parts = parts[1:]
+    elif parts and parts[0] == REAR_DIR:  # rear/ИМЯ.ts — не день передней и не путь задней
+        raise RecordingError(400, "Invalid path")
     if len(parts) != 2 or not _DIR_RE.match(parts[0]) or not _FILE_RE.match(parts[1]):
         raise RecordingError(400, "Invalid path")
     if any(x in ("..", ".") for x in parts) or parts[1].startswith("."):
@@ -48,9 +54,13 @@ def safe_rel_path(rel: str) -> PurePosixPath:
     return p
 
 
+def camera_of(rel: str) -> str:
+    return "rear" if rel.startswith(REAR_DIR + "/") else "front"
+
+
 def resolve(root: Path, rel: str) -> Path:
     p = safe_rel_path(rel)
-    full = (root / p.parts[0] / p.parts[1])
+    full = root.joinpath(*p.parts)
     root_r = root.resolve()
     try:
         full.resolve().relative_to(root_r)
@@ -163,6 +173,19 @@ class Recordings:
     def root(self) -> Path:
         return self._root or paths.recordings_dir()
 
+    def _date_dirs(self) -> list[tuple[str, str]]:
+        """(префикс пути записи, каталог дня): передняя — ДАТА/, задняя — rear/ДАТА/."""
+        out: list[tuple[str, str]] = []
+        for base, prefix in ((self.root, ""), (self.root / REAR_DIR, REAR_DIR + "/")):
+            try:
+                entries = list(os.scandir(base))
+            except OSError:
+                continue
+            for d in entries:
+                if d.is_dir() and _DIR_RE.match(d.name) and not (prefix == "" and d.name == REAR_DIR):
+                    out.append((prefix + d.name, d.path))
+        return out
+
     def _scan(self, current: str | None) -> list[dict]:
         root = self.root
         items: list[tuple[float, dict]] = []
@@ -170,17 +193,16 @@ class Recordings:
             return []
         now = time.time()
         seen: set[str] = set()
-        for d in os.scandir(root):
-            if not d.is_dir() or not _DIR_RE.match(d.name):
-                continue
-            for f in os.scandir(d.path):
+        for dir_rel, dir_path in self._date_dirs():
+            dname = dir_rel.rsplit("/", 1)[-1]
+            for f in os.scandir(dir_path):
                 if not f.is_file() or not _FILE_RE.match(f.name) or f.name.startswith("."):
                     continue
                 try:
                     st = f.stat()
                 except OSError:
                     continue
-                rel = f"{d.name}/{f.name}"
+                rel = f"{dir_rel}/{f.name}"
                 seen.add(rel)
                 start_dt = _parse_start(f.name)
                 in_prog = rel == current or (now - st.st_mtime) < IN_PROGRESS_MTIME_S
@@ -191,12 +213,13 @@ class Recordings:
                 else:
                     dur = ts_duration(Path(f.path))
                     self._dur_cache[rel] = (st.st_size, st.st_mtime, dur)
-                date = d.name if _DATE_DIR_RE.match(d.name) else (
-                    start_dt.date().isoformat() if start_dt else d.name)
+                date = dname if _DATE_DIR_RE.match(dname) else (
+                    start_dt.date().isoformat() if start_dt else dname)
                 items.append((
                     (start_dt.timestamp() if start_dt else st.st_mtime),
                     {
                         "path": rel,
+                        "camera": camera_of(rel),
                         "date": date,
                         "start": start_dt.isoformat(timespec="seconds") if start_dt else None,
                         "size_bytes": st.st_size,
@@ -219,17 +242,15 @@ class Recordings:
 
     def total_bytes(self) -> int:
         total = 0
-        root = self.root
-        if not root.is_dir():
+        if not self.root.is_dir():
             return 0
-        for d in os.scandir(root):
-            if d.is_dir():
-                for f in os.scandir(d.path):
-                    if f.name.endswith(".ts"):
-                        try:
-                            total += f.stat().st_size
-                        except OSError:
-                            pass
+        for _rel, dir_path in self._date_dirs():
+            for f in os.scandir(dir_path):
+                if f.name.endswith(".ts"):
+                    try:
+                        total += f.stat().st_size
+                    except OSError:
+                        pass
         return total
 
     def file(self, rel: str) -> Path:
@@ -255,8 +276,11 @@ class Recordings:
     def _hls(self, rel: str, current: str | None) -> str:
         idx = self.index(rel)
         live = rel == current or (time.time() - idx.mtime_ns / 1e9) < IN_PROGRESS_MTIME_S
-        # относительно плейлиста …/hls/ДАТА/ИМЯ.ts.m3u8 → …/file/ДАТА/ИМЯ.ts (и через префикс /fnadmin/)
-        uri = "../../file/" + "/".join(quote(x) for x in safe_rel_path(rel).parts)
+        # относительно плейлиста …/hls/ДАТА/ИМЯ.ts.m3u8 → …/file/ДАТА/ИМЯ.ts (и через префикс /fnadmin/);
+        # задняя: …/hls/rear/ДАТА/ИМЯ.ts.m3u8 → …/file/rear/ДАТА/ИМЯ.ts — на уровень выше
+        parts = PurePosixPath(rel).parts
+        safe_rel_path(rel)
+        uri = "../" * len(parts) + "file/" + "/".join(quote(x) for x in parts)
         return hls_playlist(chunks(idx, live=live), uri, live=live)
 
     async def hls(self, rel: str, current: str | None = None) -> str:

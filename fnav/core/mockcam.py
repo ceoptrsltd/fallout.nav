@@ -36,8 +36,10 @@ def _font(size: int):
 
 
 class MockCamera:
-    def __init__(self, recordings_root: Path):
-        self.recordings_root = recordings_root
+    def __init__(self, recordings_root: Path, camera: str = "front"):
+        self.recordings_root = recordings_root  # задняя: {recordings}/rear
+        self.camera = camera
+        self.prefix = "rear/" if camera == "rear" else ""
         self._frame: bytes = b""
         self._seq = 0
         self._cond = asyncio.Condition()
@@ -82,7 +84,7 @@ class MockCamera:
         a = n / FPS * 1.2
         cx, cy = W / 2, H / 2
         d.line([(cx, cy), (cx + 190 * math.sin(a), cy - 190 * math.cos(a))], fill=(255, 210, 60), width=6)
-        txt = "MOCK CAMERA"
+        txt = "MOCK REAR CAMERA" if self.camera == "rear" else "MOCK CAMERA"
         tb = d.textbbox((0, 0), txt, font=big)
         tx = (W - (tb[2] - tb[0])) / 2
         d.rectangle([tx - 16, H * 0.26 - 8, tx + (tb[2] - tb[0]) + 16, H * 0.26 + (tb[3] - tb[1]) + 22],
@@ -209,8 +211,9 @@ class MockCamera:
     def status(self) -> CameraStatus:
         return CameraStatus(
             state="recording",
+            camera=self.camera,  # type: ignore[arg-type]
             recording=True,
-            current_segment=self.current_segment,
+            current_segment=self.prefix + self.current_segment if self.current_segment else None,
             segment_started_utc=self.started_utc,
             fps_actual=15.0,
             bitrate_kbps=6000.0,
@@ -223,8 +226,9 @@ class MockCamera:
         """Если записей нет — создать несколько маленьких демонстрационных .ts (только mock)."""
         root = self.recordings_root
         try:
-            if root.is_dir() and any(root.rglob("*.ts")):
-                newest = max(root.rglob("*.ts"), key=lambda p: p.stat().st_mtime)
+            own = [p for p in root.rglob("*.ts") if self.prefix or p.relative_to(root).parts[0] != "rear"]                 if root.is_dir() else []
+            if own:
+                newest = max(own, key=lambda p: p.stat().st_mtime)
                 self.current_segment = newest.relative_to(root).as_posix()
                 return
             now = time.time()
@@ -250,7 +254,7 @@ class MockCamera:
             p = self.recordings_root / seg
             if p.exists():
                 p.with_name(p.name + ".lock").touch()
-        return {"ok": True, "segment": seg, "mock": True}
+        return {"ok": True, "segment": self.prefix + seg if seg else None, "mock": True}
 
 
 def _demo_ts(seconds: int) -> bytes:

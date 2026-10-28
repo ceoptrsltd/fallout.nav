@@ -51,7 +51,7 @@ async def test_dispatch_default_layout():
     for code in sorted(kp.PLACES):
         for act in svc.decode(ev(code, 1) + ev(code, 0)):
             await svc.dispatch(act)
-    assert calls == ["radio_toggle", "station_prev", "station_next", "view_toggle", "video_toggle", "protect",
+    assert calls == ["radio_toggle", "station_prev", "station_next", "view_toggle", "camera_switch", "protect",
                      "shuffle", "volume_down", "volume_up"]
     await kp.KeypadService({}).dispatch("shuffle")  # no handler — nothing happens
 

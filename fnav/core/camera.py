@@ -1,4 +1,5 @@
-"""Клиент/прокси сервиса камеры (fnav-camera, 127.0.0.1:8081) и MediaMTX WHEP (127.0.0.1:8889).
+"""Клиент/прокси сервиса камеры (fnav-camera, 127.0.0.1:8081; задняя — fnav-camera-rear, 8083) и MediaMTX WHEP
+(127.0.0.1:8889, пути cam / rear).
 
 В режиме --mock, если fnav-camera не отвечает, используется встроенная mock-камера.
 """
@@ -18,14 +19,18 @@ from starlette.types import Receive, Scope, Send
 
 from fnav.core.mockcam import BOUNDARY, MockCamera
 from fnav.core.util import cancel_tasks
-from fnav.models import CameraStatus
+from fnav.models import CameraId, CameraStatus
 
 log = logging.getLogger("fnav.core.camera")
 
 CAMERA_URL = "http://127.0.0.1:8081"
 WHEP_URL = "http://127.0.0.1:8889/cam/whep"
+REAR_CAMERA_URL = "http://127.0.0.1:8083"
+REAR_WHEP_URL = "http://127.0.0.1:8889/rear/whep"
 POLL_S = 1.0
 UNAVAILABLE = "Camera service (fnav-camera) is not responding"
+REAR_UNAVAILABLE = "Rear camera service (fnav-camera-rear) is not responding"
+REAR_OFF = "Rear camera is off (Camera → Rear)"
 LIVE_UNAVAILABLE = "Live stream is unavailable"
 # едем / стоим — для предела выдержки ночью (на стоянке длиннее: светлее, но меньше кадров/с)
 MOVING_MPS = 1.5  # быстрее ~5 км/ч — едем, сразу
@@ -69,14 +74,19 @@ class CameraService:
         whep_url: str = WHEP_URL,
         transport: httpx.AsyncBaseTransport | None = None,
         get_speed: Callable[[], float | None] | None = None,
+        camera_id: CameraId = "front",
+        get_enabled: Callable[[], bool] | None = None,
     ):
         self.mock = mock
+        self.camera_id: CameraId = camera_id
+        self.get_enabled = get_enabled or (lambda: True)
         self.base_url = base_url.rstrip("/")
         self.whep_url = whep_url.rstrip("/")
+        self.unavailable_text = REAR_UNAVAILABLE if camera_id == "rear" else UNAVAILABLE
         self._client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(2.0, connect=1.0))
         self.available: bool | None = None
-        self.status: CameraStatus = CameraStatus(state="starting" if not mock else "stopped")
-        self.mockcam = MockCamera(recordings_root) if mock else None
+        self.status: CameraStatus = CameraStatus(state="starting" if not mock else "stopped", camera=camera_id)
+        self.mockcam = MockCamera(recordings_root, camera=camera_id) if mock else None
         self._listeners: list = []
         self._task: asyncio.Task | None = None
         self.get_speed = get_speed
@@ -86,11 +96,19 @@ class CameraService:
     def using_mock(self) -> bool:
         return self.mockcam is not None and not self.available
 
+    @property
+    def enabled(self) -> bool:
+        return bool(self.get_enabled())
+
+    def _check_enabled(self) -> None:
+        if not self.enabled:
+            raise CameraUnavailable(REAR_OFF)
+
     def on_status(self, cb) -> None:
         self._listeners.append(cb)
 
     async def start(self, *, background: bool = True) -> None:
-        if self.mockcam is not None:
+        if self.mockcam is not None and self.enabled:  # задняя выключена — демо-записей ей не нужно
             await asyncio.to_thread(self.mockcam.ensure_demo_recordings)
         await self.poll()
         if background:
@@ -110,6 +128,9 @@ class CameraService:
 
     async def poll(self) -> CameraStatus:
         prev_avail = self.available
+        if not self.enabled:  # задняя выключена в настройках: сервис не спрашиваем
+            self.available = None
+            return self._set_status(CameraStatus(state="disabled", camera=self.camera_id))
         try:
             r = await self._client.get(f"{self.base_url}/status", timeout=1.0)
             r.raise_for_status()
@@ -120,16 +141,20 @@ class CameraService:
             if self.mockcam is not None:
                 st = self.mockcam.status()
             else:
-                st = CameraStatus(state="error", recording=False, error=UNAVAILABLE)
+                st = CameraStatus(state="error", camera=self.camera_id, recording=False,
+                                  error=self.unavailable_text)
             if prev_avail is not False:
-                log.info("camera: %s (%s)%s", UNAVAILABLE, type(e).__name__,
+                log.info("camera %s: %s (%s)%s", self.camera_id, self.unavailable_text, type(e).__name__,
                          " - using mock camera" if self.mockcam is not None else "")
         if self.available and prev_avail is not True:
-            log.info("camera: fnav-camera is available (%s)", self.base_url)
+            log.info("camera %s: available (%s)", self.camera_id, self.base_url)
         if self.available and self.get_speed is not None:
             moving = self.motion.update(self.get_speed(), time.monotonic())
             if moving != st.moving and await self._send_motion(moving):
                 st = st.model_copy(update={"moving": moving})
+        return self._set_status(st)
+
+    def _set_status(self, st: CameraStatus) -> CameraStatus:
         old = self.status
         self.status = st
         if old != st:
@@ -159,15 +184,17 @@ class CameraService:
             pass
 
     async def restart(self) -> dict:
+        self._check_enabled()
         try:
             r = await self._client.post(f"{self.base_url}/restart", timeout=3.0)
             return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
         except (httpx.HTTPError, ValueError):
             if self.mockcam is not None:
                 return {"ok": True, "mock": True}
-            raise CameraUnavailable(UNAVAILABLE) from None
+            raise CameraUnavailable(self.unavailable_text) from None
 
     async def protect_current(self) -> dict:
+        self._check_enabled()
         try:
             r = await self._client.post(f"{self.base_url}/protect-current", timeout=3.0)
             r.raise_for_status()
@@ -175,11 +202,12 @@ class CameraService:
         except (httpx.HTTPError, ValueError):
             if self.mockcam is not None and not self.available:
                 return self.mockcam.protect_current()
-            raise CameraUnavailable(UNAVAILABLE) from None
+            raise CameraUnavailable(self.unavailable_text) from None
 
     # ── видео ──
     async def open_mjpeg(self, fps: int | None = None) -> tuple[str, AsyncIterator[bytes]]:
         """→ (content-type, поток байт). Камеры нет → CameraUnavailable (или mock). fps — прореживание."""
+        self._check_enabled()
         params = {"fps": str(fps)} if fps else None
         if self.available is not False:
             try:
@@ -204,10 +232,11 @@ class CameraService:
                 pass
         if self.mockcam is not None:
             return f"multipart/x-mixed-replace; boundary={BOUNDARY}", self.mockcam.mjpeg(fps)
-        raise CameraUnavailable(UNAVAILABLE)
+        raise CameraUnavailable(self.unavailable_text)
 
     async def open_live(self) -> tuple[AsyncIterator[bytes], Callable[[], Awaitable[None]]]:
         """Живое видео MPEG-TS (второй энкодер камеры, по требованию) → (поток, закрыть)."""
+        self._check_enabled()
         if self.available is not False:
             try:
                 req = self._client.build_request("GET", f"{self.base_url}/live.ts",
@@ -237,9 +266,10 @@ class CameraService:
         if self.mockcam is not None and self.mockcam.live_available():
             stream = self.mockcam.live_ts()
             return stream, stream.aclose
-        raise CameraUnavailable(UNAVAILABLE if self.mockcam is None else LIVE_UNAVAILABLE)
+        raise CameraUnavailable(self.unavailable_text if self.mockcam is None else LIVE_UNAVAILABLE)
 
     async def snapshot(self) -> bytes:
+        self._check_enabled()
         if self.available is not False:
             try:
                 r = await self._client.get(f"{self.base_url}/snapshot.jpg", timeout=3.0)
@@ -249,9 +279,10 @@ class CameraService:
                 pass
         if self.mockcam is not None:
             return await self.mockcam.snapshot()
-        raise CameraUnavailable(UNAVAILABLE)
+        raise CameraUnavailable(self.unavailable_text)
 
     async def whep(self, method: str, subpath: str, body: bytes, headers: dict[str, str]) -> httpx.Response:
+        self._check_enabled()
         url = self.whep_url + (f"/{subpath}" if subpath else "")
         fwd = {k: v for k, v in headers.items() if k.lower() in ("content-type", "if-match", "accept")}
         try:
@@ -260,8 +291,9 @@ class CameraService:
             raise CameraUnavailable("MediaMTX (WebRTC) is unavailable") from None
 
 
-def rewrite_whep_location(loc: str | None, whep_url: str = WHEP_URL) -> str | None:
-    """`/cam/whep/<id>` (или абсолютный URL MediaMTX) → `/api/camera/whep/<id>`."""
+def rewrite_whep_location(loc: str | None, whep_url: str = WHEP_URL, api_base: str = "/api/camera/whep") -> str | None:
+    """`/cam/whep/<id>` (или абсолютный URL MediaMTX) → `/api/camera/whep/<id>` (задняя: `/rear/whep/<id>` →
+    `/api/camera/rear/whep/<id>`)."""
     if not loc:
         return loc
     from urllib.parse import urlsplit
@@ -270,7 +302,7 @@ def rewrite_whep_location(loc: str | None, whep_url: str = WHEP_URL) -> str | No
     path = urlsplit(loc).path if "://" in loc else loc
     if path.startswith(base_path):
         rest = path[len(base_path):].lstrip("/")
-        return "/api/camera/whep" + (f"/{rest}" if rest else "")
+        return api_base + (f"/{rest}" if rest else "")
     return loc
 
 

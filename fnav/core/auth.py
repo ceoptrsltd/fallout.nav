@@ -174,7 +174,7 @@ def is_local_allowed(path: str, method: str) -> bool:
         return True
     if path == "/ws" or path.startswith("/tiles/"):
         return True
-    if path == "/api/camera/mjpeg":
+    if path in ("/api/camera/mjpeg", "/api/camera/rear/mjpeg"):
         return True
     if path == "/api/games" and method in ("GET", "HEAD") or path == "/api/games/launch" and method == "POST":
         return True  # меню игр на экране (геймпад у киоска)

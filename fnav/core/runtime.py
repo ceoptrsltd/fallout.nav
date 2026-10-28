@@ -14,10 +14,18 @@ from pathlib import Path
 import httpx
 
 from fnav import paths
+from fnav.core import secretsfile as sf
 from fnav.core.alarm import AlarmService
 from fnav.core.auth import AuthManager
 from fnav.core.bluetooth import create_bluetooth
-from fnav.core.camera import CAMERA_URL, WHEP_URL, CameraService, CameraUnavailable
+from fnav.core.camera import (
+    CAMERA_URL,
+    REAR_CAMERA_URL,
+    REAR_WHEP_URL,
+    WHEP_URL,
+    CameraService,
+    CameraUnavailable,
+)
 from fnav.core.config import SettingsStore
 from fnav.core.games import GamesService
 from fnav.core.imu import ImuService
@@ -40,6 +48,7 @@ from fnav.models import (
     CalibrationStatus,
     CameraStatus,
     CompassCalibration,
+    DisplayState,
     LevelCalibration,
     SensorSnapshot,
     Settings,
@@ -60,6 +69,8 @@ class CoreOptions:
     trust_localhost: bool = True
     background: bool = True  # фоновые циклы (телеметрия, опросы); в unit-тестах можно выключить
     camera_url: str = CAMERA_URL
+    rear_camera_url: str = REAR_CAMERA_URL
+    rear_whep_url: str = REAR_WHEP_URL
     watch_url: str = WATCH_URL
     whep_url: str = WHEP_URL
     local_transport: httpx.AsyncBaseTransport | None = None  # для камеры/MediaMTX (тесты)
@@ -132,6 +143,12 @@ class Core:
                                     base_url=opts.camera_url, whep_url=opts.whep_url,
                                     transport=opts.local_transport,
                                     get_speed=lambda: self.hub.snapshot().gps.speed_mps)
+        # задняя камера (fnav-camera-rear): выключена в настройках — не опрашивается, в телеметрии None
+        self.camera_rear = CameraService(mock=opts.mock, recordings_root=paths.recordings_dir() / "rear",
+                                         base_url=opts.rear_camera_url, whep_url=opts.rear_whep_url,
+                                         transport=opts.local_transport, camera_id="rear",
+                                         get_enabled=lambda: self.store.get().rear_camera.enabled)
+        self.view_camera = "front"  # что показывает экран в режиме камеры (кнопка «камеры»: передняя ↔ задняя)
         self.system = SystemService(mock=opts.mock)
         self.video = VideoOutput(mock=opts.mock)
         relay = opts.relay or RelayConfig.from_env()
@@ -157,6 +174,8 @@ class Core:
                                   get_fix=lambda: self.hub.snapshot().gps, protect=self.camera.protect_current,
                                   snapshot=self.camera.snapshot, radio=self.radio, transport=opts.relay_transport,
                                   open_hazard=FakeHazard if opts.mock else open_gpio_hazard)
+        self.alarm.protect_rear = self._protect_rear_quiet
+        self.alarm.snapshot_rear = self._snapshot_rear_quiet
         self.vision = VisionClient(get_settings=lambda: self.store.get().alarm.vision,
                                    get_armed=lambda: self.alarm.state in ("armed", "triggered"),
                                    on_event=self.alarm.vision_event, base_url=opts.watch_url,
@@ -169,6 +188,7 @@ class Core:
             "station_next": lambda: self.radio.step(1),
             "view_toggle": self.toggle_view,
             "video_toggle": self.toggle_video_output,
+            "camera_switch": self.switch_camera,
             "protect": self.protect_with_feedback,
             "shuffle": self._keypad_shuffle,
             "favorite": self._keypad_favorite,
@@ -222,6 +242,7 @@ class Core:
         bg = self.opts.background
         await self.tiles.start(background=bg)
         await self.camera.start(background=bg)
+        await self.camera_rear.start(background=bg)
         self._on_camera_status(self.camera.status)
         try:
             await self.bt.start(background=bg)
@@ -255,7 +276,7 @@ class Core:
         self._tasks.clear()
         for closer in (self.imu.stop, self.vision.stop, self.alarm.stop, self.level.stop, self.speedlimits.stop, self.weather.stop,
                        self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop,
-                       self.hub.stop, self.camera.stop, self.tiles.stop):
+                       self.hub.stop, self.camera.stop, self.camera_rear.stop, self.tiles.stop):
             try:
                 await closer()
             except Exception:
@@ -272,6 +293,9 @@ class Core:
         except Exception:
             log.exception("hub.apply_settings()")
         spawn(self.camera.reload(), name="camera-reload")
+        spawn(self.camera_rear.reload(), name="camera-rear-reload")
+        if not s.rear_camera.enabled and self.view_camera == "rear":
+            self.view_camera = "front"
         try:
             self.bt.apply_settings(s.bluetooth)
             self.radio.apply_settings(s.radio)
@@ -328,7 +352,10 @@ class Core:
         cam = self.camera.status
         if cam.state == "error" and cam.error:
             errors.append(f"Camera: {cam.error}")
-        disp = self.display_state
+        rear = self.camera_rear.status if self.camera_rear.enabled else None
+        if rear is not None and rear.state == "error" and rear.error:
+            errors.append(rear.error if rear.error.startswith("Rear camera") else f"Rear camera: {rear.error}")
+        disp = self.view_state(self.display_state)
         if self.games.pad_present():  # экран опрашивает геймпад, только когда он есть (ui/games-menu.js)
             disp = disp.model_copy(update={"gamepad": True})
         return Telemetry(
@@ -339,6 +366,7 @@ class Core:
             compass_cal=snap.compass_cal,
             display=disp,
             camera=cam,
+            camera_rear=rear,
             disk=self.system.disk,
             system=self.system.status,
             radio=self.radio.status(),
@@ -494,11 +522,11 @@ class Core:
             loop.call_soon_threadsafe(lambda: spawn(self.handle_button(event), name="button"))
 
     async def handle_button(self, event: ButtonEvent) -> dict | None:
-        """Кнопка на GPS-модуле: короткое нажатие — вкл/выкл видеовыход на монитор,
+        """Кнопка на GPS-модуле: короткое нажатие — передняя ↔ задняя камера на экране,
         долгое — защитить текущую запись."""
         self.ws.event("button", value=event)
         if event == "press":
-            return await self.toggle_video_output()
+            return await self.switch_camera()
         if event != "long_press":
             return None
         return await self.protect_with_feedback()
@@ -518,7 +546,12 @@ class Core:
 
     # ── мини-клавиатура ──
     async def toggle_view(self) -> None:
-        """Карта ↔ камера: из авто — в противоположный текущему режим; из ручного — обратно в авто."""
+        """Карта ↔ камера: из авто — в противоположный текущему режим; из ручного — обратно в авто.
+        Задний вид на экране — просто выйти из него."""
+        if self.view_camera == "rear":
+            self.view_camera = "front"
+            self.ws.event("camera_view", camera="front")
+            return
         ds = self.store.get().display
         if ds.force_mode != "auto":
             mode = "auto"
@@ -586,6 +619,58 @@ class Core:
         self.ws.toast(f"Video output {'ON' if state else 'OFF'}", "info")
         return {"ok": True, "on": state}
 
+    # ── передняя ↔ задняя камера на экране ──
+    def view_state(self, disp: DisplayState) -> DisplayState:
+        """Задний вид поверх авто-логики: экран в режиме камеры с задней камерой, пока его не выключат кнопкой."""
+        mirror = self.store.get().rear_camera.mirror
+        if self.view_camera == "rear" and self.camera_rear.enabled:
+            return disp.model_copy(update={"mode": "camera", "reason": "rear", "camera": "rear",
+                                           "rear_mirror": mirror})
+        return disp.model_copy(update={"camera": "front", "rear_mirror": mirror})
+
+    async def switch_camera(self) -> dict | None:
+        """Кнопка «камеры» (клавиша 4, кнопка GPS-модуля): задний вид на экране ↔ обратно. Задняя камера выключена
+        в настройках — длинный сигнал и подсказка, экран не меняется."""
+        if self.view_camera == "rear":
+            self.view_camera = "front"
+        elif not self.store.get().rear_camera.enabled:
+            self._beep("long")
+            self.ws.toast("Rear camera is off: turn it on in Camera → Rear", "warn")
+            return {"ok": False, "camera": "front", "error": "Rear camera is off"}
+        else:
+            self.view_camera = "rear"
+        self._beep("short")
+        self.ws.event("camera_view", camera=self.view_camera)
+        return {"ok": True, "camera": self.view_camera}
+
+    async def _protect_rear_quiet(self) -> dict:
+        """Для сигнализации: защитить запись задней, если она включена (выключена — пусто, без ошибки)."""
+        if not self.camera_rear.enabled:
+            return {}
+        return await self.camera_rear.protect_current()
+
+    async def _snapshot_rear_quiet(self) -> bytes:
+        if not self.camera_rear.enabled:
+            return b""
+        return await self.camera_rear.snapshot()
+
+    async def set_rear_credentials(self, username: str | None, password: str | None) -> dict:
+        """Логин — в настройки, пароль — в secrets.env (FNAV_REAR_CAMERA_PASSWORD; пустой — удалить), камере — /reload."""
+        if username is not None:
+            await self.store.patch({"rear_camera": {"username": username}})
+        if password is not None:
+            await asyncio.to_thread(sf.update_secrets, {sf.KEY_REAR_CAMERA_PASSWORD: password},
+                                    self.auth.secrets_path)
+        await self.camera_rear.reload()
+        return {"ok": True, "username": self.store.get().rear_camera.username, "password_set": bool(
+            password if password is not None else (await asyncio.to_thread(self._rear_password_set)))}
+
+    def _rear_password_set(self) -> bool:
+        try:
+            return bool(sf.read_secrets(self.auth.secrets_path).get(sf.KEY_REAR_CAMERA_PASSWORD))
+        except OSError:
+            return False
+
     def _beep(self, pattern: str) -> None:
         try:
             self.hub.beep(pattern)
@@ -593,8 +678,17 @@ class Core:
             log.exception("hub.beep()")
 
     async def protect_current(self) -> dict:
+        """Защитить текущие записи: передней (ошибка — наружу) и задней, если она включена (без ошибок)."""
         res = await self.camera.protect_current()
         seg = res.get("segment")
-        self.ws.event("protected", segment=seg)
-        self.ws.toast(f"Recording protected: {seg}" if seg else "No current recording", "info" if seg else "warn")
+        rear = None
+        if self.camera_rear.enabled:
+            try:
+                rear = (await self.camera_rear.protect_current()).get("segment")
+            except CameraUnavailable as e:
+                log.info("rear camera: cannot protect: %s", e)
+        res = {**res, "segment_rear": rear}
+        self.ws.event("protected", segment=seg, segment_rear=rear)
+        segs = ", ".join(x for x in (seg, rear) if x)
+        self.ws.toast(f"Recording protected: {segs}" if segs else "No current recording", "info" if segs else "warn")
         return res

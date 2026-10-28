@@ -3,13 +3,13 @@
 #
 # Usage: sudo bash fnav-deploy-remote <unpacked-repo-dir>
 # Environment:
-#   FNAV_RESTART   services to restart, in order (default: "fnav-core fnav-camera fnav-watch fnav-display";
+#   FNAV_RESTART   services to restart, in order (default: "fnav-core fnav-camera fnav-camera-rear fnav-watch fnav-display";
 #                  empty string = restart nothing)
 set -euo pipefail
 
 SRC="${1:?usage: fnav-deploy-remote <unpacked-repo-dir>}"
 APP=/opt/fnav/app
-RESTART="${FNAV_RESTART-fnav-core fnav-camera fnav-watch fnav-display}"
+RESTART="${FNAV_RESTART-fnav-core fnav-camera fnav-camera-rear fnav-watch fnav-display}"
 
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
 [ -d "$SRC/pi" ] || { echo "no pi/ in $SRC" >&2; exit 1; }
@@ -43,7 +43,7 @@ echo "==> System files (units, sudoers, ...)"
 bash "$APP/pi/bin/fnav-sync-system" --from "$APP" --changed-file "$changed"
 
 # Units added after the device was installed: install.sh enables them, a plain deploy has to do it once.
-for u in fnav-watch; do
+for u in fnav-watch fnav-camera-rear; do
     if [ -f "/etc/systemd/system/$u.service" ] && ! systemctl is-enabled --quiet "$u" 2>/dev/null; then
         if systemctl enable "$u" >/dev/null 2>&1; then echo "  enabled $u"; else echo "  WARNING: could not enable $u" >&2; fi
     fi
@@ -68,7 +68,7 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 echo "==> Status"
-for s in mediamtx fnav-core fnav-camera fnav-watch fnav-display gpsd chrony; do
+for s in mediamtx fnav-core fnav-camera fnav-camera-rear fnav-watch fnav-display gpsd chrony; do
     printf '  %-14s %s\n' "$s" "$(systemctl is-active "$s" 2>/dev/null || true)"
 done
 if [ "$ok" -eq 1 ]; then echo "  fnav-core answers on http://127.0.0.1/"; else echo "  WARNING: fnav-core did not answer within 30 s" >&2; fi

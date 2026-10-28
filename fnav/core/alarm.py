@@ -82,8 +82,14 @@ HAZARD_BLINK_ON_S, HAZARD_BLINK_OFF_S = 0.7, 0.5  # подтверждение A
 
 DETECTED = ("armed", "triggered")  # события и сирена — только в этих состояниях
 VISION_KINDS = ("approach", "face", "loiter")  # от камеры (fnav-watch): без сирены — push, аварийка, защита записи
-SNAPSHOTS_MAX = 100  # снимков камеры к событиям журнала (alarm_snaps/<id>.jpg)
+SNAPSHOTS_MAX = 100  # событий со снимками камер (alarm_snaps/<id>.jpg, задняя — <id>-rear.jpg)
+
+
 _EVENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _snap_name(event_id: str, camera: str) -> str:
+    return f"{event_id}-rear.jpg" if camera == "rear" else f"{event_id}.jpg"
 
 
 # ───────────────────────── обнаружение ─────────────────────────
@@ -541,6 +547,9 @@ class AlarmService:
         self.get_fix = get_fix
         self.protect = protect
         self.snapshot = snapshot
+        # задняя камера (если есть): ставит runtime; выключена — функции отдают пусто
+        self.protect_rear: Callable[[], Awaitable[dict]] | None = None
+        self.snapshot_rear: Callable[[], Awaitable[bytes]] | None = None
         self.snap_dir = data_dir / "alarm_snaps"
         self.vision_status: Callable[[], AlarmVision] | None = None  # fnav/core/vision.py
         self.clock = clock
@@ -776,12 +785,18 @@ class AlarmService:
             spawn(self.siren.start(cfg.siren_s), name="alarm-siren-start")
         if cfg.hazard.enabled and self.state in DETECTED:
             self.hazard.flash(cfg.hazard.seconds)
-        seg, snap = await asyncio.gather(self._protect(), self._save_snapshot(ev.id))
+        seg, snap, seg_rear, snap_rear = await asyncio.gather(
+            self._protect(), self._save_snapshot(ev.id),
+            self._protect("rear"), self._save_snapshot(ev.id, "rear"))
         if seg:
             ev.data["segment"] = seg
         if snap:
             ev.data["snapshot"] = True
-        if seg or snap:
+        if seg_rear:
+            ev.data["segment_rear"] = seg_rear
+        if snap_rear:
+            ev.data["snapshot_rear"] = True
+        if seg or snap or seg_rear or snap_rear:
             await self._save_events()
         await self._enqueue(ev, cooldown=True)
 
@@ -794,40 +809,43 @@ class AlarmService:
         return True
 
     # ── снимки камеры к событиям ──
-    def snapshot_path(self, event_id: str) -> Path | None:
+    def snapshot_path(self, event_id: str, camera: str = "front") -> Path | None:
         if not _EVENT_ID_RE.match(event_id):
             return None
-        p = self.snap_dir / f"{event_id}.jpg"
+        p = self.snap_dir / _snap_name(event_id, camera)
         return p if p.is_file() else None
 
-    async def _save_snapshot(self, event_id: str) -> bool:
-        if self.snapshot is None:
+    async def _save_snapshot(self, event_id: str, camera: str = "front") -> bool:
+        fn = self.snapshot_rear if camera == "rear" else self.snapshot
+        if fn is None:
             return False
         try:
-            jpg = await self.snapshot()
+            jpg = await fn()
         except Exception as e:  # noqa: BLE001 — камеры нет: событие идёт дальше
             log.info("alarm: no snapshot: %s", e)
             return False
         if not jpg:
             return False
-        await self._run_io(self._write_snapshot, event_id, jpg)
+        await self._run_io(self._write_snapshot, event_id, jpg, camera)
         return True
 
-    def _write_snapshot(self, event_id: str, jpg: bytes) -> None:
+    def _write_snapshot(self, event_id: str, jpg: bytes, camera: str = "front") -> None:
         self.snap_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.snap_dir / f".{event_id}.tmp"
+        name = _snap_name(event_id, camera)
+        tmp = self.snap_dir / f".{name}.tmp"
         tmp.write_bytes(jpg)
-        tmp.replace(self.snap_dir / f"{event_id}.jpg")
-        old = sorted(self.snap_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime)[:-SNAPSHOTS_MAX]
+        tmp.replace(self.snap_dir / name)
+        old = sorted(self.snap_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime)[:-SNAPSHOTS_MAX * 2]
         for p in old:
             with contextlib.suppress(OSError):
                 p.unlink()
 
-    async def _protect(self) -> str | None:
-        if self.protect is None:
+    async def _protect(self, camera: str = "front") -> str | None:
+        fn = self.protect_rear if camera == "rear" else self.protect
+        if fn is None:
             return None
         try:
-            res = await self.protect()
+            res = await fn()
         except Exception as e:  # noqa: BLE001 — камеры нет: событие идёт дальше
             log.warning("alarm: cannot protect the recording: %s", e)
             return None

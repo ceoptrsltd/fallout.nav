@@ -64,6 +64,8 @@ ACTIONS: list[dict[str, str]] = [
     {"id": "volume_up", "title": "Volume up", "hint": "Radio volume; in a game: the speaker volume"},
     {"id": "view_toggle", "title": "Map / camera",
      "hint": "Switches to the other view; press again to go back to automatic switching by speed"},
+    {"id": "camera_switch", "title": "Front / rear camera",
+     "hint": "Shows the rear camera on the car screen; press again to go back (needs the rear camera turned on)"},
     {"id": "video_toggle", "title": "Video output on / off", "hint": "Turns the picture on the car monitor on or off"},
     {"id": "protect", "title": "Protect recording", "hint": "The current recording is never deleted to free space"},
     {"id": "alarm", "title": "Alarm on/off",
