@@ -11,7 +11,7 @@ import { installEntry } from "../install.js";
 import {
   EVENTS_N, pollDelay, alarmLive, alarmActions, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
   recentEvents, recentKey, eventExtras, snapPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
-  exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
+  rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
 } from "../dash-fmt.js";
 
 const nowS = () => Date.now() / 1000;
@@ -198,11 +198,18 @@ export function mount(root) {
     h(".card-head", null, h("h2", null, "Latest events"), h("a.db-more", { href: "#/alarm" }, "All events ›")),
     evList);
 
+  /** The event's snapshots: the front camera's and / or the rear's (named when the rear is among them). */
   function showSnapshot(ev) {
-    const img = h("img.db-snapbig", { src: appUrl(snapPath(ev.id)), alt: ev.title || "Snapshot" });
-    img.addEventListener("error", () => img.replaceWith(h(".dim", null, "The snapshot is gone (the log keeps the last 100).")));
-    const m = modal({ title: ev.title || "Snapshot", width: 800,
-      body: [img, h(".dim.db-snapwhen", null, isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "")] });
+    const x = eventExtras(ev);
+    const cams = [x.snapshot ? "front" : null, x.snapshotRear ? "rear" : null].filter(Boolean);
+    const named = cams.length > 1 || cams[0] === "rear";
+    const body = cams.map((cam) => {
+      const img = h("img.db-snapbig", { src: appUrl(snapPath(ev.id, cam)), alt: (cam === "rear" ? "Rear camera: " : "") + (ev.title || "Snapshot") });
+      img.addEventListener("error", () => img.replaceWith(h(".dim", null, "The snapshot is gone (the log keeps the last 100).")));
+      return named ? h(".db-snapcam", null, h(".db-snaplbl", null, cam === "rear" ? "Rear camera" : "Front camera"), img) : img;
+    });
+    body.push(h(".dim.db-snapwhen", null, isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : ""));
+    const m = modal({ title: ev.title || "Snapshot", width: 800, body });
     m.el.classList.add("db-snapmodal");
   }
 
@@ -231,9 +238,11 @@ export function mount(root) {
       const when = h("span.when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, eventAgo(ev.ts, now));
       whens.push([when, ev.ts]);
       let thumb = null;
-      if (x.snapshot) {
-        const img = h("img", { src: appUrl(snapPath(ev.id)), alt: "", loading: "lazy", decoding: "async", width: 72, height: 54 });
-        thumb = h("button.db-thumb", { type: "button", title: "Show the snapshot", "aria-label": "Show the snapshot", onclick: () => showSnapshot(ev) }, img);
+      const thumbCam = x.snapshot ? "front" : x.snapshotRear ? "rear" : null; // the front's first; the modal shows both
+      if (thumbCam) {
+        const img = h("img", { src: appUrl(snapPath(ev.id, thumbCam)), alt: "", loading: "lazy", decoding: "async", width: 72, height: 54 });
+        const what = x.snapshot && x.snapshotRear ? "Show the snapshots" : "Show the snapshot";
+        thumb = h("button.db-thumb", { type: "button", title: what, "aria-label": what, onclick: () => showSnapshot(ev) }, img);
         img.addEventListener("error", () => { thumb.hidden = true; });
       }
       evList.append(h(".db-ev." + (ki.kind || "plain"), null,
@@ -241,9 +250,10 @@ export function mount(root) {
         h(".txt", null,
           h(".top", null, h("span.tt", null, ev.title || ki.label), when),
           ev.body ? h(".bd", null, ev.body) : null,
-          x.link || x.segment ? h(".ex", null,
+          x.link || x.segment || x.segmentRear ? h(".ex", null,
             x.link ? h("a", { href: x.link.href }, x.link.text) : null,
-            x.segment ? h("a", { href: recLink(x.segment, ev.ts), title: "Watch from the moment of the event: " + x.segment }, "Recording kept") : null) : null),
+            x.segment ? h("a", { href: recLink(x.segment, ev.ts), title: "Watch from the moment of the event: " + x.segment }, "Recording kept") : null,
+            x.segmentRear ? h("a", { href: recLink(x.segmentRear, ev.ts), title: "Watch from the moment of the event: " + x.segmentRear }, "Rear recording kept") : null) : null),
         thumb));
     }
   }
@@ -264,11 +274,78 @@ export function mount(root) {
   const posLL = h(".db-ts.mono.wrap");
   const posTile = tile("#/tracking", "pin", "Position", posV, posFix, posLL);
 
+  // camera: the front camera; with the rear one on, its line and the car screen button under it
   const recDot = h("span.dot.rec-dot");
   const camV = h(".db-tv", null, recDot, h("span", null, "—"));
   const camExp = h(".db-ts");
   const camErr = h(".db-ts.red");
-  const camTile = tile("#/camera", "cam", "Camera", camV, camExp, camErr);
+  const rearDot = h("span.dot.rec-dot");
+  const rearTxt = h("span.db-reartxt");
+  const rearOnScr = h("span.db-onscr", { hidden: true }, "on screen");
+  const rearErr = h(".db-ts.red.db-rearerr", { hidden: true });
+  const rearBtn = h("button.btn.sm.db-scrbtn", { type: "button", onclick: () => toggleScreen() }, icon("screen"), h("span", null, "Show on screen"));
+  const rearRow = h(".db-rear", { hidden: true },
+    h("a.db-rearst", { href: "#/camera?cam=rear", title: "Rear camera" }, h("span.db-rearlbl", null, "Rear"), rearDot, rearTxt, rearOnScr),
+    rearErr,
+    rearBtn);
+  const camTile = h(".db-tile.db-cam", null,
+    h("a.db-rtop", { href: "#/camera?cam=front" },
+      h(".db-tl", null, icon("cam"), h("span", null, "Camera"), h("span.db-go", null, "›")),
+      camV, camExp, camErr),
+    rearRow);
+  let scrBusy = false;
+  let scrExpect = null; // {camera, until}: the answer of the last switch until telemetry shows it
+  const rearOn = () => !!(store.settings && store.settings.rear_camera && store.settings.rear_camera.enabled);
+
+  /** What the car screen shows: telemetry, or the answer of the switch just made until telemetry catches up. */
+  function screenNow(d) {
+    if (scrExpect && d) {
+      if (d.camera === scrExpect.camera || Date.now() > scrExpect.until) scrExpect = null;
+      else return { ...d, camera: scrExpect.camera };
+    }
+    return d;
+  }
+
+  async function toggleScreen() {
+    if (scrBusy) return;
+    const a = screenAction(screenNow(store.telemetry && store.telemetry.display));
+    scrBusy = true;
+    rearBtn.disabled = true;
+    try {
+      const r = await api.post("/api/camera/view", { camera: a.to });
+      if (stopped) return;
+      scrExpect = { camera: (r && r.camera) || a.to, until: Date.now() + EXPECT_MS };
+      toast("ok", scrExpect.camera === "rear" ? "The car screen shows the rear camera" : "The car screen is back to the front camera");
+    } catch (e) {
+      toast("error", "Car screen: " + errText(e));
+    } finally {
+      scrBusy = false;
+      rearBtn.disabled = false;
+      if (!stopped) renderVan();
+    }
+  }
+
+  function renderRear(t) {
+    const on = rearOn();
+    rearRow.hidden = !on;
+    if (!on) return;
+    const rc = t.camera_rear || null;
+    const ri = rearInfo(rc);
+    put(rearTxt, ri.text);
+    cls(rearTxt, "db-reartxt " + (ri.rec ? "" : kindCls(ri.kind)));
+    rearDot.hidden = !ri.rec;
+    rearDot.classList.toggle("on", ri.rec);
+    const sa = screenAction(screenNow(store.online ? t.display : null));
+    rearOnScr.hidden = !sa.onScreen;
+    if (rearBtn.dataset.to !== sa.to) {
+      rearBtn.dataset.to = sa.to;
+      put(rearBtn.lastChild, sa.label);
+      rearBtn.title = sa.title;
+      rearBtn.classList.toggle("on", sa.onScreen);
+    }
+    put(rearErr, (rc && rc.error) || "");
+    rearErr.hidden = !(rc && rc.error);
+  }
 
   const sysTemp = h("span", null, "—");
   const sysLoad = h("span.db-tvs");
@@ -350,6 +427,7 @@ export function mount(root) {
     cls(camExp, "db-ts" + (ex && ex.night ? " db-night" : ""));
     put(camErr, cam.error || "");
     camErr.hidden = !cam.error;
+    renderRear(t);
 
     const tp = tempInfo(sys.cpu_temp_c);
     put(sysTemp, tp.text);
@@ -499,7 +577,7 @@ export function mount(root) {
   });
   // the device dropped off or came back: ask now (offline the poll gets faster and tells why)
   const offConn = on("conn", () => { renderVan(); renderHero(); fetchNow(); });
-  const offSet = on("settings", () => { btnSig = ""; renderHero(); });
+  const offSet = on("settings", () => { btnSig = ""; renderHero(); renderVan(); });
   // countdown, "armed for" and "x min ago" between packets
   const tick = setInterval(() => { renderHero(); renderWhens(); }, 1000);
   const onVis = () => { if (!document.hidden) fetchNow(); };

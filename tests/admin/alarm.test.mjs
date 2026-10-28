@@ -106,6 +106,11 @@ test("event log helpers", () => {
   assert.equal(eventsKey(null), "0:::");
   // the snapshot / kept recording arrive a moment after the event — the log must redraw for them
   assert.notEqual(eventsKey([{ id: "a", data: {} }]), eventsKey([{ id: "a", data: { snapshot: true, segment: "x.ts" } }]));
+  // … and the rear camera's, which may come later still
+  const both = eventsKey([{ id: "a", data: { snapshot: true, segment: "x.ts" } }]);
+  assert.notEqual(both, eventsKey([{ id: "a", data: { snapshot: true, segment: "x.ts", snapshot_rear: true } }]));
+  assert.notEqual(both, eventsKey([{ id: "a", data: { snapshot: true, segment: "x.ts", segment_rear: "rear/x.ts" } }]));
+  assert.notEqual(eventsKey([{ id: "a", data: { snapshot: true } }]), eventsKey([{ id: "a", data: { snapshot_rear: true } }]));
   assert.deepEqual(eventLink({ url: "#/tracking" }), { href: "#/tracking", text: "Show on the map" });
   assert.equal(eventLink({ url: "#/alarm" }), null);
   assert.equal(eventLink({ url: "https://evil.example/" }), null);

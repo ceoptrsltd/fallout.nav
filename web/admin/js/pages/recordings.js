@@ -1,10 +1,14 @@
-// Recordings: list by day, in-browser playback (HLS over the .ts: native or local hls.js), download, protect, delete.
+// Recordings: list by day, in-browser playback (HLS over the .ts: native or local hls.js), download, protect, delete;
+// both cameras (the rear's under "rear/"), All / Front / Rear.
 import { h, icon, clear, fmtBytes, fmtDur, isNum } from "../dom.js";
 import { api, appUrl, encPath, errText } from "../api.js";
 import { loadHls } from "../vendor.js";
-import { hlsUrl, playerKind, HLS_MIME, jumpTo, markPos, parseRecLink } from "../rec-play.js";
+import { hlsUrl, playerKind, HLS_MIME, jumpTo, markPos, parseRecLink, recCamera, filterRecs, recTitle, downloadName } from "../rec-play.js";
 import { kindInfo } from "../alarm-fmt.js";
-import { modal, confirmDialog, toast, poll, badge, emptyState, banner } from "../ui.js";
+import { store } from "../store.js";
+import { modal, confirmDialog, toast, poll, badge, emptyState, banner, segmented } from "../ui.js";
+
+let camFilter = "all"; // All / Front / Rear: kept while the app is open
 
 function fileUrl(path) { return appUrl("api/recordings/file/" + encPath(path)); }
 function timeOf(r) {
@@ -72,11 +76,11 @@ export function openPlayer(rec, { at = null } = {}) {
   })) : null;
 
   const m = modal({
-    title: `Recording ${rec.path}`,
+    title: recTitle(rec),
     body: [video, strip, evList, status,
       rec.in_progress ? h("div", { style: { marginTop: "8px" } }, banner("warn", "Recording is still in progress: the timeline grows while it is being written.")) : null,
     ],
-    foot: [h("a.btn", { href: fileUrl(rec.path), download: rec.path.split("/").pop() }, icon("dl"), "Download"), h("button.btn", { onclick: () => m.close() }, "Close")],
+    foot: [h("a.btn", { href: fileUrl(rec.path), download: downloadName(rec) }, icon("dl"), "Download"), h("button.btn", { onclick: () => m.close() }, "Close")],
     onClose: () => {
       closed = true;
       if (hls) { try { hls.destroy(); } catch { /* */ } hls = null; }
@@ -86,7 +90,7 @@ export function openPlayer(rec, { at = null } = {}) {
     },
   });
   video.addEventListener("loadedmetadata", () => {
-    if (status.className !== "red") status.textContent = `${video.videoWidth}×${video.videoHeight} · H.264 · ${how} · click anywhere on the timeline to jump there`;
+    if (status.className !== "red") status.textContent = `${rec.path} · ${video.videoWidth}×${video.videoHeight} · H.264 · ${how} · click anywhere on the timeline to jump there`;
   });
   video.addEventListener("error", () => {
     if (hls || closed) return; // hls.js reports its own errors
@@ -147,7 +151,7 @@ export function mount(root) {
       if (firstLoad) {
         firstLoad = false;
         // only the newest day is expanded by default
-        const days = [...new Set(list.map((r) => r.date))];
+        const days = [...new Set(filterRecs(list, camFilter).map((r) => r.date))];
         days.slice(1).forEach((d) => closedDays.add(d));
         render();
         // "#/recordings?play=<path>&t=<s>" (alarm log, dashboard): straight to the moment of the event
@@ -195,11 +199,13 @@ export function mount(root) {
   }
 
   function row(r) {
-    return h(".rec-row", null,
+    const rear = recCamera(r) === "rear";
+    return h(".rec-row" + (rear ? ".rear" : ""), null,
       h("span.t", null, timeOf(r)),
       h("span.num", null, fmtBytes(r.size_bytes)),
       h("span.num", null, isNum(r.duration_s) ? fmtDur(r.duration_s) : "—"),
       h("span", { style: { display: "flex", gap: "6px" } },
+        rear ? h("span.badge.rec-cam", { title: "Rear camera" }, "Rear") : null,
         r.in_progress ? badge("● recording", "rec") : null,
         r.events && r.events.length ? h("button.badge.bad.rec-evbadge", {
           type: "button", onclick: () => openPlayer(r, { at: r.events[0].offset_s }),
@@ -209,26 +215,43 @@ export function mount(root) {
       ),
       h("span.btnrow", { style: { justifyContent: "flex-end" } },
         h("button.btn.sm", { title: "Watch in browser", onclick: () => openPlayer(r) }, icon("play"), "Watch"),
-        h("a.btn.sm", { title: "Download", href: fileUrl(r.path), download: r.path.split("/").pop() }, icon("dl")),
+        h("a.btn.sm", { title: "Download", href: fileUrl(r.path), download: downloadName(r) }, icon("dl")),
         h("button.btn.sm" + (r.protected ? ".on" : ""), { title: r.protected ? "Remove protection" : "Protect from deletion", onclick: () => toggleProtect(r) }, icon(r.protected ? "lock" : "unlock")),
         h("button.btn.sm.danger", { title: r.in_progress ? "Recording in progress: cannot delete" : "Delete", disabled: !!r.in_progress, onclick: () => del(r) }, icon("trash")),
       ),
     );
   }
 
+  // All / Front / Rear: shown once the device has a rear camera (turned on or recordings of it)
+  const camSeg = segmented({ name: "rec-cam", value: camFilter, onchange: (v) => setFilter(v),
+    options: [{ value: "all", label: "All" }, { value: "front", label: "Front" }, { value: "rear", label: "Rear" }] });
+  camSeg.classList.add("rec-camseg");
+  camSeg.hidden = !(store.settings && store.settings.rear_camera && store.settings.rear_camera.enabled);
+  function setFilter(v) {
+    camFilter = v;
+    // the newest day of what is shown now opens
+    const first = filterRecs(list, camFilter)[0];
+    if (first) closedDays.delete(first.date);
+    render();
+  }
+
   function render() {
-    const sig = JSON.stringify(list);
+    const hasRear = !!(store.settings && store.settings.rear_camera && store.settings.rear_camera.enabled) || list.some((r) => recCamera(r) === "rear");
+    camSeg.hidden = !hasRear;
+    const cam = hasRear ? camFilter : "all";
+    const recs = filterRecs(list, cam);
+    const sig = cam + JSON.stringify(list);
     if (sig === shown) return;
     shown = sig;
-    const total = list.reduce((a, r) => a + (r.size_bytes || 0), 0);
-    summary.textContent = `${list.length} file${list.length === 1 ? "" : "s"} · ${fmtBytes(total)} · protected: ${list.filter((r) => r.protected).length}`;
+    const total = recs.reduce((a, r) => a + (r.size_bytes || 0), 0);
+    summary.textContent = `${recs.length} file${recs.length === 1 ? "" : "s"} · ${fmtBytes(total)} · protected: ${recs.filter((r) => r.protected).length}`;
     // the page scrolls in #view: rebuilding the list must not move it (one DOM swap, the position put back)
     const scroller = body.closest("#view");
     const top = scroller ? scroller.scrollTop : 0;
     const days = [];
-    if (!list.length) days.push(emptyState("No recordings yet"));
+    if (!recs.length) days.push(emptyState(cam === "rear" ? "No rear camera recordings yet" : cam === "front" ? "No front camera recordings yet" : "No recordings yet"));
     const groups = new Map();
-    for (const r of list) {
+    for (const r of recs) {
       if (!groups.has(r.date)) groups.set(r.date, []);
       groups.get(r.date).push(r);
     }
@@ -255,8 +278,14 @@ export function mount(root) {
     h(".page-head", null,
       h("h1", null, "Recordings"),
       summary,
+      camSeg,
       h("button.btn", { onclick: async () => {
-        try { const r = await api.post("/api/recordings/protect-current"); toast("ok", "Current recording protected" + (r && r.segment ? ": " + r.segment : "")); load(); } catch (e) { toast("error", errText(e)); }
+        try {
+          const r = await api.post("/api/recordings/protect-current");
+          const segs = r ? [r.segment, r.segment_rear].filter(Boolean) : [];
+          toast("ok", (segs.length > 1 ? "Current recordings protected" : "Current recording protected") + (segs.length ? ": " + segs.join(", ") : ""));
+          load();
+        } catch (e) { toast("error", errText(e)); }
       } }, icon("lock"), "Protect current"),
       h("button.btn", { onclick: load }, icon("refresh"), "Refresh"),
     ),

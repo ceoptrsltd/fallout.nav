@@ -154,8 +154,11 @@ export function kindInfo(kind) {
 /** Change marker of the event list (re-render the log only when it changed). */
 export function eventsKey(events) {
   const list = Array.isArray(events) ? events : [];
-  // the snapshot and the kept recording are attached a moment after the event: they change the key too
-  const extras = list.map((e) => (e && e.data && e.data.snapshot ? "s" : "") + (e && e.data && e.data.segment ? "r" : "")).join(",");
+  // the snapshots and the kept recordings (front, rear) are attached a moment after the event: they change the key too
+  const extras = list.map((e) => {
+    const d = (e && e.data) || {};
+    return (d.snapshot ? "s" : "") + (d.segment ? "r" : "") + (d.snapshot_rear ? "S" : "") + (d.segment_rear ? "R" : "");
+  }).join(",");
   return `${list.length}:${list.length ? list[0].id : ""}:${list.length ? list[list.length - 1].id : ""}:${extras}`;
 }
 

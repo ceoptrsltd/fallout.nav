@@ -46,3 +46,29 @@ test("alarm events in recordings: segment start, deep link, jump and marker posi
   assert.equal(markPos(700, 600), 1);
   assert.equal(markPos(10, NaN), null);
 });
+
+test("rear camera recordings: which camera, the filter, the player title, the downloaded name, rear links", async () => {
+  const { recCamera, filterRecs, recTitle, downloadName, recLink, parseRecLink } = await import("../../web/admin/js/rec-play.js");
+  const front = { path: "2026-10-28/2026-10-28_10-00-00.ts", camera: "front", start: "2026-10-28T10:00:00" };
+  const rear = { path: "rear/2026-10-28/2026-10-28_10-00-00.ts", camera: "rear", start: "2026-10-28T10:00:00" };
+  const oldRear = { path: "rear/2026-10-28/2026-10-28_09-50-00.ts" }; // a device that does not say the camera
+  const nosync = { path: "nosync/boot-abcd1234_0001.ts", camera: "front", start: null };
+  assert.equal(recCamera(front), "front");
+  assert.equal(recCamera(rear), "rear");
+  assert.equal(recCamera(oldRear), "rear");
+  assert.equal(recCamera({ path: "2026-10-28/x.ts" }), "front");
+  assert.equal(recCamera(null), "front");
+  const list = [rear, front, oldRear, nosync];
+  assert.deepEqual(filterRecs(list, "rear"), [rear, oldRear]);
+  assert.deepEqual(filterRecs(list, "front"), [front, nosync]);
+  assert.deepEqual(filterRecs(list, "all"), list);
+  assert.deepEqual(filterRecs(null, "rear"), []);
+  assert.equal(recTitle(rear), "Rear camera · 2026-10-28 10:00:00");
+  assert.equal(recTitle(front), "Front camera · 2026-10-28 10:00:00");
+  assert.equal(recTitle(nosync), "Front camera · boot-abcd1234_0001.ts");
+  assert.equal(downloadName(front), "2026-10-28_10-00-00.ts");
+  assert.equal(downloadName(rear), "rear-2026-10-28_10-00-00.ts"); // not the same name as the front's file
+  // alarm log → player: the rear path goes through the link as is
+  const t0 = new Date(2026, 9, 28, 10, 0, 0).getTime() / 1000;
+  assert.deepEqual(parseRecLink(recLink(rear.path, t0 + 42)), { play: rear.path, t: 42 });
+});

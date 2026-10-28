@@ -1,14 +1,18 @@
-// Camera: live video, status, camera.* settings.
+// Camera: Front | Rear (the rear is an IP camera over RTSP, docs/contracts/camera.md «Задняя камера») — live video,
+// status, settings (camera.* / rear_camera.*), a snapshot of the rear and what the car screen shows (api/camera/view).
 // The transport is chosen automatically: on the device's network WebRTC (WHEP, lowest latency), falling back
 // to the on-demand MPEG-TS stream if WebRTC cannot connect; through the server (docs/contracts/remote.md)
 // WebRTC does not pass the tunnel, so the stream right away. Nothing is streamed unless this page is open
-// and the tab is visible.
-import { h, icon, fmt, isNum } from "../dom.js";
-import { appUrl, goLogin, REMOTE } from "../api.js";
+// and the tab is visible; only the camera whose tab is shown.
+import { h, icon, fmt, fmtBytes, isNum } from "../dom.js";
+import { api, appUrl, errText, goLogin, REMOTE } from "../api.js";
 import { loadMpegts } from "../vendor.js";
 import { SettingsForm, section } from "../form.js";
 import { store, on } from "../store.js";
-import { banner, confirmDialog } from "../ui.js";
+import { banner, confirmDialog, segmented, switchEl, toast } from "../ui.js";
+import {
+  camFromHash, camDot, rearStatus, screenInfo, rtspProblem, passwordInfo, takePassword, rearConfirm, snapName,
+} from "../camera-fmt.js";
 
 const CAM_STATE = { starting: "starting", recording: "recording", stopped: "stopped", error: "error" };
 // applied by fnav-camera on the fly: no "recording restart" confirmation for these
@@ -219,12 +223,21 @@ export class TsLiveClient {
   }
 }
 
-export function mount(root) {
+/**
+ * Live video of one camera: the player box and a stats line under it. start() picks the transport (see the top),
+ * stop() ends all streaming; fitAspect — the box takes the video's proportions (an IP camera is usually 16:9).
+ */
+function livePlayer({ whepUrl, tsUrl, fitAspect = false }) {
   const video = h("video", { autoplay: true, muted: true, playsinline: true, hidden: true });
   video.muted = true;
   const msg = h(".overlay-msg", null, "Connecting…");
-  const box = h(".video-box", null, video, msg);
+  const box = h(".video-box" + (fitAspect ? ".cam-wide" : ""), null, video, msg);
   const statsEl = h(".mono.dim", { style: { fontSize: "12.5px", marginTop: "8px", minHeight: "20px" } });
+  if (fitAspect) {
+    const fit = () => { if (video.videoWidth && video.videoHeight) box.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`; };
+    video.addEventListener("loadedmetadata", fit);
+    video.addEventListener("resize", fit);
+  }
 
   let mode = null; // "webrtc" | "stream" — what is playing (or connecting) now
   let client = null;
@@ -255,6 +268,7 @@ export function mount(root) {
     showMsg("Connecting WebRTC…");
     statsEl.textContent = "";
     const c = (client = new WhepClient(video, {
+      url: whepUrl,
       onState: (s) => {
         if (my !== gen) return;
         if (s === "playing") { video.hidden = false; showMsg(""); }
@@ -293,6 +307,7 @@ export function mount(root) {
       retryTimer = setTimeout(() => { if (my === gen && mode === "stream") startStream(attempt + 1); }, d * 1000);
     };
     const c = (client = new TsLiveClient(video, {
+      url: tsUrl,
       onState: (s, why) => {
         if (my !== gen) return;
         if (s === "playing") { video.hidden = false; showMsg(""); }
@@ -318,14 +333,18 @@ export function mount(root) {
     }
   }
 
-  // hidden tab: stop streaming (no traffic through the phone's mobile data), resume when visible again
-  const onVis = () => {
-    if (document.hidden) { stopAll(); showMsg("Paused while the tab is hidden"); }
-    else start();
-  };
-  document.addEventListener("visibilitychange", onVis);
+  return { box, statsEl, start, stop: stopAll, showMsg };
+}
 
-  // ── camera status ──
+const kindCls = (k) => (k === "bad" ? "red" : k === "warn" ? "amber" : k === "ok" ? "green" : "");
+let lastTab = "front"; // the camera shown last: the page opens on it again (the module stays loaded)
+
+export function mount(root) {
+  root.classList.add("cam-page");
+  let stopped = false;
+  const front = livePlayer({ whepUrl: appUrl("api/camera/whep"), tsUrl: appUrl("api/camera/live.ts") });
+
+  // ── front camera status ──
   const stRefs = {};
   const kvRow = (k, label) => { const v = h("span.v", null, "—"); stRefs[k] = v; return [h("span.k", null, label), v]; };
   const statusCard = h(".card", null, h("h2", null, "Status"),
@@ -386,13 +405,12 @@ export function mount(root) {
     form.bar,
   );
 
-  root.append(
-    h(".page-head", null, h("h1", null, "Camera")),
+  const frontPane = h(".cam-pane", null,
     h(".cam-layout", null,
       h("div", null,
         h(".card", null,
-          h(".card-head", null, h("h2", null, "Live video"), h("button.btn.sm", { type: "button", title: "Reconnect", onclick: () => start() }, icon("refresh"), "Reload")),
-          box, statsEl,
+          h(".card-head", null, h("h2", null, "Live video"), h("button.btn.sm", { type: "button", title: "Reconnect", onclick: () => reload("front") }, icon("refresh"), "Reload")),
+          front.box, front.statsEl,
         ),
       ),
       h("div", { style: { display: "flex", flexDirection: "column", gap: "14px" } }, statusCard),
@@ -400,15 +418,333 @@ export function mount(root) {
     settingsCard,
   );
 
+  // ═════ rear camera: an IP camera over RTSP (settings.rear_camera; telemetry camera_rear, null while it is off) ═════
+  const rearCfg = () => (store.settings && store.settings.rear_camera) || null;
+  const rearOn = () => !!(rearCfg() && rearCfg().enabled);
+  const hasRear = !!rearCfg(); // older device software: no rear camera, the page is the front camera only
+  const rear = livePlayer({ whepUrl: appUrl("api/camera/rear/whep"), tsUrl: appUrl("api/camera/rear/live.ts"), fitAspect: true });
+
+  // ── rear status ──
+  const rRefs = {};
+  const rRow = (k, label) => { const v = h("span.v", null, "—"); rRefs[k] = v; return [h("span.k", null, label), v]; };
+  const setR = (k, t, kind) => { rRefs[k].textContent = t; rRefs[k].className = "v" + (kindCls(kind) ? " " + kindCls(kind) : ""); };
+  const restartBtn = h("button.btn.sm", { type: "button", title: "Drop the connection to the camera and connect again", onclick: () => restartRear() }, icon("refresh"), "Reconnect");
+  const rStatusCard = h(".card", null, h(".card-head", null, h("h2", null, "Status"), restartBtn),
+    h(".kv", null, rRow("state", "State"), rRow("err", "Error"), rRow("codec", "Codec"), rRow("size", "Size"), rRow("sfps", "Camera frames/s"),
+      rRow("fps", "Received frames/s"), rRow("br", "Bitrate"), rRow("drop", "Dropped frames"), rRow("seg", "Current segment")));
+  function renderRearStatus() {
+    const c = store.telemetry ? store.telemetry.camera_rear : null;
+    const s = rearStatus(c || (rearOn() ? null : { state: "disabled" }));
+    setR("state", s.state.text, s.state.kind);
+    setR("err", s.error.text, s.error.kind);
+    setR("codec", s.codec.text, s.codec.kind);
+    setR("size", s.size);
+    setR("sfps", s.streamFps);
+    setR("fps", s.fps);
+    setR("br", s.bitrate);
+    setR("drop", s.dropped.text, s.dropped.kind);
+    setR("seg", s.segment);
+    // the first snapshot by itself, once the camera delivers pictures
+    if (tab === "rear" && !snapTaken && !document.hidden && s.state.kind === "ok") takeSnapshot();
+    // password_set as the camera reports it (not right after a save: the status lags a moment behind)
+    if (c && typeof c.password_set === "boolean" && c.password_set !== pwSet && Date.now() > pwHoldUntil) {
+      pwSet = c.password_set;
+      pwRefresh();
+    }
+  }
+  async function restartRear() {
+    restartBtn.disabled = true;
+    try {
+      await api.post("/api/camera/rear/restart");
+      toast("ok", "Rear camera: connecting again");
+    } catch (e) {
+      toast("error", "Rear camera: " + errText(e));
+    } finally {
+      restartBtn.disabled = false;
+    }
+  }
+
+  // ── rear snapshot: fetched once as a file, so Save keeps exactly the frame shown ──
+  const snapImg = h("img", { alt: "Rear camera snapshot", hidden: true });
+  const snapMsg = h(".overlay-msg", null, "No snapshot yet");
+  const snapBox = h(".video-box.cam-wide.cam-snapbox", null, snapImg, snapMsg);
+  const snapInfo = h(".mono.dim.cam-snapinfo");
+  const snapBtn = h("button.btn.sm", { type: "button", title: "Take a new snapshot", onclick: () => takeSnapshot() }, icon("refresh"), "Take");
+  const snapDl = h("a.btn.sm", { hidden: true, title: "Save the snapshot to this device" }, icon("dl"), "Save");
+  const snapCard = h(".card", null, h(".card-head", null, h("h2", null, "Snapshot"), snapBtn, snapDl), snapBox, snapInfo);
+  let snapUrl = null;
+  let snapBusy = false;
+  let snapTaken = false;
+  async function takeSnapshot() {
+    if (snapBusy || !rearOn()) return;
+    snapBusy = true;
+    snapTaken = true;
+    snapBtn.disabled = true;
+    if (snapImg.hidden) { snapMsg.hidden = false; snapMsg.textContent = "Taking a snapshot…"; }
+    snapInfo.className = "mono dim cam-snapinfo";
+    try {
+      const resp = await fetch(appUrl("api/camera/rear/snapshot.jpg") + "?t=" + Date.now(), { credentials: "same-origin", cache: "no-store" });
+      if (resp.status === 401) { goLogin(); return; }
+      if (!resp.ok) {
+        let m = "";
+        try { m = (await resp.json()).detail || ""; } catch { /* */ }
+        throw new Error(m || "HTTP " + resp.status);
+      }
+      const blob = await resp.blob();
+      if (stopped) return;
+      const at = new Date();
+      if (snapUrl) URL.revokeObjectURL(snapUrl);
+      snapUrl = URL.createObjectURL(blob);
+      snapImg.onload = () => {
+        const w = snapImg.naturalWidth, hh = snapImg.naturalHeight;
+        if (w && hh) snapBox.style.aspectRatio = `${w} / ${hh}`;
+        snapInfo.textContent = `${at.toLocaleTimeString("en-GB")} · ${w}×${hh} · ${fmtBytes(blob.size)}`;
+      };
+      snapImg.src = snapUrl;
+      snapImg.hidden = false;
+      snapMsg.hidden = true;
+      snapDl.href = snapUrl;
+      snapDl.download = snapName("rear", at);
+      snapDl.hidden = false;
+    } catch (e) {
+      if (stopped) return;
+      const why = "No snapshot: " + (e.message || e);
+      if (snapImg.hidden) snapMsg.textContent = why;
+      else { snapInfo.textContent = why; snapInfo.className = "mono red cam-snapinfo"; }
+    } finally {
+      snapBusy = false;
+      snapBtn.disabled = false;
+    }
+  }
+
+  // ── rear settings: one Save for everything; the password is not a setting (api/camera/rear/credentials) ──
+  let pwSet = null; // the camera has a password in secrets.env: true / false / null — not known (camera off)
+  let pwHoldUntil = 0;
+  let pwRefresh = () => {};
+  const rform = new SettingsForm({
+    beforeSave: async (patch) => {
+      const pw = takePassword(patch);
+      const ask = rearConfirm(patch.rear_camera, rearCfg(), pw !== undefined);
+      if (ask && !(await confirmDialog(ask))) return false;
+      if (pw !== undefined) {
+        // the camera reconnects before this answers: the bar shows it is busy (no second Save meanwhile)
+        rform.btnSave.disabled = rform.btnRevert.disabled = true;
+        rform.btnSave.textContent = "Saving…";
+        try {
+          const r = await api.post("/api/camera/rear/credentials", { password: pw });
+          pwSet = !!(r && r.password_set);
+          pwHoldUntil = Date.now() + 8000;
+        } catch (e) {
+          toast("error", "Password not saved: " + errText(e));
+          rform.refreshBar();
+          return false;
+        }
+      }
+      return true;
+    },
+    onSaved: () => pwRefresh(),
+  });
+  const rf = (spec) => rform.add(spec);
+  /** Write-only password: typing sets a new one, Remove deletes it, the status says whether one is set. */
+  const passwordWidget = (fd) => {
+    const inp = h("input", { type: "password", autocomplete: "new-password", spellcheck: "false", placeholder: "unchanged", "aria-label": "Camera password" });
+    const eye = h("button.btn.sm", { type: "button", onclick: () => { inp.type = inp.type === "password" ? "text" : "password"; eye.textContent = inp.type === "password" ? "Show" : "Hide"; } }, "Show");
+    const rm = h("button.btn.sm.danger", { type: "button", title: "Delete the saved password", onclick: () => { inp.value = ""; fd.change(""); refresh(); } }, "Remove");
+    const st = h("span.cam-pwst");
+    const refresh = () => {
+      const v = fd.value === undefined ? null : fd.value;
+      const pi = passwordInfo(pwSet, v, rearOn());
+      st.textContent = pi.text;
+      st.className = "cam-pwst " + kindCls(pi.kind);
+      rm.hidden = !(pwSet === true && v === null);
+    };
+    pwRefresh = refresh;
+    inp.addEventListener("input", () => { fd.change(inp.value === "" ? null : inp.value); refresh(); });
+    return { el: h(".cam-pw", null, h("span.cam-pwrow", null, inp, eye, rm), st), update: (v) => { inp.value = v || ""; refresh(); } };
+  };
+  const enRow = rf({ path: "rear_camera.enabled", label: "Rear camera", type: "switch", switchLabel: "record it and show it on the car screen" });
+  const urlRow = rf({ path: "rear_camera.url", label: "RTSP address", hint: "the camera's main stream, without the login", type: "text", placeholder: "rtsp://192.168.1.60:554/stream1",
+    validate: (v) => rtspProblem(v, { required: !!rform.get("rear_camera.enabled") }),
+    help: "From the camera's manual or app. The camera joins the van's Wi-Fi: give it a fixed IP address there, so the address does not change." });
+  const rearCard = section("Rear camera settings",
+    enRow,
+    urlRow,
+    rf({ path: "rear_camera.lores_url", label: "Second stream", hint: "optional: the camera's smaller sub-stream", type: "text", placeholder: "rtsp://192.168.1.60:554/stream2",
+      validate: (v) => rtspProblem(v),
+      help: "Used for the car screen, snapshots and the camera watch, so the device decodes less. Empty: the main stream is used." }),
+    rf({ path: "rear_camera.username", label: "Username", hint: "the camera's login", type: "text" }),
+    rf({ path: "rear_camera.password", label: "Password", hint: "write-only: kept on the device, never shown", type: "custom", build: passwordWidget }),
+    rf({ path: "rear_camera.transport", label: "Transport", type: "seg", options: [{ value: "tcp", label: "TCP" }, { value: "udp", label: "UDP" }],
+      help: "TCP is steadier over Wi-Fi; UDP only if the camera cannot do TCP." }),
+    rf({ path: "rear_camera.record", label: "Record", type: "switch", switchLabel: "write it to the SD card next to the front camera",
+      help: "Off: live view only. Both cameras share the recordings limit (Front → Camera settings); the oldest recordings go first." }),
+    rf({ path: "rear_camera.mirror", label: "Mirror on the car screen", type: "switch", switchLabel: "like a rear-view mirror",
+      help: "Only the car screen: recordings and this page show the picture as the camera sees it. Applied at once." }),
+    h("details.al-adv.cam-adv", null, h("summary", null, "Estimates"),
+      h(".hint", null, "Used only until the camera reports its own values."),
+      rf({ path: "rear_camera.fps", label: "Expected frame rate", type: "number", min: 1, max: 60, step: 1, unit: "fps" }),
+      rf({ path: "rear_camera.bitrate_kbps", label: "Expected bitrate", hint: "keeps disk space free for the next segment", type: "number", min: 200, max: 25000, step: 100, unit: "kbit/s" })),
+    rform.bar,
+  );
+
+  // ── rear off: what it is and the switch (it saves the address typed below together with it) ──
+  const offSwitch = switchEl({ checked: false, label: "Turn on", onchange: (v) => enableRear(v) });
+  const offCard = h(".card.cam-off", null,
+    h("span.cam-offic", null, icon("cam")),
+    h(".cam-offtxt", null,
+      h(".cam-offword", null, "Rear camera off"),
+      h("p", null, "An IP camera on the van's Wi-Fi (RTSP, H.264): recorded next to the front camera and shown on the car screen with key 4. Enter its address and login below, then turn it on."),
+      offSwitch));
+  async function enableRear(v) {
+    if (!v) return;
+    const prob = rtspProblem(rform.get("rear_camera.url"), { required: true });
+    if (prob) {
+      offSwitch.input.checked = false;
+      toast("warn", prob === "Enter the camera's RTSP address" ? "Enter the camera's RTSP address below first" : prob);
+      const inp = urlRow.querySelector("input");
+      if (inp) { inp.scrollIntoView({ block: "center", behavior: "smooth" }); inp.focus({ preventScroll: true }); }
+      return;
+    }
+    rform.set("rear_camera.enabled", true);
+    await rform.save();
+    if (stopped) return;
+    if (!rearOn()) { // not saved: back to off, the rest stays as typed
+      rform.set("rear_camera.enabled", false);
+      offSwitch.input.checked = false;
+    } else toast("ok", "Rear camera on: connecting…");
+  }
+
+  const rearOnBox = h(".cam-layout", null,
+    h("div", null,
+      h(".card", null,
+        h(".card-head", null, h("h2", null, "Live video"), h("button.btn.sm", { type: "button", title: "Reconnect", onclick: () => reload("rear") }, icon("refresh"), "Reload")),
+        rear.box, rear.statsEl,
+      ),
+    ),
+    h(".cam-side", null, rStatusCard, snapCard),
+  );
+  const rearPane = h(".cam-pane", null, rearOnBox, offCard, rearCard);
+
+  // ── the car screen: front or rear (POST api/camera/view, the same as key 4), from telemetry display.camera ──
+  const scrText = h("span.cam-scrtxt", null, "—");
+  let scrBusy = false;
+  let scrExpect = null; // {camera, until}: the answer of the last switch, until telemetry shows it
+  const scrSeg = segmented({ name: "cam-screen", options: [{ value: "front", label: "Front" }, { value: "rear", label: "Rear" }], value: null, onchange: (v) => setScreen(v) });
+  const screenCard = h(".card.cam-screen", { title: "The same as key 4 on the keypad" },
+    h("span.cam-scric", null, icon("screen")),
+    h(".cam-scrtxtbox", null, h(".cam-scrlbl", null, "Car screen shows"), scrText),
+    scrSeg);
+  async function setScreen(v) {
+    if (scrBusy) return;
+    scrBusy = true;
+    screenCard.classList.add("busy");
+    try {
+      const r = await api.post("/api/camera/view", { camera: v });
+      scrExpect = { camera: r && r.camera ? r.camera : v, until: Date.now() + 2500 };
+    } catch (e) {
+      toast("error", "Car screen: " + errText(e));
+    } finally {
+      scrBusy = false;
+      screenCard.classList.remove("busy");
+      renderScreen();
+    }
+  }
+  function renderScreen() {
+    screenCard.hidden = !hasRear || !rearOn();
+    if (screenCard.hidden) return;
+    const d = store.online && store.telemetry ? store.telemetry.display : null;
+    let si = screenInfo(d);
+    if (scrExpect && d) {
+      if (si.camera === scrExpect.camera || Date.now() > scrExpect.until) scrExpect = null;
+      else si = screenInfo({ ...d, camera: scrExpect.camera });
+    }
+    if (scrText.textContent !== si.text) scrText.textContent = si.text;
+    if (!scrBusy) scrSeg.set(si.camera);
+  }
+
+  // ── Front | Rear ──
+  let tab = hasRear ? camFromHash(location.hash) || lastTab : "front";
+  const dots = { front: h("i.cam-dot"), rear: h("i.cam-dot") };
+  const tabLabel = (cam, text) => h("span.cam-tl", null, dots[cam], text);
+  const tabSeg = segmented({ name: "cam-tab", options: [{ value: "front", label: tabLabel("front", "Front") }, { value: "rear", label: tabLabel("rear", "Rear") }],
+    value: tab, onchange: (v) => setTab(v) });
+  tabSeg.classList.add("cam-tabs");
+  function setTab(v) {
+    tab = lastTab = v;
+    frontPane.hidden = v !== "front";
+    rearPane.hidden = v !== "rear";
+    history.replaceState(null, "", "#/camera" + (v === "rear" ? "?cam=rear" : ""));
+    syncPlayers();
+    renderRearStatus();
+  }
+  function renderDots() {
+    const t = store.online && store.telemetry ? store.telemetry : null;
+    const set = (cam, c) => { const k = "cam-dot " + (t ? camDot(c) : "off"); if (dots[cam].className !== k) dots[cam].className = k; };
+    set("front", t && t.camera);
+    set("rear", t && t.camera_rear ? t.camera_rear : { state: rearOn() ? "starting" : "disabled" });
+  }
+
+  function renderRearMode() {
+    const on = rearOn();
+    rearOnBox.hidden = !on;
+    offCard.hidden = on;
+    offSwitch.input.checked = false;
+    enRow.hidden = !on; // while off, the switch above turns it on
+    if (!on) snapTaken = false;
+    pwRefresh();
+    renderScreen();
+    syncPlayers();
+  }
+
+  // ── who streams: only the camera on screen, only while this browser tab is visible ──
+  const P = { front, rear };
+  let running = null; // "front" | "rear" | null
+  const wanted = () => (document.hidden ? null : tab === "front" ? "front" : rearOn() ? "rear" : null);
+  function syncPlayers() {
+    const want = wanted();
+    if (want !== running) {
+      if (running) P[running].stop();
+      running = want;
+      if (want) P[want].start();
+    }
+    if (document.hidden) { front.showMsg("Paused while the tab is hidden"); rear.showMsg("Paused while the tab is hidden"); }
+  }
+  function reload(cam) {
+    if (wanted() !== cam) return;
+    running = cam;
+    P[cam].start();
+  }
+  // hidden tab: stop streaming (no traffic through the phone's mobile data), resume when visible again
+  const onVis = () => syncPlayers();
+  document.addEventListener("visibilitychange", onVis);
+
+  root.append(
+    h(".page-head", null, h("h1", null, "Camera"), hasRear ? tabSeg : null),
+    hasRear ? screenCard : null,
+    frontPane,
+    hasRear ? rearPane : null,
+  );
+  frontPane.hidden = tab !== "front";
+  rearPane.hidden = tab !== "rear";
+
   renderStatus();
-  const offT = on("telemetry", renderStatus);
-  if (document.hidden) showMsg("Paused while the tab is hidden");
-  else start();
+  renderRearMode();
+  renderRearStatus();
+  renderDots();
+  const offT = on("telemetry", () => { renderStatus(); renderRearStatus(); renderScreen(); renderDots(); });
+  const offS = on("settings", () => renderRearMode());
+  const offC = on("conn", () => { renderScreen(); renderDots(); });
 
   return () => {
+    stopped = true;
     offT();
+    offS();
+    offC();
     document.removeEventListener("visibilitychange", onVis);
     form.destroy();
-    stopAll();
+    rform.destroy();
+    front.stop();
+    rear.stop();
+    if (snapUrl) URL.revokeObjectURL(snapUrl);
   };
 }

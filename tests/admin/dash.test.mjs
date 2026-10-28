@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   EVENTS_N, POLL, pollDelay, alarmLive, alarmActions, alarmWord, armedFor, armProgress, armHint, alarmChips,
   recentEvents, recentKey, eventExtras, snapPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
-  exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
+  rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
 } from "../../web/admin/js/dash-fmt.js";
 
 test("poll: fast without telemetry, slower while armed, slow when off", () => {
@@ -108,17 +108,26 @@ test("events: newest first, n of them; extras; change key sees a snapshot added 
   assert.deepEqual(recentEvents(undefined), []);
 
   assert.deepEqual(eventExtras({ data: { snapshot: true, segment: "2026-10-27/2026-10-27_21-00-00.ts" }, url: "#/alarm" }),
-    { snapshot: true, segment: "2026-10-27/2026-10-27_21-00-00.ts", link: null });
+    { snapshot: true, segment: "2026-10-27/2026-10-27_21-00-00.ts", snapshotRear: false, segmentRear: null, link: null });
   assert.deepEqual(eventExtras({ url: "#/tracking" }).link, { href: "#/tracking", text: "Show on the map" });
-  assert.deepEqual(eventExtras({ data: { snapshot: "yes", segment: "" } }), { snapshot: false, segment: null, link: null });
+  assert.deepEqual(eventExtras({ data: { snapshot: "yes", segment: "" } }), { snapshot: false, segment: null, snapshotRear: false, segmentRear: null, link: null });
+  // the rear camera's snapshot and kept recording (data.snapshot_rear / data.segment_rear)
+  const xr = eventExtras({ data: { snapshot_rear: true, segment_rear: "rear/2026-10-27/2026-10-27_21-00-00.ts" } });
+  assert.equal(xr.snapshotRear, true);
+  assert.equal(xr.segmentRear, "rear/2026-10-27/2026-10-27_21-00-00.ts");
+  assert.equal(xr.snapshot, false);
 
   const before = recentKey([{ id: "e1", data: {} }]);
   const after = recentKey([{ id: "e1", data: { snapshot: true } }]);
   assert.notEqual(before, after);
+  assert.notEqual(after, recentKey([{ id: "e1", data: { snapshot: true, snapshot_rear: true } }]));
+  assert.notEqual(after, recentKey([{ id: "e1", data: { snapshot: true, segment_rear: "rear/x.ts" } }]));
   assert.equal(recentKey([]), "");
 
   assert.equal(snapPath("b746dce4655142babc03073033a00062"), "api/alarm/snapshot/b746dce4655142babc03073033a00062.jpg");
   assert.equal(snapPath("../x"), "api/alarm/snapshot/..%2Fx.jpg");
+  assert.equal(snapPath("b746dce4", "rear"), "api/alarm/snapshot/b746dce4-rear.jpg");
+  assert.equal(snapPath("b746dce4", "front"), "api/alarm/snapshot/b746dce4.jpg");
   assert.equal(eventAgo(1000, 1000 + 5 * 60 + 10), "5 min ago");
   assert.equal(eventAgo(null, 1000), "—");
 });
@@ -146,6 +155,22 @@ test("camera: recording state and the night exposure line", () => {
   assert.equal(camInfo({ state: "starting" }).text, "Starting…");
   assert.equal(camInfo({ state: "stopped" }).text, "Not recording");
   assert.equal(camInfo(null).text, "Not recording");
+  assert.deepEqual(camInfo({ state: "live" }), { text: "Live, not recording", kind: "ok", rec: false });
+  assert.equal(camInfo({ state: "disabled" }).text, "Off");
+
+  // the rear camera's line and the car screen button
+  assert.deepEqual(rearInfo({ state: "recording", recording: true }), { text: "Recording", kind: "ok", rec: true });
+  assert.deepEqual(rearInfo({ state: "live" }), { text: "Live", kind: "ok", rec: false });
+  assert.equal(rearInfo({ state: "error", error: "x" }).kind, "bad");
+  assert.equal(rearInfo({ state: "stopped" }).text, "Not recording");
+  assert.equal(rearInfo({ state: "disabled" }).text, "Off");
+  assert.equal(rearInfo(null).text, "Starting…"); // on, but no status yet
+  assert.equal(screenAction({ mode: "camera", camera: "rear" }).to, "front");
+  assert.equal(screenAction({ mode: "camera", camera: "rear" }).label, "Back to front");
+  assert.equal(screenAction({ mode: "camera", camera: "rear" }).onScreen, true);
+  assert.equal(screenAction({ mode: "map", camera: "front" }).to, "rear");
+  assert.equal(screenAction(null).label, "Show on screen");
+  assert.equal(screenAction(null).onScreen, false);
 
   const night = exposureInfo({ exposure_ms: 124.8, max_exposure_ms: 125, gain: 16, lux: 3.4, moving: false });
   assert.equal(night.text, "Night · 125 ms · 16×");

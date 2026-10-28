@@ -15,6 +15,7 @@ import {
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
 import { recLink } from "../rec-play.js";
+import { eventExtras, snapPath } from "../dash-fmt.js";
 import * as push from "../push.js";
 
 const POLL_MS = 1500;
@@ -299,26 +300,31 @@ export function mount(root) {
     for (const ev of list) {
       const ki = kindInfo(ev.kind);
       const link = eventLink(ev);
-      const seg = ev.data && typeof ev.data.segment === "string" && ev.data.segment ? ev.data.segment : null;
-      const snap = ev.data && ev.data.snapshot === true;
+      // the front camera's snapshot / kept recording, and the rear's when it is on (data.snapshot_rear, data.segment_rear)
+      const x = eventExtras(ev);
+      const snapLink = (cam, text) => h("a", { href: "#", onclick: (e) => { e.preventDefault(); showSnapshot(ev, cam); } }, text);
+      const segLink = (seg, text) => h("span", null, text, h("a.mono", { href: recLink(seg, ev.ts), title: "Watch from the moment of the event" }, seg));
       evList.append(h(".al-ev." + (ki.kind || "plain"), null,
         h("span.ic", null, icon(ki.icon)),
         h(".txt", null,
           h(".tt", null, ev.title || ki.label),
           ev.body ? h(".bd", null, ev.body) : null,
-          link || seg || snap ? h(".ex", null,
+          link || x.segment || x.snapshot || x.segmentRear || x.snapshotRear ? h(".ex", null,
             link ? h("a", { href: link.href }, link.text) : null,
-            snap ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); showSnapshot(ev); } }, "Snapshot") : null,
-            seg ? h("span", null, "Recording kept: ", h("a.mono", { href: recLink(seg, ev.ts), title: "Watch from the moment of the event" }, seg)) : null) : null),
+            x.snapshot ? snapLink("front", "Snapshot") : null,
+            x.snapshotRear ? snapLink("rear", "Rear snapshot") : null,
+            x.segment ? segLink(x.segment, "Recording kept: ") : null,
+            x.segmentRear ? segLink(x.segmentRear, "Rear recording kept: ") : null) : null),
         h(".when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, isNum(ev.ts) ? fmtWhen(ev.ts, now) : "—"),
       ));
     }
   }
 
-  function showSnapshot(ev) {
-    const img = h("img", { src: appUrl(`api/alarm/snapshot/${ev.id}.jpg`), alt: ev.title || "Snapshot", style: { width: "100%", display: "block", background: "#000" } });
+  function showSnapshot(ev, cam = "front") {
+    const img = h("img", { src: appUrl(snapPath(ev.id, cam)), alt: ev.title || "Snapshot", style: { width: "100%", display: "block", background: "#000" } });
     img.addEventListener("error", () => img.replaceWith(h(".dim", null, "The snapshot is gone (the log keeps the last 100).")));
-    modal({ title: ev.title || "Snapshot", width: 800, body: [img, h(".dim", { style: { marginTop: "8px" } }, isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "")] });
+    const title = (cam === "rear" ? "Rear camera · " : "") + (ev.title || "Snapshot");
+    modal({ title, width: 800, body: [img, h(".dim", { style: { marginTop: "8px" } }, isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "")] });
   }
 
   async function sendTestAlarm() {
@@ -677,6 +683,9 @@ export function mount(root) {
   // ───── camera watch: fnav-watch (docs/contracts/vision.md) ─────
   let vsForm = null;
   let vsCard;
+  let vsRearRow = null;
+  let vsRearNear = null;
+  const vsRearOff = h(".help", { hidden: true }, "The rear camera is off: turn it on in ", h("a", { href: "#/camera?cam=rear" }, "Camera → Rear"), ".");
   const vsStatus = h("span.al-hzstatus");
 
   function renderVision() {
@@ -687,8 +696,8 @@ export function mount(root) {
     if (vsStatus.className !== cls) vsStatus.className = cls;
   }
 
-  /** Near line: click or drag on a camera snapshot, just above the hood. */
-  const nearLineWidget = (fd) => {
+  /** Near line: click or drag on a camera snapshot (snapUrl: the front's or the rear's), just above the hood / bumper. */
+  const nearLineWidget = (snapUrl) => (fd) => {
     const img = h("img", { alt: "Camera snapshot", draggable: false });
     const line = h(".al-nearline");
     const val = h("span.mono");
@@ -708,7 +717,7 @@ export function mount(root) {
     box.addEventListener("pointerdown", (e) => { drag = true; box.setPointerCapture(e.pointerId); fromEvent(e); });
     box.addEventListener("pointermove", (e) => { if (drag) fromEvent(e); });
     box.addEventListener("pointerup", () => { drag = false; });
-    const reload = () => { img.src = appUrl("api/camera/snapshot.jpg") + "?t=" + Date.now(); };
+    const reload = () => { img.src = appUrl(snapUrl) + "?t=" + Date.now(); };
     img.addEventListener("error", () => { img.removeAttribute("src"); box.classList.add("noimg"); });
     img.addEventListener("load", () => box.classList.remove("noimg"));
     reload();
@@ -732,7 +741,7 @@ export function mount(root) {
       h(".hint", null, "While the alarm is armed, the camera looks for a person coming close to the van, someone lingering at it and a face at the windshield. No siren: a notification, the hazard lights and a protected recording."),
       f({ path: P + "enabled", label: "Watch the camera", type: "switch", switchLabel: "only while the alarm is armed" }),
       f({ path: P + "approach", label: "Person approaching", type: "switch", switchLabel: "grows in the frame and reaches the near line" }),
-      f({ path: P + "near_line", label: "Near line", hint: "just above the hood: a person whose feet reach it is close", type: "custom", build: nearLineWidget, wide: true }),
+      f({ path: P + "near_line", label: "Near line", hint: "just above the hood: a person whose feet reach it is close", type: "custom", build: nearLineWidget("api/camera/snapshot.jpg"), wide: true }),
       f({ path: P + "approach_hold_s", label: "At the line for", hint: "people walking past do not stay that long", type: "number", min: 0, max: 30, step: 0.5, unit: "s" }),
       f({ path: P + "face", label: "Face at the windshield", type: "switch", switchLabel: "a large face near the centre of the frame" }),
       f({ path: P + "face_min", label: "Face size", hint: "at least this wide", type: "range", min: 0.02, max: 0.5, step: 0.01,
@@ -745,8 +754,26 @@ export function mount(root) {
             f({ path: P + "loiter_s", label: "Lingering for", hint: "once per visit: again only after nobody was there for 10 s", type: "number", min: 3, max: 120, step: 1, unit: "s" }),
           ]
         : null,
+      // the rear camera (settings.rear_camera): the same rules on its picture, its own near line
+      settings().vision.rear !== undefined
+        ? [
+            (vsRearRow = f({ path: P + "rear", label: "Rear camera", type: "switch", switchLabel: "watch the rear camera too, with the same rules" })),
+            settings().vision.rear_near_line !== undefined
+              ? (vsRearNear = f({ path: P + "rear_near_line", label: "Rear near line", hint: "on the rear camera's picture: a person whose feet reach it is close", type: "custom",
+                build: nearLineWidget("api/camera/rear/snapshot.jpg"), wide: true }))
+              : null,
+          ]
+        : null,
       vsForm.bar,
     );
+    if (vsRearRow) vsRearRow.append(vsRearOff);
+  }
+
+  /** Rear camera off: its near line has no picture — hidden, and a pointer to where it is turned on. */
+  function renderVisionRear() {
+    const camOn = !!(store.settings && store.settings.rear_camera && store.settings.rear_camera.enabled);
+    vsRearOff.hidden = camOn;
+    if (vsRearNear) vsRearNear.hidden = !camOn;
   }
 
   // ───── layout ─────
@@ -789,6 +816,7 @@ export function mount(root) {
   renderState(true);
   renderHazard();
   renderVision();
+  renderVisionRear();
   renderMeter();
   renderTilt();
   renderEvents(true);
@@ -805,7 +833,7 @@ export function mount(root) {
     }
   });
   const offConn = on("conn", () => renderState(true));
-  const offSet = on("settings", () => { renderState(true); renderMeter(); renderTilt(); });
+  const offSet = on("settings", () => { renderState(true); renderMeter(); renderTilt(); renderVisionRear(); });
   // countdown and "x s ago" between telemetry packets (remote telemetry is 2 Hz, the poll 1.5 s)
   const tick = setInterval(() => { renderState(false); if (!store.online) renderMeter(); }, 500);
   const stopPoll = poll(load, POLL_MS);

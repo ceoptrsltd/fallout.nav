@@ -132,27 +132,31 @@ export function recentEvents(events, n = EVENTS_N) {
   return [...list].sort((a, b) => (num(b.ts) ? b.ts : 0) - (num(a.ts) ? a.ts : 0)).slice(0, n);
 }
 
-/** What an event offers: {snapshot, segment, link}. */
+const segOf = (v) => (typeof v === "string" && v ? v : null);
+
+/** What an event offers: {snapshot, segment, snapshotRear, segmentRear, link} — the rear camera's too, when it is on. */
 export function eventExtras(ev) {
   const d = ev && ev.data && typeof ev.data === "object" ? ev.data : {};
   return {
     snapshot: d.snapshot === true,
-    segment: typeof d.segment === "string" && d.segment ? d.segment : null,
+    segment: segOf(d.segment),
+    snapshotRear: d.snapshot_rear === true,
+    segmentRear: segOf(d.segment_rear),
     link: eventLink(ev),
   };
 }
 
-/** Change marker of the shown events: ids plus the snapshot / recording added a moment after the event itself. */
+/** Change marker of the shown events: ids plus the snapshots / recordings added a moment after the event itself. */
 export function recentKey(events) {
   return (events || []).map((e) => {
     const x = eventExtras(e);
-    return `${e.id}:${x.snapshot ? 1 : 0}:${x.segment ? 1 : 0}`;
+    return `${e.id}:${x.snapshot ? 1 : 0}:${x.segment ? 1 : 0}:${x.snapshotRear ? 1 : 0}:${x.segmentRear ? 1 : 0}`;
   }).join("|");
 }
 
-/** Snapshot of an event, relative to the app root. */
-export function snapPath(id) {
-  return `api/alarm/snapshot/${encodeURIComponent(String(id))}.jpg`;
+/** Snapshot of an event, relative to the app root; camera "rear" — the rear camera's (<id>-rear.jpg). */
+export function snapPath(id, camera) {
+  return `api/alarm/snapshot/${encodeURIComponent(String(id))}${camera === "rear" ? "-rear" : ""}.jpg`;
 }
 
 /** "5 min ago" for an event time (unix s). */
@@ -200,7 +204,28 @@ export function camInfo(cam) {
   if (c.recording) return { text: "Recording", kind: "ok", rec: true };
   if (c.state === "error") return { text: "Camera error", kind: "bad", rec: false };
   if (c.state === "starting") return { text: "Starting…", kind: "warn", rec: false };
+  if (c.state === "live") return { text: "Live, not recording", kind: "ok", rec: false };
+  if (c.state === "disabled") return { text: "Off", kind: "", rec: false };
   return { text: "Not recording", kind: "warn", rec: false };
+}
+
+/** Rear camera line of the camera tile (telemetry camera_rear; null — off or not reported yet): {text, kind, rec}. */
+export function rearInfo(cam) {
+  const c = cam || {};
+  if (c.recording) return { text: "Recording", kind: "ok", rec: true };
+  if (c.state === "live") return { text: "Live", kind: "ok", rec: false };
+  if (c.state === "error") return { text: "Error", kind: "bad", rec: false };
+  if (c.state === "disabled") return { text: "Off", kind: "", rec: false };
+  if (c.state === "stopped") return { text: "Not recording", kind: "warn", rec: false };
+  return { text: "Starting…", kind: "warn", rec: false };
+}
+
+/** The car screen button of the camera tile (telemetry display): show the rear there, or go back to the front. */
+export function screenAction(display) {
+  if (display && display.camera === "rear") {
+    return { to: "front", label: "Back to front", onScreen: true, title: "The car screen shows the rear camera: switch it back (like key 4)" };
+  }
+  return { to: "rear", label: "Show on screen", onScreen: false, title: "Show the rear camera on the car screen (like key 4)" };
 }
 
 const fmtMs = (ms) => (ms < 10 ? ms.toFixed(1) : ms.toFixed(0));

@@ -1099,3 +1099,90 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
   .trk-legend { flex-wrap: nowrap; gap: 14px; margin-top: 6px; font-size: 12px; overflow: hidden; }
   .trk-legend .lg-more { display: none; }
 }
+
+/* ───── camera: Front | Rear, the car screen, the rear IP camera (pages/camera.js) ───── */
+.cam-pane { display: flex; flex-direction: column; gap: 16px; }
+.cam-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.video-box.cam-wide { aspect-ratio: 16 / 9; } /* until the video / snapshot tells its own proportions */
+/* Front | Rear in the page head: a state dot on each (recording blinks red, like REC on the car screen) */
+.cam-tabs label { font-family: var(--f-label); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; padding: 6px 16px; }
+.cam-tl { display: inline-flex; align-items: center; gap: 8px; }
+.cam-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.cam-dot.ok { background: var(--green); box-shadow: 0 0 6px rgba(93, 255, 138, .6); }
+.cam-dot.warn { background: var(--amber); }
+.cam-dot.bad { background: var(--red); }
+.cam-dot.rec { background: var(--red); box-shadow: 0 0 6px rgba(255, 90, 74, .7); animation: blink 1.2s steps(2, jump-none) infinite; }
+.seg label.sel .cam-dot { box-shadow: 0 0 0 1.5px #1a1100; }
+/* the car screen: what it shows, Front | Rear (the same as key 4) */
+.cam-screen { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 10px 14px; }
+.cam-scric { display: inline-flex; flex: none; color: var(--amber); }
+.cam-scric svg { width: 24px; height: 24px; filter: drop-shadow(0 0 5px rgba(255, 182, 46, .35)); }
+.cam-scrtxtbox { flex: 1 1 160px; min-width: 0; display: flex; flex-direction: column; }
+.cam-scrlbl { color: var(--faint); font-family: var(--f-label); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+.cam-scrtxt { font-family: var(--f-num); font-size: 19px; font-weight: 500; line-height: 1.25; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cam-screen .seg label { font-family: var(--f-label); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; padding: 6px 18px; }
+.cam-screen.busy .seg { opacity: .6; pointer-events: none; }
+/* rear camera off: what it is and the switch */
+.cam-off { display: flex; align-items: flex-start; gap: 16px; padding: 18px 18px 16px; }
+.cam-offic { display: inline-flex; flex: none; color: var(--faint); padding-top: 2px; }
+.cam-offic svg { width: 40px; height: 40px; }
+.cam-offtxt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.cam-offword { font-family: var(--f-stencil); font-size: 26px; line-height: 1.1; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
+.cam-offtxt p { margin: 0; color: var(--dim); max-width: 62ch; }
+/* rear settings: room for a long RTSP address, the write-only password, the estimates */
+.cam-page .field .ctl > span:not(.unit) { flex: 1 1 auto; min-width: 0; }
+.cam-page .field .ctl input[type=text] { width: min(100%, 460px); }
+.cam-pw { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; }
+.cam-pwrow { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 460px; }
+.cam-page .field .ctl .cam-pwrow input { flex: 1 1 auto; width: auto; min-width: 0; }
+.cam-pwrow .btn { flex: none; }
+.cam-pwst { font-size: 12.5px; color: var(--dim); }
+.cam-pwst.green { color: var(--green); }
+.cam-pwst.amber { color: var(--amber); }
+.cam-adv { margin-top: 4px; }
+.cam-adv > .hint { margin: 0 0 2px; }
+.cam-snapinfo { font-size: 12.5px; margin-top: 8px; min-height: 18px; }
+@media (max-width: 760px) {
+  .cam-pane, .cam-side { gap: 12px; }
+  .cam-page .page-head { flex-wrap: nowrap; }
+  .cam-page .page-head h1 { min-width: 0; }
+  .cam-tabs { flex: none; flex-wrap: nowrap; }
+  .cam-tabs label { padding: 6px 13px; }
+  .cam-screen { padding: 10px 12px; }
+  .cam-screen .seg { flex: 1 1 100%; flex-wrap: nowrap; }
+  .cam-screen .seg label { flex: 1 1 0; justify-content: center; }
+  .cam-off { padding: 14px 13px; gap: 12px; }
+  .cam-offic svg { width: 32px; height: 32px; }
+  .cam-offword { font-size: 21px; }
+}
+
+/* ───── recordings: the rear camera (All / Front / Rear, the REAR tag and a blue edge on its rows) ───── */
+.rec-cam {
+  padding: 1px 8px 1px 7px; border: 0; border-radius: 0;
+  font-family: var(--f-label); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--blue); background: rgba(108, 184, 255, .13);
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px);
+}
+.rec-row.rear { box-shadow: inset 3px 0 0 rgba(108, 184, 255, .5); }
+.rec-camseg label { padding: 5px 13px; }
+@media (max-width: 760px) { /* phones: the filter across the width, right above the list */
+  .rec-camseg { order: 10; flex: 1 1 100%; flex-wrap: nowrap; }
+  .rec-camseg label { flex: 1 1 0; justify-content: center; }
+}
+
+/* ───── dashboard: the rear camera on the camera tile, both snapshots of an event ───── */
+.db-rear { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line2); }
+.db-rearst { display: inline-flex; align-items: center; gap: 7px; flex: 1 1 auto; min-width: 0; color: var(--ink); text-decoration: none; white-space: nowrap; font-family: var(--f-num); font-size: 16px; font-weight: 500; letter-spacing: .01em; }
+.db-rearlbl { color: var(--faint); font-family: var(--f-label); font-size: 10px; font-weight: 400; letter-spacing: .12em; text-transform: uppercase; }
+.db-rear .rec-dot { width: 8px; height: 8px; margin: 0; background: var(--red); box-shadow: 0 0 6px rgba(255, 90, 74, .7); }
+.db-reartxt { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.db-reartxt.green { color: var(--green); }
+.db-reartxt.amber { color: var(--amber); }
+.db-reartxt.red { color: var(--red); }
+.db-onscr { padding: 0 5px; border: 1px solid var(--amber-d); color: var(--amber); font-family: var(--f-label); font-size: 9.5px; font-weight: 400; letter-spacing: .08em; text-transform: uppercase; }
+.db-scrbtn { flex: 1 1 100%; gap: 6px; } /* its own line: it stays put when its label changes */
+.db-scrbtn.on { border-color: var(--amber-d); color: var(--amber); }
+.db-rearerr { flex: 1 1 100%; }
+@media (max-width: 600px) { .db-onscr { display: none; } } /* a half tile: the amber "Back to front" button says it */
+.db-snapcam + .db-snapcam { margin-top: 12px; }
+.db-snaplbl { margin-bottom: 4px; color: var(--dim); font-family: var(--f-label); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; }
