@@ -91,6 +91,25 @@ def test_retrigger_only_after_leaving():
     assert events[0][1]["track"] == events[1][1]["track"]  # тот же трек, перевзвод после ухода от линии
 
 
+def test_new_track_of_the_same_person_does_not_repeat_the_alarm():
+    """Ночью сеть теряет замершего у капота на несколько секунд: трек закрылся, вернувшаяся детекция — новый трек
+    там же. Тревога не повторяется (живой прогон 27.10); ушёл совсем и через 20 с подошёл снова — тревога."""
+    def script(t):
+        if t <= 7:
+            return approacher(t)
+        if t <= 11:
+            return []  # потерян 4 с — трек закрыт
+        if t <= 20:
+            return approacher(t - 11)  # «новый» трек: снова растёт и у линии
+        if t <= 40:
+            return []
+        return approacher(t - 40)
+
+    events, _ = drive(script, t_end=50)
+    assert [round(t) for t, _ in events] == [5, 45]
+    assert events[0][1]["track"] != events[1][1]["track"]
+
+
 def test_missed_detections_keep_the_track():
     def script(t):
         if int(t * 2) % 3 == 1:

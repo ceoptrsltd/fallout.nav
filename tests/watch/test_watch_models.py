@@ -1,8 +1,10 @@
-"""Модели (fnav/watch/models): загрузка, пробный прогон, декодирование NanoDet и NMS, проверка точек лица."""
+"""Модели (fnav/watch/models): загрузка (NCNN, запасной OpenCV), пробный прогон, декодирование NanoDet и NMS,
+проверка точек лица."""
 
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 
 import numpy as np
 import pytest
@@ -12,7 +14,9 @@ from fnav.watch import detect
 from fnav.watch.detect import (
     MODELS_DIR,
     NANODET_FILE,
+    NANODET_NCNN,
     YUNET_FILE,
+    NanoDet,
     centre_priors,
     decode_nanodet,
     face_ok,
@@ -23,8 +27,11 @@ cv2 = pytest.importorskip("cv2")
 
 SHA256 = {  # models/README.md
     NANODET_FILE: "4f12723cce3d48e47ca92cb925ba74d97a965c069208edca660bbb9f7ce2c610",
+    NANODET_NCNN + ".param": "c0b49ca9f97e48e495ae72b5de131aca9065a4a5fbc76c0ef977d95671c0759c",
+    NANODET_NCNN + ".bin": "84ceb4cd5b0f51272a92de8af122506ef8d314a3d39bd2781faa2584cda30a44",
     YUNET_FILE: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
 }
+needs_ncnn = pytest.mark.skipif(importlib.util.find_spec("ncnn") is None, reason="ncnn")
 have_models = all((MODELS_DIR / f).is_file() for f in SHA256)
 needs_models = pytest.mark.skipif(not have_models, reason="models are not in fnav/watch/models")
 
@@ -41,17 +48,41 @@ def test_model_files_are_intact():
 
 
 @needs_models
+@needs_ncnn
 def test_smoke_inference(detectors):
+    """Основной детектор людей — NanoDet-Plus-m-1.5x 416 через NCNN (имя файла с точкой — «1.5x»)."""
     nd, yn = detectors
+    assert nd.name == "NanoDet-Plus-m-1.5x 416 (NCNN)" and nd.net.opt.num_threads == 1
     blank = np.full((576, 768, 3), 90, np.uint8)
     assert nd.detect(blank) == []
     assert yn.detect(blank) == []
+    out = nd.forward(blank)
+    assert out.shape == (3598, 112)  # 52² + 26² + 13² + 7² ячеек при 416
+    assert 0.0 <= out[:, :80].min() and out[:, :80].max() <= 1.0  # классы уже после sigmoid
+    assert cv2.getNumThreads() == 1
+
+
+@needs_models
+def test_fallback_opencv_detector(monkeypatch, tmp_path, caplog):
+    """Нет пакета ncnn или файлов модели — запасной NanoDet-Plus-m 320 через OpenCV DNN."""
+    nd = NanoDet()
+    blank = np.full((576, 768, 3), 90, np.uint8)
+    assert nd.detect(blank) == []
     blob, _, _ = nd._input(blank)
     nd.net.setInput(blob)
     out = nd.net.forward()
     assert out.shape == (1, 2125, 112)
-    assert 0.0 <= out[0, :, :80].min() and out[0, :, :80].max() <= 1.0  # классы уже после sigmoid
-    assert cv2.getNumThreads() == 1
+    assert 0.0 <= out[0, :, :80].min() and out[0, :, :80].max() <= 1.0
+
+    def no_ncnn(*_a, **_k):
+        raise ImportError("No module named 'ncnn'")
+
+    monkeypatch.setattr(detect, "NanoDetNcnn", no_ncnn)
+    assert isinstance(detect.person_detector(), NanoDet) and "ncnn package is missing" in caplog.text
+    monkeypatch.undo()
+    (tmp_path / NANODET_FILE).write_bytes((MODELS_DIR / NANODET_FILE).read_bytes())  # без файлов NCNN
+    if importlib.util.find_spec("ncnn") is not None:
+        assert isinstance(detect.person_detector(tmp_path), NanoDet) and "no NCNN model" in caplog.text
 
 
 def test_nanodet_decode_geometry():

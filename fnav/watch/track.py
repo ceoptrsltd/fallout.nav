@@ -33,6 +33,8 @@ LINE_HYST = 0.03  # ушёл от линии: нижний край выше л�
 REARM_AWAY_S = 3.0  # ушёл от линии на столько — может сработать снова
 REARM_S = 120.0
 HOLD_UNSEEN_S = 1.5  # у линии, но детектор потерял: удержание засчитывается, если видели не дольше столько назад
+SAME_VISIT_GAP_S = 10.0  # новый трек появился так скоро после того, как пропал сработавший, и там же — тот же человек
+SAME_VISIT_DIST = 1.0  # «там же»: центры рамок не дальше столько высот рамки
 
 
 @dataclass
@@ -73,9 +75,11 @@ class Tracker:
         self._next = 1
         self.interval = 0.5  # средний интервал детектора людей (для окон правил)
         self.aspect = ASPECT  # ширина/высота кадра (задняя камера — 16:9)
+        self.fired_track: Track | None = None  # трек последней тревоги approach (или продливший её)
 
     def reset(self) -> None:
         self.tracks.clear()
+        self.fired_track = None
 
     def confirmed(self, t: float) -> list[Track]:
         lost = max(LOST_S, 3 * self.interval)
@@ -126,7 +130,9 @@ class Tracker:
                 # был у линии при последней детекции совсем недавно
                 if (tr.hold_since is not None and tr.fired_t is None and t - tr.last_t <= HOLD_UNSEEN_S
                         and t - tr.hold_since >= hold_s):
-                    fired.append((tr, self._fire(tr, t)))
+                    data = self._fire(tr, t)
+                    if data:
+                        fired.append((tr, data))
                 continue
             hs = [b[3] - b[1] for _, b, _ in tr.hist]
             tr.growth = hs[-1] / max(1e-3, min(hs))
@@ -154,12 +160,29 @@ class Tracker:
             if tr.hold_since is None:
                 tr.hold_since = t
             if t - tr.hold_since >= hold_s:
-                fired.append((tr, self._fire(tr, t)))
+                data = self._fire(tr, t)
+                if data:
+                    fired.append((tr, data))
         return fired
 
-    @staticmethod
-    def _fire(tr: Track, t: float) -> dict:
+    def _same_visit(self, tr: Track, t: float) -> bool:
+        """Тревога approach была только что и там же: ночью сеть теряет замершего у капота человека на пару секунд,
+        трек закрывается, а вернувшаяся детекция — новый трек того же человека (живой прогон 27.10: второй «подход»
+        через 13 с). Новый трек, появившийся не позже SAME_VISIT_GAP_S после того, как пропал сработавший, и там же,
+        тревогу не повторяет, а продлевает ту. Тот же трек — своё правило перевзвода (ушёл от линии и вернулся);
+        ушёл совсем и подошёл позже — тревога."""
+        prev = self.fired_track
+        if prev is None or prev is tr or tr.hist[0][0] - prev.last_t > SAME_VISIT_GAP_S:
+            return False
+        (px, py), (cx, cy) = _centre(prev.box, self.aspect), _centre(tr.box, self.aspect)
+        return math.hypot(cx - px, cy - py) <= SAME_VISIT_DIST * max(tr.h, 0.03)
+
+    def _fire(self, tr: Track, t: float) -> dict | None:
+        same = self._same_visit(tr, t)
         tr.fired_t = t
+        self.fired_track = tr
+        if same:
+            return None
         assert tr.hold_since is not None
         return {"track": tr.id, "height": round(tr.h, 3), "bottom": round(tr.box[3], 3),
                 "growth": round(tr.growth, 2), "held_s": round(t - tr.hold_since, 1),

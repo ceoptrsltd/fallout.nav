@@ -6,3 +6,4 @@
 *.otf binary
 *.ts binary
 *.onnx binary
+*.bin binary

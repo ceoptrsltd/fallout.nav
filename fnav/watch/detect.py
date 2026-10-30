@@ -1,4 +1,9 @@
-"""Нейросети через OpenCV DNN, один поток: NanoDet-Plus-m 320 (люди, класс COCO 0) и YuNet 2023mar (лица).
+"""Нейросети, один поток. Люди — NanoDet-Plus-m-1.5x 416 через NCNN (пакет ncnn), а без него — запасной
+NanoDet-Plus-m 320 через OpenCV DNN; лица — YuNet 2023mar через OpenCV.
+
+Почему 1.5x 416 (сравнение 30.10 на записях охраны, docs/contracts/vision.md «Выбор детектора людей»): ночью тёмный
+силуэт у капота он видит вдвое чаще, чем m 320 (61 % кадров против 29 % при пороге 0,4), без ложных людей в пустых
+записях; на CM4 — ~450 мс на кадр в NCNN (m 320 в OpenCV — ~215 мс).
 
 Модели — fnav/watch/models (README.md: источники, лицензии, sha256). Декодирование NanoDet и NMS — свои, как в
 nanodet/model/head/nanodet_plus_head.py: выход (1, N, 80 + 4·8), классы уже после sigmoid; рамка — расстояния
@@ -16,7 +21,9 @@ import numpy as np
 log = logging.getLogger("fnav.watch.detect")
 
 MODELS_DIR = Path(__file__).resolve().parent / "models"
-NANODET_FILE = "nanodet-plus-m_320.onnx"
+NANODET_NCNN = "nanodet-plus-m-1.5x_416_ncnn"  # основной: .param + .bin (NCNN)
+NANODET_NCNN_SIZE = 416
+NANODET_FILE = "nanodet-plus-m_320.onnx"  # запасной (нет пакета ncnn): OpenCV DNN
 YUNET_FILE = "face_detection_yunet_2023mar.onnx"
 
 Box = tuple[float, float, float, float]  # x1, y1, x2, y2 — доли кадра
@@ -68,14 +75,15 @@ def nms(boxes: np.ndarray, scores: np.ndarray, iou: float) -> list[int]:
 
 
 class NanoDet:
-    """Детектор людей. fit="stretch" — кадр 4:3 растягивается в 320×320 (так модель обучена: keep_ratio False),
-    "letterbox" — с полями."""
+    """Детектор людей через OpenCV DNN (ONNX) — запасной. fit="stretch" — кадр 4:3 растягивается в квадрат входа
+    (так модель обучена: keep_ratio False), "letterbox" — с полями."""
 
     SIZE = 320
     STRIDES = (8, 16, 32, 64)
     REG_MAX = 7
     MEAN = (103.53, 116.28, 123.675)  # BGR
     STD = 57.63  # среднее из (57.375, 57.12, 58.395): разница < 1,2 %
+    name = "NanoDet-Plus-m 320 (OpenCV DNN)"
 
     def __init__(self, path: Path | None = None, *, conf: float = 0.4, iou: float = 0.5,
                  fit: str = "stretch") -> None:
@@ -115,6 +123,71 @@ class NanoDet:
     def decode(self, out: np.ndarray, sx: float, sy: float) -> list[Det]:
         self.vehicles = decode_nanodet(out, self.priors, self.conf, self.iou, sx, sy, VEHICLES)
         return decode_nanodet(out, self.priors, self.conf, self.iou, sx, sy)
+
+
+class NanoDetNcnn:
+    """Детектор людей через NCNN (основной): NanoDet-Plus-m-1.5x 416, один поток, fp32 (у A72 нет fp16-арифметики;
+    bf16-хранение быстрее на ~6 %, но сдвигает оценки до 0,03 — не берём). Вход — кадр, растянутый в size×size
+    (INTER_AREA), BGR, нормировка по каналам внутри NCNN; выход — тот же (N, 112), что у ONNX."""
+
+    STRIDES = (8, 16, 32, 64)
+    MEAN = (103.53, 116.28, 123.675)  # BGR
+    NORM = (1 / 57.375, 1 / 57.12, 1 / 58.395)
+
+    def __init__(self, stem: Path | None = None, *, size: int = NANODET_NCNN_SIZE, conf: float = 0.4,
+                 iou: float = 0.5) -> None:
+        import ncnn
+
+        self.stem = Path(stem) if stem else MODELS_DIR / NANODET_NCNN
+        self.net = ncnn.Net()
+        self.net.opt.num_threads = 1  # охрана не должна отнимать ядра у записи и экрана
+        self.net.opt.use_vulkan_compute = False
+        # имя с точкой («1.5x») — не with_suffix
+        param, binf = self.stem.parent / (self.stem.name + ".param"), self.stem.parent / (self.stem.name + ".bin")
+        if not param.is_file() or not binf.is_file():
+            raise OSError(f"no NCNN model {self.stem}")
+        if self.net.load_param(str(param)) or self.net.load_model(str(binf)):
+            raise OSError(f"cannot load NCNN model {self.stem}")
+        self._ncnn = ncnn
+        self.size, self.conf, self.iou = size, conf, iou
+        self.priors = centre_priors(size, self.STRIDES)
+        self.name = f"NanoDet-Plus-m-1.5x {size} (NCNN)"
+        self.vehicles: list[Det] = []
+
+    def forward(self, bgr: np.ndarray) -> np.ndarray:
+        import cv2
+
+        ncnn = self._ncnn
+        img = np.ascontiguousarray(cv2.resize(bgr, (self.size, self.size), interpolation=cv2.INTER_AREA))
+        mat = ncnn.Mat.from_pixels(img, ncnn.Mat.PixelType.PIXEL_BGR, self.size, self.size)
+        mat.substract_mean_normalize(list(self.MEAN), list(self.NORM))
+        ex = self.net.create_extractor()
+        ex.input("data", mat)
+        ret, out = ex.extract("output")
+        if ret != 0:
+            raise RuntimeError(f"NCNN extract failed ({ret})")
+        return np.array(out)  # (N, 112)
+
+    def detect(self, bgr: np.ndarray) -> list[Det]:
+        out = self.forward(bgr)
+        k = 1 / self.size
+        self.vehicles = decode_nanodet(out, self.priors, self.conf, self.iou, k, k, VEHICLES)
+        return decode_nanodet(out, self.priors, self.conf, self.iou, k, k)
+
+
+def person_detector(models_dir: Path | None = None) -> NanoDetNcnn | NanoDet:
+    """Основной детектор людей (NCNN), а если пакета ncnn нет или модель не загрузилась — запасной (OpenCV)."""
+    d = Path(models_dir) if models_dir else MODELS_DIR
+    try:
+        det: NanoDetNcnn | NanoDet = NanoDetNcnn(d / NANODET_NCNN)
+    except ImportError:
+        log.warning("people: the ncnn package is missing - fallback %s", NanoDet.name)
+        det = NanoDet(d / NANODET_FILE)
+    except (OSError, RuntimeError) as e:
+        log.warning("people: %s - fallback %s", e, NanoDet.name)
+        det = NanoDet(d / NANODET_FILE)
+    log.info("people: %s", det.name)
+    return det
 
 
 def centre_priors(size: int = 320, strides: tuple[int, ...] = (8, 16, 32, 64)) -> np.ndarray:
@@ -222,7 +295,7 @@ class YuNet:
         return res
 
 
-def load_detectors(models_dir: Path | None = None) -> tuple[NanoDet, YuNet]:
+def load_detectors(models_dir: Path | None = None) -> tuple[NanoDetNcnn | NanoDet, YuNet]:
     init_cv()
     d = Path(models_dir) if models_dir else MODELS_DIR
-    return NanoDet(d / NANODET_FILE), YuNet(d / YUNET_FILE)
+    return person_detector(d), YuNet(d / YUNET_FILE)
