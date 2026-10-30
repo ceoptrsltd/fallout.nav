@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 from core_helpers import login, running_app
@@ -23,7 +24,8 @@ def _ts(s: str) -> float:
 
 async def test_marklog_validates_sorts_persists_and_prunes(tmp_path, monkeypatch):
     now = [_ts("2026-10-30T20:00:00")]
-    log = MarkLog(tmp_path / "vision_marks.json", clock=lambda: now[0])
+    path = tmp_path / "vision_marks.jsonl"
+    log = MarkLog(path, clock=lambda: now[0])
     await log.start(background=False)
     assert log.items == []
     a = log.add({"what": "vehicle", "start": now[0] - 30, "dur_s": 12.34, "camera": "front"}, now[0])
@@ -39,20 +41,46 @@ async def test_marklog_validates_sorts_persists_and_prunes(tmp_path, monkeypatch
     assert [m["kind"] for m in log.latest(2)] == ["person", "vehicle"]
     assert log.counts(now[0] - 45) == {"motion": 0, "vehicle": 1, "person": 1}
 
-    await log.stop()  # при остановке — на диск
-    again = MarkLog(tmp_path / "vision_marks.json", clock=lambda: now[0])
+    await log.flush()  # дописывает строки в конец
+    assert len(path.read_text().splitlines()) == 3
+    log.add({"what": "motion", "start": now[0]}, now[0])
+    await log.stop()  # при остановке — тоже
+    lines = path.read_text().splitlines()
+    assert len(lines) == 4 and json.loads(lines[-1])["kind"] == "motion"
+    path.write_text(path.read_text() + '{"ts": 17933')  # питание пропало посреди записи — строка оборвана
+    again = MarkLog(path, clock=lambda: now[0])
     await again.start(background=False)
     assert again.items == log.items
+    again.add({"what": "person", "start": now[0] - 1}, now[0])
+    await again.flush()  # оборванный хвост: файл переписан начисто, новая отметка не склеилась с обрывком
+    assert [json.loads(x)["ts"] for x in path.read_text().splitlines()] == [m["ts"] for m in again.items]
+    del again.items[-2], again._ts[-2]  # как было: лишняя «person» только для проверки склейки
 
     now[0] += marks_mod.MARKS_MAX_AGE_S - 25  # первые две отметки старше 30 дней
     again.add({"what": "motion", "start": now[0]}, now[0])
-    assert [m["kind"] for m in again.items] == ["person", "motion"]
+    assert [m["kind"] for m in again.items] == ["person", "motion", "motion"]
     monkeypatch.setattr(marks_mod, "MARKS_MAX", 2)
     again.add({"what": "vehicle", "start": now[0]}, now[0])
     assert [m["kind"] for m in again.items] == ["motion", "vehicle"]
+    await again.flush()  # устаревших строк мало — только дописать
+    assert len(path.read_text().splitlines()) == 7
+    monkeypatch.setattr(marks_mod, "COMPACT_AT", 3)
+    await again.flush()  # набралось — переписать целиком
+    assert [json.loads(x)["kind"] for x in path.read_text().splitlines()] == ["motion", "vehicle"]
     again.clear()
     await again.flush()
-    assert json.loads((tmp_path / "vision_marks.json").read_text()) == []
+    assert path.read_text() == ""
+
+
+async def test_marklog_moves_the_first_version_file(tmp_path):
+    now = _ts("2026-10-30T20:00:00")
+    legacy = tmp_path / "vision_marks.json"
+    legacy.write_text(json.dumps([{"ts": now - 5, "kind": "vehicle", "camera": "front", "dur_s": 3.0}]))
+    log = MarkLog(tmp_path / "vision_marks.jsonl", clock=lambda: now)
+    await log.start(background=False)
+    assert [m["kind"] for m in log.items] == ["vehicle"]
+    await log.flush()
+    assert not legacy.exists() and len((tmp_path / "vision_marks.jsonl").read_text().splitlines()) == 1
 
 
 async def test_client_sends_marks_to_on_mark_not_to_the_alarm():
@@ -80,9 +108,7 @@ def test_marks_go_to_recordings_of_their_camera():
     items = [{"path": "2026-10-30/2026-10-30_19-59-41.ts", "start": "2026-10-30T19:59:41", "duration_s": 600.0},
              {"path": "rear/2026-10-30/2026-10-30_19-59-40.ts", "start": "2026-10-30T19:59:40", "duration_s": 600.0},
              {"path": "nosync/boot-1_0001.ts", "start": None, "duration_s": 60.0}]
-    log = MarkLog.__new__(MarkLog)
-    log.items, log._ts = [], []
-    log.clock = lambda: t0 + 700
+    log = MarkLog(Path("unused.jsonl"), clock=lambda: t0 + 700)  # без start: только в памяти
     log.add({"what": "vehicle", "start": t0 + 125.0, "dur_s": 9.0, "camera": "front"}, t0 + 140)
     log.add({"what": "motion", "start": t0 + 300.0, "dur_s": 4.0, "camera": "rear"}, t0 + 320)
     attach_marks(items, log.between, now=t0 + 700)

@@ -172,9 +172,11 @@ fnav-watch читает `fnav.paths.settings_file()` сам (как fnav-camera)
 Выключено `alarm.vision.marks` — отметок нет.
 
 Ядро (`VisionClient` → `fnav/core/marks.py` `MarkLog`): не журнал охраны, не push, не аварийка, не защита записи,
-не снимок. Хранится `data_dir/vision_marks.json` — `[{ts, kind, camera, dur_s}]` по времени (`ts` = `start`), последние
-5000 и не старше 30 дней, на диск — не чаще раза в 30 с и при остановке. Отметки задней принимаются, только пока
-включено `alarm.vision.rear`.
+не снимок. Хранится `data_dir/vision_marks.jsonl` — строка JSON `{ts, kind, camera, dur_s}` на отметку (`ts` =
+`start`); в памяти — последние 5000 и не старше 30 дней. Карта памяти: новые строки дописываются в конец (не чаще раза
+в 30 с и при остановке, с fsync), файл переписывается целиком, только когда в нём ≥ 1000 устаревших строк или отметки
+очистили; оборванная последняя строка (пропало питание) при чтении пропускается. Отметки задней принимаются, только
+пока включено `alarm.vision.rear`.
 
 - `GET /api/recordings` — у каждой записи `marks: [{kind, ts, offset_s, dur_s}]` (только своей камеры).
 - `GET /api/alarm/marks?limit=50` (≤ 500) → `{"marks": [{ts, kind, camera, dur_s, rec: {path, offset_s} | null}],

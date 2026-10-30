@@ -1,17 +1,21 @@
 """Отметки движения с камер на охране (fnav-watch, docs/contracts/vision.md «Отметки»): без тревоги — не журнал
 охраны, не push, не аварийка, не защита записи; серые метки на шкале записи и свёрнутый список на странице охраны.
 
-data_dir/vision_marks.json — список {ts, kind, camera, dur_s} по времени (ts — начало куска движения, unix; kind —
-"motion" | "vehicle" | "person"): последние MARKS_MAX и не старше MARKS_MAX_AGE_S. На диск — не чаще раза в
-SAVE_EVERY_S (карта памяти) и при остановке.
+data_dir/vision_marks.jsonl — по строке JSON на отметку {ts, kind, camera, dur_s} (ts — начало куска движения, unix;
+kind — "motion" | "vehicle" | "person"). В памяти — последние MARKS_MAX и не старше MARKS_MAX_AGE_S, по времени.
+Карта памяти: новые отметки дописываются в конец файла (не чаще раза в SAVE_EVERY_S и при остановке), целиком файл
+переписывается, только когда в нём набралось COMPACT_AT устаревших строк или отметки очистили. Оборванная
+последняя строка (питание пропало при записи) при чтении пропускается.
 """
 
 from __future__ import annotations
 
 import asyncio
 import bisect
+import contextlib
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -26,12 +30,26 @@ CAMERAS = ("front", "rear")
 MARKS_MAX = 5000
 MARKS_MAX_AGE_S = 30 * 86400
 SAVE_EVERY_S = 30.0
+COMPACT_AT = 1000  # столько строк файла уже не в памяти (старые) — переписать файл
 MAX_SKEW_S = 3600.0  # начало куска — не раньше столько до события (кривые данные — время события)
 MAX_DUR_S = 600.0
+LEGACY_NAME = "vision_marks.json"  # первая версия: JSON-список целиком
 
 
 def _num(v: object) -> float | None:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _clean(m: object) -> dict | None:
+    if not (isinstance(m, dict) and _num(m.get("ts")) is not None and m.get("kind") in MARK_KINDS
+            and m.get("camera") in CAMERAS):
+        return None
+    return {"ts": float(m["ts"]), "kind": m["kind"], "camera": m["camera"],
+            "dur_s": max(0.0, min(MAX_DUR_S, _num(m.get("dur_s")) or 0.0))}
+
+
+def _line(m: dict) -> str:
+    return json.dumps(m, separators=(",", ":")) + "\n"
 
 
 class MarkLog:
@@ -40,7 +58,10 @@ class MarkLog:
         self.clock = clock
         self.items: list[dict] = []  # по ts
         self._ts: list[float] = []
-        self._dirty = False
+        self._pending: list[dict] = []  # ещё не дописаны в файл
+        self._stale = 0  # строк в файле, которых уже нет в памяти
+        self._rewrite = False  # файл переписать целиком (очистили, много старых строк, перенос со старого формата)
+        self._legacy: Path | None = None
         self._task: asyncio.Task | None = None
 
     # ── жизненный цикл ──
@@ -55,22 +76,35 @@ class MarkLog:
         await self.flush()
 
     def _load(self) -> None:
+        raw: list = []
+        lines = 0
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            with open(self.path, encoding="utf-8") as f:
+                for ln in f:
+                    if not ln.strip():
+                        continue
+                    lines += 1
+                    try:
+                        raw.append(json.loads(ln))
+                    except ValueError:
+                        self._rewrite = True  # оборванная строка: дописывать после неё нельзя — склеится
+                    if not ln.endswith("\n"):
+                        self._rewrite = True
         except FileNotFoundError:
-            raw = []
-        except (OSError, ValueError) as e:
+            pass
+        except OSError as e:
             log.warning("marks: cannot read %s: %s", self.path, e)
-            raw = []
-        items = []
-        for m in raw if isinstance(raw, list) else []:
-            if (isinstance(m, dict) and _num(m.get("ts")) is not None and m.get("kind") in MARK_KINDS
-                    and m.get("camera") in CAMERAS):
-                items.append({"ts": float(m["ts"]), "kind": m["kind"], "camera": m["camera"],
-                              "dur_s": max(0.0, min(MAX_DUR_S, _num(m.get("dur_s")) or 0.0))})
+        legacy = self.path.with_name(LEGACY_NAME)
+        if legacy.is_file():
+            with contextlib.suppress(OSError, ValueError):
+                old = json.loads(legacy.read_text(encoding="utf-8"))
+                raw += old if isinstance(old, list) else []
+            self._legacy, self._rewrite = legacy, True
+        items = [c for c in map(_clean, raw) if c is not None]
         items.sort(key=lambda m: m["ts"])
         self.items = items
         self._ts = [m["ts"] for m in items]
+        self._stale = max(0, lines - len(items))  # битые строки тоже — до переписывания
         self._prune()
 
     async def _saver(self) -> None:
@@ -82,15 +116,35 @@ class MarkLog:
                 log.exception("marks: save")
 
     async def flush(self) -> None:
-        if not self._dirty:
+        if self._rewrite or self._stale >= COMPACT_AT:
+            pending, self._pending, self._rewrite = self._pending, [], False
+            stale, self._stale = self._stale, 0
+            try:
+                await asyncio.to_thread(atomic_write_text, self.path, "".join(map(_line, self.items)))
+            except OSError as e:
+                self._pending, self._rewrite, self._stale = pending + self._pending, True, stale
+                log.warning("marks: cannot write %s: %s", self.path, e)
+                return
+            if self._legacy is not None:
+                with contextlib.suppress(OSError):
+                    self._legacy.unlink()
+                self._legacy = None
             return
-        self._dirty = False
-        data = json.dumps(self.items, separators=(",", ":"))
+        if not self._pending:
+            return
+        pending, self._pending = self._pending, []
         try:
-            await asyncio.to_thread(atomic_write_text, self.path, data)
+            await asyncio.to_thread(self._append, pending)
         except OSError as e:
-            self._dirty = True
+            self._pending = pending + self._pending
             log.warning("marks: cannot write %s: %s", self.path, e)
+
+    def _append(self, ms: list[dict]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, "a", encoding="utf-8", newline="\n") as f:
+            f.write("".join(map(_line, ms)))
+            f.flush()
+            os.fsync(f.fileno())
 
     # ── данные ──
     def add(self, data: dict, ts: float | None = None) -> dict | None:
@@ -108,17 +162,20 @@ class MarkLog:
         i = bisect.bisect_right(self._ts, m["ts"])
         self.items.insert(i, m)
         self._ts.insert(i, m["ts"])
+        self._pending.append(m)
         self._prune()
-        self._dirty = True
         return m
 
     def _prune(self) -> None:
         cut = self.clock() - MARKS_MAX_AGE_S
         n = max(bisect.bisect_left(self._ts, cut), len(self.items) - MARKS_MAX)
         if n > 0:
+            gone = {id(m) for m in self.items[:n]}
+            pending = [m for m in self._pending if id(m) not in gone]  # не дописанные — и не нужны
+            self._stale += n - (len(self._pending) - len(pending))  # в файле — только дописанные
+            self._pending = pending
             del self.items[:n]
             del self._ts[:n]
-            self._dirty = True
 
     def between(self, t0: float, t1: float, camera: str | None = None) -> list[dict]:
         lo, hi = bisect.bisect_left(self._ts, t0), bisect.bisect_right(self._ts, t1)
@@ -138,4 +195,6 @@ class MarkLog:
     def clear(self) -> None:
         self.items.clear()
         self._ts.clear()
-        self._dirty = True
+        self._pending.clear()
+        self._stale = 0
+        self._rewrite = True

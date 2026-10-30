@@ -178,7 +178,7 @@ class Core:
         self.alarm.protect_rear = self._protect_rear_quiet
         self.alarm.snapshot_rear = self._snapshot_rear_quiet
         # отметки движения с камер (без тревоги) — серые метки на шкале записей
-        self.marks = MarkLog(paths.data_dir() / "vision_marks.json")
+        self.marks = MarkLog(paths.data_dir() / "vision_marks.jsonl")
         self.vision = VisionClient(get_settings=lambda: self.store.get().alarm.vision,
                                    get_armed=lambda: self.alarm.state in ("armed", "triggered"),
                                    on_event=self.alarm.vision_event, base_url=opts.watch_url,
