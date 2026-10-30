@@ -291,13 +291,18 @@ LOITER_VEHICLE_MAX_H = 0.8  # рамка во весь кадр — это са�
 LOITER_PERSON_HITS = 3  # трек «человек» — столько попаданий детектора (одиночная ложная рамка — нет)
 LOITER_PERSON_LINK_S = 5.0  # человек, увиденный за столько до пятна и рядом по x, — это он (сеть потеряла силуэт)
 LOITER_PERSON_DX = 0.25  # «рядом по x»: центры не дальше столько (в высотах кадра — как y)
+LOITER_PERSON_MIN_H = 0.15  # человек «у фургона», а не вдалеке: рамка не ниже столько…
+LOITER_PERSON_MARGIN = 0.06  # …и ноги не выше ближней линии больше чем на столько
+LOITER_PERSON_SCALE = 2.0  # пятно выше человека больше чем во столько раз — не он (свет на брусчатке, 30.10 22:31)
 
 
 class LoiterRule:
     """Человек стоит у фургона около центра ≥ loiter_s. Свидетельство на кадре — трек человека рядом (низ рамки у
     ближней линии) или крупное «живое» тёмное пятно движения там же: ночью нейросеть теряет силуэт против фонаря,
     а детектор движения держит его (внутри переднего плана фон почти не учится). Тревога — только если за это
-    присутствие нейросеть видела человека (трек ≥ LOITER_PERSON_HITS попаданий рядом или за LOITER_PERSON_LINK_S до
+    присутствие нейросеть видела человека у фургона (крупного, ногами у ближней линии, по размеру сравнимого с
+    пятном: далёкий прохожий на той же вертикали не в счёт — живой случай 30.10 22:31, свет на брусчатке дал пятно в
+    20 % кадра) (трек ≥ LOITER_PERSON_HITS попаданий рядом или за LOITER_PERSON_LINK_S до
     пятна около того же места): одно пятно — свет фар по брусчатке, тень, выезжающая машина — не тревога (живой
     случай 30.10: каждые 5–15 минут по ночной парковке). Прохожие отсеиваются скоростью вбок и тем, что проходят
     быстрее loiter_s; стоящие машины и предметы — тем, что не шевелятся; фары — сбросом фона в детекторе движения
@@ -321,7 +326,7 @@ class LoiterRule:
         self.source = ""
         self.vehicles: list[tuple[float, Box]] = []  # (t, рамка) машин
         self.person = False  # за это присутствие нейросеть видела человека
-        self.people: deque[tuple[float, float]] = deque()  # (t, центр по x в высотах кадра) треков-людей
+        self.people: deque[tuple[float, float, float, float]] = deque()  # (t, центр x в высотах кадра, h, низ)
 
     @property
     def present(self) -> bool:
@@ -372,21 +377,23 @@ class LoiterRule:
             return ("motion", b.box)
         return None
 
-    def _note_people(self, t: float, tracks: list[Track]) -> None:
-        for tr in tracks:  # свежие детекции (на этом кадре) подтверждённых треков: когда и где видели человека
-            if tr.last_t == t and len(tr.hist) >= LOITER_PERSON_HITS:
-                self.people.append((t, _centre(tr.box, self.aspect)[0]))
+    def _note_people(self, t: float, tracks: list[Track], near_line: float) -> None:
+        for tr in tracks:  # свежие детекции (на этом кадре) подтверждённых треков у фургона: когда и где
+            if (tr.last_t == t and len(tr.hist) >= LOITER_PERSON_HITS and tr.h >= LOITER_PERSON_MIN_H
+                    and tr.box[3] >= near_line - LOITER_PERSON_MARGIN):
+                self.people.append((t, _centre(tr.box, self.aspect)[0], tr.h, tr.box[3]))
         while self.people and t - self.people[0][0] > LOITER_PERSON_LINK_S:
             self.people.popleft()
 
     def _person_near(self, box: Box) -> bool:
         cx = _centre(box, self.aspect)[0]
-        return any(abs(px - cx) <= LOITER_PERSON_DX for _, px in self.people)
+        h = box[3] - box[1]
+        return any(abs(px - cx) <= LOITER_PERSON_DX and h <= LOITER_PERSON_SCALE * ph for _, px, ph, _ in self.people)
 
     def update(self, t: float, details, tracks: list[Track], near_line: float, hold_s: float) -> dict | None:
         dt = min(1.0, t - self.last_t) if self.last_t is not None else 0.0
         self.last_t = t
-        self._note_people(t, tracks)
+        self._note_people(t, tracks, near_line)
         cand = self._candidate(t, details, tracks, near_line)
         if cand is not None:
             box = cand[1]

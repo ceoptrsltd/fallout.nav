@@ -24,13 +24,14 @@ def blob(cx=0.45, bottom=0.67, h=0.33, w=0.18, active=0.2, bright=0.0, level=50.
     return Blob((cx - w / 2, bottom - h, cx + w / 2, bottom), fill, active, bright, level)
 
 
-def seen(cx=0.45, since=0.0, until=1e9, when=None):
-    """Нейросеть видит человека вдалеке (низко в кадре его нет — не «рядом») около cx: tracks(t) для drive."""
+def seen(cx=0.45, since=0.0, until=1e9, when=None, bottom=0.56, h=0.18):
+    """Нейросеть видит человека у фургона около cx — ногами у линии, но ещё не «рядом» для свидетельства (рамка
+    ниже 0,2: пока подходит): tracks(t) для drive."""
     tr = Track(1)
 
     def tracks(t):
         if since <= t <= until and (when is None or when(t)):
-            tr.hist.append((t, person(cx, 0.5, 0.15).box, 0.8))
+            tr.hist.append((t, person(cx, bottom, h).box, 0.8))
         return [tr] if tr.hist else []
 
     return tracks
@@ -77,6 +78,16 @@ def test_motion_without_a_person_is_not_an_alarm():
 def test_person_link(start, cx, since, until, fires):
     out = drive(lambda t: [jiggle(t)] if start <= t else [], tracks=seen(cx, since, until))
     assert bool(out) is fires
+
+
+@pytest.mark.parametrize("bottom, h, blob_h", [
+    (0.49, 0.12, 0.33),  # 30.10 22:31: прохожий вдалеке на той же вертикали, у капота — пятно света
+    (0.5, 0.18, 0.33),  # крупный, но ноги далеко выше линии
+    (0.58, 0.16, 0.42),  # у линии, но пятно втрое выше его — не он
+])
+def test_a_far_or_small_person_does_not_confirm_a_blob(bottom, h, blob_h):
+    out = drive(lambda t: [jiggle(t, h=blob_h)] if 2 <= t else [], tracks=seen(since=0.0, until=30.0, bottom=bottom, h=h))
+    assert out == []
 
 
 def test_clock_starts_when_the_person_arrived():
@@ -192,7 +203,7 @@ def _silhouette_run(sees, t_end=65.0, **settings):
 
     rng = np.random.default_rng(5)
     base = scene(rng, 0).astype(np.float32) + 60
-    p = StubPerson(lambda t: [person(0.46, 0.5, 0.15)] if sees(t) else [])
+    p = StubPerson(lambda t: [person(0.46, 0.57, 0.18)] if sees(t) else [])
     w = Watcher(p, None, VisionSettings(enabled=True, face=False, **{"loiter_s": 5.0, **settings}))
     events = []
     t = 0.0
