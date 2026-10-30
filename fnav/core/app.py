@@ -775,12 +775,13 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
         return await status()
 
     @app.get("/api/alarm/snapshot/{event_id}.jpg")
-    async def alarm_snapshot(event_id: str):
-        """Снимок камеры в момент события журнала (если камера работала); `<id>-rear.jpg` — задней."""
+    async def alarm_snapshot(event_id: str, thumb: int = 0):
+        """Снимок камеры в момент события журнала (если камера работала); `<id>-rear.jpg` — задней;
+        `?thumb=1` — миниатюра для списков (~5 КБ)."""
         camera = "front"
         if event_id.endswith("-rear"):
             event_id, camera = event_id[:-5], "rear"
-        p = core.alarm.snapshot_path(event_id, camera)
+        p = await core.alarm.snapshot_thumb(event_id, camera) if thumb else core.alarm.snapshot_path(event_id, camera)
         if p is None:
             return _err(404, "No snapshot for this event")
         return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})

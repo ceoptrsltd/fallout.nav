@@ -7,7 +7,7 @@ import { h, icon, clear, isNum } from "../dom.js";
 import { api, appUrl, errText } from "../api.js";
 import { SettingsForm } from "../form.js";
 import { store, on, applySettings } from "../store.js";
-import { toast, banner, badge, confirmDialog, modal, poll } from "../ui.js";
+import { toast, banner, badge, confirmDialog, poll } from "../ui.js";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logTicks, impactToSlider, sliderToImpact,
   fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, pushErrorText, toUnix,
@@ -15,7 +15,8 @@ import {
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
 import { recLink } from "../rec-play.js";
-import { eventExtras, snapPath } from "../dash-fmt.js";
+import { eventExtras } from "../dash-fmt.js";
+import { eventThumb } from "../snap-view.js";
 import * as push from "../push.js";
 
 const POLL_MS = 1500;
@@ -284,6 +285,40 @@ export function mount(root) {
   const testBtn = h("button.btn.sm", { type: "button", onclick: () => sendTestAlarm() }, icon("bell"), "Send test alarm");
   const clearBtn = h("button.btn.sm.danger", { type: "button", onclick: () => clearEvents() }, icon("trash"), "Clear");
 
+  // The log holds up to 200 events (100 of them with snapshots): rows are built 30 at a time ("Show more"), a row
+  // that did not change is kept as it is (its thumbnail is not fetched again), thumbnails are the device's ~5 KB
+  // copies and load only when they scroll into view — a phone's web view stays light.
+  const EV_PAGE = 30;
+  let evShown = EV_PAGE;
+  const evRows = new Map(); // event id → {sig, el}
+  const evMore = h("button.btn.sm.al-evmore", { type: "button", onclick: () => { evShown += EV_PAGE; renderEvents(true); } });
+
+  function evRow(ev, now) {
+    const ki = kindInfo(ev.kind, ev.data && ev.data.camera);
+    const link = eventLink(ev);
+    // the front camera's kept recording, and the rear's when it is on (data.segment_rear); snapshots — the thumbnail
+    const x = eventExtras(ev);
+    const segLink = (seg, text) => h("span", null, text, h("a.mono", { href: recLink(seg, ev.ts), title: "Watch from the moment of the event" }, seg));
+    return h(".al-ev." + (ki.kind || "plain"), null,
+      h("span.ic", null, icon(ki.icon)),
+      h(".txt", null,
+        h(".tt", null, ev.title || ki.label),
+        ev.body ? h(".bd", null, ev.body) : null,
+        link || x.segment || x.segmentRear ? h(".ex", null,
+          link ? h("a", { href: link.href }, link.text) : null,
+          x.segment ? segLink(x.segment, "Recording kept: ") : null,
+          x.segmentRear ? segLink(x.segmentRear, "Rear recording kept: ") : null) : null),
+      h(".side", null,
+        h(".when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, isNum(ev.ts) ? fmtWhen(ev.ts, now) : "—"),
+        eventThumb(ev)));
+  }
+
+  /** What a row shows besides its id: the snapshots and the kept recordings come a moment after the event. */
+  function evSig(ev) {
+    const x = eventExtras(ev);
+    return [ev.title, ev.body, x.snapshot, x.snapshotRear, x.segment, x.segmentRear].join("|");
+  }
+
   function renderEvents(force) {
     const list = (st && st.events) || [];
     const k = eventsKey(list);
@@ -291,33 +326,29 @@ export function mount(root) {
     evKey = k;
     evCount.textContent = list.length ? String(list.length) : "";
     clearBtn.disabled = !list.length;
-    clear(evList);
     if (!list.length) {
-      evList.append(h(".al-empty.dim", null, "No events yet."));
+      evRows.clear();
+      evShown = EV_PAGE;
+      clear(evList).append(h(".al-empty.dim", null, "No events yet."));
       return;
     }
     const now = nowS();
-    for (const ev of list) {
-      const ki = kindInfo(ev.kind, ev.data && ev.data.camera);
-      const link = eventLink(ev);
-      // the front camera's snapshot / kept recording, and the rear's when it is on (data.snapshot_rear, data.segment_rear)
-      const x = eventExtras(ev);
-      const snapLink = (cam, text) => h("a", { href: "#", onclick: (e) => { e.preventDefault(); showSnapshot(ev, cam); } }, text);
-      const segLink = (seg, text) => h("span", null, text, h("a.mono", { href: recLink(seg, ev.ts), title: "Watch from the moment of the event" }, seg));
-      evList.append(h(".al-ev." + (ki.kind || "plain"), null,
-        h("span.ic", null, icon(ki.icon)),
-        h(".txt", null,
-          h(".tt", null, ev.title || ki.label),
-          ev.body ? h(".bd", null, ev.body) : null,
-          link || x.segment || x.snapshot || x.segmentRear || x.snapshotRear ? h(".ex", null,
-            link ? h("a", { href: link.href }, link.text) : null,
-            x.snapshot ? snapLink("front", "Snapshot") : null,
-            x.snapshotRear ? snapLink("rear", "Rear snapshot") : null,
-            x.segment ? segLink(x.segment, "Recording kept: ") : null,
-            x.segmentRear ? segLink(x.segmentRear, "Rear recording kept: ") : null) : null),
-        h(".when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, isNum(ev.ts) ? fmtWhen(ev.ts, now) : "—"),
-      ));
-    }
+    const shown = list.slice(0, evShown);
+    const keep = new Set();
+    const els = shown.map((ev) => {
+      keep.add(ev.id);
+      const sig = evSig(ev);
+      let r = evRows.get(ev.id);
+      if (!r || r.sig !== sig) {
+        r = { sig, el: evRow(ev, now) };
+        evRows.set(ev.id, r);
+      }
+      return r.el;
+    });
+    for (const id of [...evRows.keys()]) if (!keep.has(id)) evRows.delete(id);
+    const left = list.length - shown.length;
+    evMore.textContent = `Show ${Math.min(EV_PAGE, left)} more · ${left} older`;
+    evList.replaceChildren(...els, ...(left > 0 ? [evMore] : []));
   }
 
   // ───── marks: movement without an alarm (fnav-watch) — folded under the events ─────
@@ -375,13 +406,6 @@ export function mount(root) {
     } catch (e) {
       toast("error", errText(e));
     }
-  }
-
-  function showSnapshot(ev, cam = "front") {
-    const img = h("img", { src: appUrl(snapPath(ev.id, cam)), alt: ev.title || "Snapshot", style: { width: "100%", display: "block", background: "#000" } });
-    img.addEventListener("error", () => img.replaceWith(h(".dim", null, "The snapshot is gone (the log keeps the last 100).")));
-    const title = (cam === "rear" ? "Rear camera · " : "") + (ev.title || "Snapshot");
-    modal({ title, width: 800, body: [img, h(".dim", { style: { marginTop: "8px" } }, isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "")] });
   }
 
   async function sendTestAlarm() {

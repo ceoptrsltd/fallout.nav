@@ -271,3 +271,79 @@ async def test_client_reports_rear_camera_and_forwards_camera():
     cfg["v"] = VisionSettings(enabled=False)
     assert c.status().rear is None  # распознавание выключено — о задней не говорим
     await c.stop()
+
+
+# ── миниатюры снимков для списков ──
+
+
+def _real_jpeg(w: int = 768, h: int = 576) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.effect_noise((w, h), 60).convert("RGB").save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
+async def test_snapshot_thumbnail_is_made_once_small_and_goes_with_the_snapshot(tmp_path, monkeypatch):
+    import io
+    import os
+
+    from PIL import Image
+
+    from fnav.core import alarm as alarm_mod
+
+    big = _real_jpeg()
+
+    async def snap() -> bytes:
+        return big
+
+    svc, _, _ = make_alarm(tmp_path, arm_delay_s=0, vision=VisionSettings(enabled=True))
+    svc.snapshot = snap
+    await svc.start(background=False)
+    await svc.arm()
+    assert await svc.vision_event("approach", {})
+    await settle()
+    ev = svc.events[0]
+    assert await svc.snapshot_thumb("0" * 32) is None and await svc.snapshot_thumb("../x") is None
+    p = await svc.snapshot_thumb(ev.id)
+    assert p is not None and p.parent.name == "thumbs"
+    with Image.open(p) as im:
+        assert im.size == (192, 144)  # 768×576 / 4 — уменьшение при декодировании
+    assert p.stat().st_size < len(big) / 4
+    mtime = p.stat().st_mtime_ns
+    assert await svc.snapshot_thumb(ev.id) == p and p.stat().st_mtime_ns == mtime  # второй раз — из кэша
+    assert Image.open(io.BytesIO(p.read_bytes())).format == "JPEG"
+
+    monkeypatch.setattr(alarm_mod, "SNAPSHOTS_MAX", 1)  # хранится 2 снимка: новые вытесняют старый — с миниатюрой
+    os.utime(svc.snapshot_path(ev.id), (1_000_000, 1_000_000))
+    svc._write_snapshot("e" * 32, big)
+    svc._write_snapshot("f" * 32, big)
+    assert not p.exists() and svc.snapshot_path(ev.id) is None
+    monkeypatch.undo()
+
+    assert await svc.vision_event("face", {})
+    await settle()
+    p2 = await svc.snapshot_thumb(svc.events[0].id)
+    assert p2 is not None and p2.exists()
+    await svc.clear_events()  # очистка журнала — и миниатюры
+    assert not p2.exists()
+    await svc.stop()
+
+
+async def test_snapshot_thumbnail_api(data_dir):
+    from core_helpers import login, running_app
+
+    big = _real_jpeg()
+    async with running_app() as c:
+        assert (await c.get("/api/alarm/snapshot/" + "a" * 32 + ".jpg", params={"thumb": 1})).status_code == 401
+        await login(c)
+        c.app.state.core.alarm._write_snapshot("a" * 32, big)
+        full = await c.get("/api/alarm/snapshot/" + "a" * 32 + ".jpg")
+        small = await c.get("/api/alarm/snapshot/" + "a" * 32 + ".jpg", params={"thumb": 1})
+        assert full.status_code == small.status_code == 200 and full.content == big
+        assert small.headers["content-type"] == "image/jpeg" and len(small.content) < len(big) / 4
+        assert "max-age" in small.headers["cache-control"]
+        r = await c.get("/api/alarm/snapshot/" + "0" * 32 + ".jpg", params={"thumb": 1})
+        assert r.status_code == 404

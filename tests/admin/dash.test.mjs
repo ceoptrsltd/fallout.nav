@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 import {
   EVENTS_N, POLL, pollDelay, alarmLive, alarmActions, alarmWord, armedFor, armProgress, armHint, alarmChips,
-  recentEvents, recentKey, eventExtras, snapPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
+  recentEvents, recentKey, eventExtras, snapPath, thumbPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
 } from "../../web/admin/js/dash-fmt.js";
 
@@ -126,6 +126,7 @@ test("events: newest first, n of them; extras; change key sees a snapshot added 
 
   assert.equal(snapPath("b746dce4655142babc03073033a00062"), "api/alarm/snapshot/b746dce4655142babc03073033a00062.jpg");
   assert.equal(snapPath("../x"), "api/alarm/snapshot/..%2Fx.jpg");
+  assert.equal(thumbPath("b746dce4655142babc03073033a00062", "rear"), "api/alarm/snapshot/b746dce4655142babc03073033a00062-rear.jpg?thumb=1");
   assert.equal(snapPath("b746dce4", "rear"), "api/alarm/snapshot/b746dce4-rear.jpg");
   assert.equal(snapPath("b746dce4", "front"), "api/alarm/snapshot/b746dce4.jpg");
   assert.equal(eventAgo(1000, 1000 + 5 * 60 + 10), "5 min ago");

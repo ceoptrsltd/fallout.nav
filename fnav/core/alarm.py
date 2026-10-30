@@ -83,6 +83,7 @@ HAZARD_BLINK_ON_S, HAZARD_BLINK_OFF_S = 0.7, 0.5  # подтверждение A
 DETECTED = ("armed", "triggered")  # события и сирена — только в этих состояниях
 VISION_KINDS = ("approach", "face", "loiter")  # от камеры (fnav-watch): без сирены — push, аварийка, защита записи
 SNAPSHOTS_MAX = 100  # событий со снимками камер (alarm_snaps/<id>.jpg, задняя — <id>-rear.jpg)
+THUMBS_DIR = "thumbs"  # миниатюры снимков для списков (alarm_snaps/thumbs/<имя снимка>)
 
 
 _EVENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -829,6 +830,32 @@ class AlarmService:
         p = self.snap_dir / _snap_name(event_id, camera)
         return p if p.is_file() else None
 
+    async def snapshot_thumb(self, event_id: str, camera: str = "front") -> Path | None:
+        """Миниатюра снимка для списков (~5 КБ, 192×144): делается при первом запросе и лежит рядом
+        (alarm_snaps/thumbs/), удаляется вместе со снимком."""
+        src = self.snapshot_path(event_id, camera)
+        if src is None:
+            return None
+        p = self.snap_dir / THUMBS_DIR / src.name
+        if p.is_file():
+            return p
+        try:
+            await self._run_io(self._write_thumb, src, p)
+        except Exception as e:  # noqa: BLE001 — битый снимок: без миниатюры
+            log.info("alarm: no thumbnail for %s: %s", src.name, e)
+            return None
+        return p if p.is_file() else None
+
+    @staticmethod
+    def _write_thumb(src: Path, dst: Path) -> None:
+        from fnav.camera.jpeg import thumbnail_jpeg
+
+        data = thumbnail_jpeg(src.read_bytes())
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(f".{dst.name}.tmp")
+        tmp.write_bytes(data)
+        tmp.replace(dst)
+
     async def _save_snapshot(self, event_id: str, camera: str = "front") -> bool:
         fn = self.snapshot_rear if camera == "rear" else self.snapshot
         if fn is None:
@@ -853,6 +880,8 @@ class AlarmService:
         for p in old:
             with contextlib.suppress(OSError):
                 p.unlink()
+            with contextlib.suppress(OSError):
+                (self.snap_dir / THUMBS_DIR / p.name).unlink()
 
     async def _protect(self, camera: str = "front") -> str | None:
         fn = self.protect_rear if camera == "rear" else self.protect
@@ -897,7 +926,7 @@ class AlarmService:
         return self.status()
 
     def _clear_snapshots(self) -> None:
-        for p in self.snap_dir.glob("*.jpg"):
+        for p in [*self.snap_dir.glob("*.jpg"), *(self.snap_dir / THUMBS_DIR).glob("*.jpg")]:
             with contextlib.suppress(OSError):
                 p.unlink()
 

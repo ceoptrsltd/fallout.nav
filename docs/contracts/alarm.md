@@ -142,7 +142,7 @@ vision: {enabled, available, watching, people, error, rear: {watching, people, e
 | POST | `/api/alarm/disarm` | `AlarmStatus` |
 | POST | `/api/alarm/silence` | `AlarmStatus` (сирена замолкает, охрана остаётся) |
 | POST | `/api/alarm/test` | `AlarmStatus` — событие `test` идёт всем путём (журнал → сервер → push), без сирены |
-| GET | `/api/alarm/snapshot/{id}.jpg` | снимок камеры к событию журнала; 404 — нет |
+| GET | `/api/alarm/snapshot/{id}.jpg` | снимок камеры к событию журнала; 404 — нет. `?thumb=1` — миниатюра для списков (192×144, ~5 КБ; уменьшение при декодировании JPEG): делается при первом запросе, лежит в `alarm_snaps/thumbs/`, удаляется вместе со снимком и при очистке журнала |
 | DELETE | `/api/alarm/events` | `AlarmStatus` (и снимки) |
 | POST | `/api/alarm/simulate` | только в `--mock`: `{"kind": "impact"|"tilt"|"move"|"approach"|"face"|"loiter", "g": 0.5, "camera": "front"|"rear"}` → как настоящее событие (если `armed`; камера — с учётом `settings.alarm.vision`) |
 

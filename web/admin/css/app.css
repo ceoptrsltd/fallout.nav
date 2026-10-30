@@ -610,6 +610,8 @@ tbody tr:hover { background: var(--panel2); }
 .al-ev .bd { color: var(--dim); font-size: 13px; }
 .al-ev .ex { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 12.5px; margin-top: 2px; color: var(--dim); }
 .al-ev .when { color: var(--dim); font-size: 12px; white-space: nowrap; padding-top: 2px; }
+.al-ev .side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.al-evmore { margin: 8px 12px; align-self: center; }
 .al-empty { padding: 18px 14px; }
 .al-p { margin: 0 0 8px; }
 .al-steps { margin: 4px 0 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; }
@@ -653,7 +655,8 @@ tbody tr:hover { background: var(--panel2); }
   .al-page .card { padding: 12px; }
   .btn.al-big { flex: 1 1 auto; }
   .al-ev { grid-template-columns: 22px minmax(0, 1fr); }
-  .al-ev .when { grid-column: 2; padding-top: 0; }
+  .al-ev .side { grid-column: 2; flex-direction: row; align-items: center; justify-content: space-between; }
+  .al-ev .when { padding-top: 0; }
 }
 
 /* ───── level ───── */

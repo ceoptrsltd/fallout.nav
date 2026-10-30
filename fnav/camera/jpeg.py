@@ -66,6 +66,28 @@ def encode_jpeg(frame: LoresFrame, quality: int) -> bytes:
     return buf.getvalue()
 
 
+def thumbnail_jpeg(jpg: bytes, min_w: int = 160, min_h: int = 120, quality: int = 70) -> bytes:
+    """Маленькая копия JPEG для списков (журнал охраны): уменьшение прямо при декодировании (DCT 1/2…1/8 —
+    ближайшее не меньше min_w×min_h: 768×576 → 192×144, ~5 КБ вместо ~40), без отдельного ресайза."""
+    if simplejpeg is not None:
+        rgb = simplejpeg.decode_jpeg(jpg, colorspace="RGB", min_width=min_w, min_height=min_h)
+        return simplejpeg.encode_jpeg(np.ascontiguousarray(rgb), quality=quality, colorspace="RGB")
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(jpg))
+    w, h = img.size
+    k = 1
+    while k < 8 and w // (k * 2) >= min_w and h // (k * 2) >= min_h:
+        k *= 2
+    img.draft("RGB", (w // k, h // k))  # то же уменьшение при декодировании
+    img = img.convert("RGB")
+    if img.size != (w // k, h // k):
+        img = img.resize((w // k, h // k))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=quality)
+    return buf.getvalue()
+
+
 # ───────────────────────────── наложение времени ─────────────────────────────
 
 

@@ -2,15 +2,16 @@
 // events, then the van at a glance (position, camera, system, level, radio). Live data from telemetry; api/alarm
 // (camera watch, events) is polled slowly and fetched at once on a new event (telemetry alarm.seq) or state change.
 import { h, icon, clear, isNum } from "../dom.js";
-import { api, appUrl, errText } from "../api.js";
+import { api, errText } from "../api.js";
 import { store, on } from "../store.js";
-import { toast, banner, modal } from "../ui.js";
+import { toast, banner } from "../ui.js";
 import { alarmStateText, armLeft, kindInfo } from "../alarm-fmt.js";
 import { recLink } from "../rec-play.js";
+import { eventThumb } from "../snap-view.js";
 import { installEntry } from "../install.js";
 import {
   EVENTS_N, pollDelay, alarmLive, alarmActions, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
-  recentEvents, recentKey, eventExtras, snapPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
+  recentEvents, recentKey, eventExtras, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
 } from "../dash-fmt.js";
 
@@ -198,21 +199,6 @@ export function mount(root) {
     h(".card-head", null, h("h2", null, "Latest events"), h("a.db-more", { href: "#/alarm" }, "All events ›")),
     evList);
 
-  /** The event's snapshots: the front camera's and / or the rear's (named when the rear is among them). */
-  function showSnapshot(ev) {
-    const x = eventExtras(ev);
-    const cams = [x.snapshot ? "front" : null, x.snapshotRear ? "rear" : null].filter(Boolean);
-    const named = cams.length > 1 || cams[0] === "rear";
-    const body = cams.map((cam) => {
-      const img = h("img.db-snapbig", { src: appUrl(snapPath(ev.id, cam)), alt: (cam === "rear" ? "Rear camera: " : "") + (ev.title || "Snapshot") });
-      img.addEventListener("error", () => img.replaceWith(h(".dim", null, "The snapshot is gone (the log keeps the last 100).")));
-      return named ? h(".db-snapcam", null, h(".db-snaplbl", null, cam === "rear" ? "Rear camera" : "Front camera"), img) : img;
-    });
-    body.push(h(".dim.db-snapwhen", null, isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : ""));
-    const m = modal({ title: ev.title || "Snapshot", width: 800, body });
-    m.el.classList.add("db-snapmodal");
-  }
-
   function renderEvents() {
     if (!st) {
       if (evSig !== "none") {
@@ -237,14 +223,7 @@ export function mount(root) {
       const x = eventExtras(ev);
       const when = h("span.when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, eventAgo(ev.ts, now));
       whens.push([when, ev.ts]);
-      let thumb = null;
-      const thumbCam = x.snapshot ? "front" : x.snapshotRear ? "rear" : null; // the front's first; the modal shows both
-      if (thumbCam) {
-        const img = h("img", { src: appUrl(snapPath(ev.id, thumbCam)), alt: "", loading: "lazy", decoding: "async", width: 72, height: 54 });
-        const what = x.snapshot && x.snapshotRear ? "Show the snapshots" : "Show the snapshot";
-        thumb = h("button.db-thumb", { type: "button", title: what, "aria-label": what, onclick: () => showSnapshot(ev) }, img);
-        img.addEventListener("error", () => { thumb.hidden = true; });
-      }
+      const thumb = eventThumb(ev); // the front's first; the modal shows both
       evList.append(h(".db-ev." + (ki.kind || "plain"), null,
         h("span.ic", null, icon(ki.icon)),
         h(".txt", null,

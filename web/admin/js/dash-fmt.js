@@ -159,6 +159,11 @@ export function snapPath(id, camera) {
   return `api/alarm/snapshot/${encodeURIComponent(String(id))}${camera === "rear" ? "-rear" : ""}.jpg`;
 }
 
+/** The snapshot's small copy for event lists (~5 KB instead of ~40, made once on the device). */
+export function thumbPath(id, camera) {
+  return snapPath(id, camera) + "?thumb=1";
+}
+
 /** "5 min ago" for an event time (unix s). */
 export function eventAgo(ts, nowS) {
   return num(ts) ? agoText(ts, nowS) : "—";
