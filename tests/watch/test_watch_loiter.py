@@ -1,5 +1,6 @@
-"""Правило «стоит у фургона» (loiter): силуэт, который нейросеть потеряла, держится пятном движения; прохожие,
-стоящие машины, фары, капли, дальние люди — нет; раз за присутствие, перевзвод после 10 с пустоты.
+"""Правило «стоит у фургона» (loiter): силуэт, который нейросеть видела и потеряла, держится пятном движения;
+одно пятно без человека (свет фар по брусчатке, тени, выезжающая машина), прохожие, стоящие машины, фары, капли,
+дальние люди — нет; раз за присутствие, перевзвод после 10 с пустоты.
 Плюс approach, когда сеть теряет замершего у капота человека."""
 
 from __future__ import annotations
@@ -23,6 +24,18 @@ def blob(cx=0.45, bottom=0.67, h=0.33, w=0.18, active=0.2, bright=0.0, level=50.
     return Blob((cx - w / 2, bottom - h, cx + w / 2, bottom), fill, active, bright, level)
 
 
+def seen(cx=0.45, since=0.0, until=1e9, when=None):
+    """Нейросеть видит человека вдалеке (низко в кадре его нет — не «рядом») около cx: tracks(t) для drive."""
+    tr = Track(1)
+
+    def tracks(t):
+        if since <= t <= until and (when is None or when(t)):
+            tr.hist.append((t, person(cx, 0.5, 0.15).box, 0.8))
+        return [tr] if tr.hist else []
+
+    return tracks
+
+
 def drive(script, t_end=30.0, dt=0.25, rule=None, tracks=None, hold=HOLD):
     """script(t) → [Blob]; кадры 4/с. → [(t, data)]."""
     rule = rule or LoiterRule()
@@ -43,10 +56,27 @@ def jiggle(t, **kw):
 
 
 def test_dark_silhouette_fires_once_after_loiter_s():
-    out = drive(lambda t: [jiggle(t)] if 2 <= t else [])
+    """Сеть видела человека, пока он подходил (1–3 с), потом потеряла: у капота держится тёмное пятно."""
+    out = drive(lambda t: [jiggle(t)] if 2 <= t else [], tracks=seen(since=1.0, until=3.0))
     assert len(out) == 1
     t, data = out[0]
     assert 10.0 <= t <= 10.5 and data["source"] == "motion" and data["held_s"] >= HOLD
+
+
+def test_motion_without_a_person_is_not_an_alarm():
+    """Живой случай 30.10: свет фар по брусчатке / выезжающая машина — пятно у капота, а человека сеть не видела."""
+    assert drive(lambda t: [jiggle(t)] if 2 <= t else []) == []
+
+
+@pytest.mark.parametrize("start, cx, since, until, fires", [
+    (2.0, 0.45, 0.0, 1.0, True),  # подходил — сеть видела, у капота потеряла: тот же человек
+    (7.0, 0.45, 0.0, 1.0, False),  # видели больше 5 с до пятна — не связываем
+    (2.0, 0.9, 1.0, 3.0, False),  # человек был, но в стороне — пятно не он
+    (2.0, 0.45, 6.0, 7.0, True),  # пятно сначала само по себе, потом сеть увидела человека там же — тревога
+])
+def test_person_link(start, cx, since, until, fires):
+    out = drive(lambda t: [jiggle(t)] if start <= t else [], tracks=seen(cx, since, until))
+    assert bool(out) is fires
 
 
 def test_clock_starts_when_the_person_arrived():
@@ -57,7 +87,7 @@ def test_clock_starts_when_the_person_arrived():
         k = min(1.0, (t - 2) / 4)
         return [jiggle(t, h=0.2 + 0.2 * k)]
 
-    out = drive(script)
+    out = drive(script, tracks=seen(since=2.0, until=4.0))
     assert len(out) == 1 and 13.0 <= out[0][0] <= 15.0
 
 
@@ -67,26 +97,26 @@ def test_passer_by_does_not_fire():
         x = 0.1 + (0.2 * t) % 0.8  # каждые 4 с новый слева
         return [blob(cx=x, active=0.3)]
 
-    assert drive(script) == []
+    assert drive(script, tracks=seen(since=0.0, until=30.0)) == []
 
 
 def test_parked_car_and_static_object_do_not_fire():
     # подъехала и встала: пятно есть, но не шевелится (фон внутри пятна учится медленно — оно остаётся)
-    out = drive(lambda t: [blob(w=0.4, h=0.3, active=0.3 if t < 3 else 0.0)])
+    out = drive(lambda t: [blob(w=0.4, h=0.3, active=0.3 if t < 3 else 0.0)], tracks=seen())
     assert out == []
 
 
 def test_confident_vehicle_suppresses_but_whole_frame_guess_does_not():
     rule = LoiterRule()
     rule.add_vehicles(0.0, [Det((0.3, 0.3, 0.7, 0.7), 0.8)])
-    assert drive(lambda t: [jiggle(t)], t_end=2.5, rule=rule) == []  # пятно внутри машины
+    assert drive(lambda t: [jiggle(t)], t_end=2.5, rule=rule, tracks=seen()) == []  # пятно внутри машины
     rule = LoiterRule()
 
     def script(t):
         rule.add_vehicles(t, [Det((0.0, 0.0, 1.0, 1.0), 0.45)])  # ночью «машина» — весь кадр: не верим
         return [jiggle(t)]
 
-    assert len(drive(script, rule=rule)) == 1
+    assert len(drive(script, rule=rule, tracks=seen(since=0.0, until=2.0))) == 1
 
 
 @pytest.mark.parametrize("kind", ["far", "headlights", "streak", "scattered", "edge"])
@@ -98,11 +128,12 @@ def test_not_a_close_person(kind):
         "scattered": {"fill": 0.15},  # россыпь капель, дворник
         "edge": {"cx": 0.05},  # у края кадра, не у центра
     }[kind]
-    assert drive(lambda t: [jiggle(t, **b)]) == []
+    assert drive(lambda t: [jiggle(t, **b)], tracks=seen()) == []
 
 
 def test_short_gaps_do_not_reset_presence():
-    out = drive(lambda t: [] if 5 <= t < 6.5 else [jiggle(t)])  # 1,5 с пятна не было (сброс фона от фар)
+    # 1,5 с пятна не было (сброс фона от фар)
+    out = drive(lambda t: [] if 5 <= t < 6.5 else [jiggle(t)], tracks=seen(since=0.0, until=2.0))
     assert len(out) == 1 and out[0][0] <= 8.5
 
 
@@ -112,7 +143,8 @@ def test_rearm_only_after_ten_seconds_empty():
             return [jiggle(t)]
         return []
 
-    out = drive(script, t_end=60)
+    # сеть видит человека в начале каждого визита
+    out = drive(script, t_end=60, tracks=seen(when=lambda t: t < 2 or 43 <= t < 45))
     assert [round(t) for t, _ in out] == [8, 51]
 
 
@@ -153,27 +185,48 @@ def test_approach_fires_when_the_detector_loses_the_person_at_the_line():
     assert events == []
 
 
-@pytest.mark.skipif(importlib.util.find_spec("cv2") is None, reason="opencv-python-headless")
-@pytest.mark.parametrize("enabled", [True, False])
-def test_watcher_loiter_from_motion_only(enabled):
-    """Конвейер: нейросеть никого не видит (тёмный силуэт), а тёмное шевелящееся пятно стоит у капота."""
+def _silhouette_run(sees, t_end=65.0, **settings):
+    """Конвейер: тёмный силуэт у капота с 3 до 16 с; sees(t) — видит ли его нейросеть (вдалеке, пока подходит).
+    Ушёл — его след в фоне (внутри переднего плана фон учится медленно) ещё ~35 с «движение»: отметка — в конце."""
     from fnav.watch.pipeline import Watcher
 
     rng = np.random.default_rng(5)
     base = scene(rng, 0).astype(np.float32) + 60
-    p = StubPerson(lambda t: [])
-    w = Watcher(p, None, VisionSettings(enabled=True, face=False, loiter=enabled, loiter_s=5.0))
+    p = StubPerson(lambda t: [person(0.46, 0.5, 0.15)] if sees(t) else [])
+    w = Watcher(p, None, VisionSettings(enabled=True, face=False, **{"loiter_s": 5.0, **settings}))
     events = []
     t = 0.0
-    while t < 16:
+    while t < t_end:
         img = scene(rng, 2.0, base)
-        if t >= 3:  # тёмный силуэт у капота, чуть качается
+        if 3 <= t < 16:  # тёмный силуэт у капота, чуть качается
             x = 0.38 + 0.02 * np.sin(t * 3)
             img[int(0.33 * 576):int(0.68 * 576), int(x * 768):int((x + 0.16) * 768)] = 25
         p.t = t
         events += w.process(gray_frame(t, img))
         t += 0.25
+    return events
+
+
+@pytest.mark.skipif(importlib.util.find_spec("cv2") is None, reason="opencv-python-headless")
+def test_watcher_motion_only_is_a_mark_not_an_alarm():
+    """Нейросеть никого не видела: тревоги нет, а когда движение кончилось — отметка «движение» с его начала."""
+    events = _silhouette_run(lambda t: False)
+    assert [e.kind for e in events] == ["mark"]
+    m = events[0].data
+    assert m["what"] == "motion" and 3.0 <= m["start"] <= 4.0 and m["dur_s"] >= 12.0
+    assert m["camera"] == "front"
+    assert _silhouette_run(lambda t: False, marks=False) == []
+
+
+@pytest.mark.skipif(importlib.util.find_spec("cv2") is None, reason="opencv-python-headless")
+@pytest.mark.parametrize("enabled", [True, False])
+def test_watcher_loiter_after_the_net_lost_the_person(enabled):
+    """Сеть видела человека, пока он подходил (до 5 с), дальше — тёмный силуэт: тревога «стоит у фургона»; отметки
+    за этот эпизод нет (тревога уже на шкале)."""
+    events = _silhouette_run(lambda t: t < 5, loiter=enabled)
     kinds = [e.kind for e in events]
-    assert kinds == (["loiter"] if enabled else [])
     if enabled:
+        assert kinds == ["loiter"]
         assert events[0].data["source"] == "motion" and events[0].data["held_s"] >= 5.0
+    else:
+        assert kinds == ["mark"] and events[0].data["what"] == "person"

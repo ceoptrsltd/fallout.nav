@@ -3,7 +3,8 @@
 
 Нейросеть — не больше одной на кадр: люди при движении 1 Гц (долго никого — 0,5 Гц), пока есть треки — 2 Гц;
 лица 2 Гц, пока движение у центра или лицо уже видно. Перегрев — все частоты делятся на slow. Правило «стоит у
-фургона» — на каждом кадре, по трекам и пятнам движения (без нейросети).
+фургона» — на каждом кадре, по трекам и пятнам движения (без нейросети). Отметки движения (MarkRule, marks.py) —
+тоже на каждом кадре: эпизоды движения без тревоги, «человек» / «машина» / «движение».
 
 Один Watcher — одна камера (camera = "front" | "rear": своя ближняя линия, свои фон, треки и правила). Детекторы
 общие: сервис сначала зовёт prepare() у каждой камеры, у которой новый кадр, — движение и что пора запустить (Plan),
@@ -24,6 +25,7 @@ from fnav.models import VisionSettings
 
 from .detect import Det, Face
 from .frame import Frame
+from .marks import MarkRule
 from .motion import Motion, MotionGate
 from .track import FaceRule, LoiterRule, Track, Tracker
 
@@ -110,6 +112,7 @@ class Watcher:
         self.tracker = Tracker()
         self.face_rule = FaceRule()
         self.loiter = LoiterRule()
+        self.marks = MarkRule()
         self.stats = Stats()
         self.snap = Snapshot()
         self.slow = 1.0  # перегрев: частоты нейросетей делятся
@@ -117,6 +120,7 @@ class Watcher:
         self._last_face = -1e18
         self._keep_person_until = -1e18
         self._empty_runs = 0  # прогонов детектора людей подряд без людей
+        self._vehicles: list[Det] = []  # машины последнего прогона детектора людей (для отметок)
         self._busy_until = -1e18
         self._last_t = -1e18
         self.settings = settings or VisionSettings()
@@ -134,6 +138,7 @@ class Watcher:
         self.tracker.reset()
         self.face_rule.reset()
         self.loiter.reset()
+        self.marks.reset()
         self._last_person = self._last_face = self._keep_person_until = -1e18
         self._busy_until = self._last_t = -1e18
         self._empty_runs = 0
@@ -214,6 +219,12 @@ class Watcher:
             lo = self.loiter
             if lo.box is not None and lo.since is not None:
                 snap.loiter = (lo.box, t - lo.since, lo.source)
+        if s.marks:
+            vehicles = self._vehicles if snap.ran == "person" else None
+            mark = self.marks.update(t, self._wall(frame), snap.motion.moving, snap.motion.blobs, vehicles=vehicles,
+                                     people=bool(confirmed), alarm=bool(events))
+            if mark:
+                events.append(self._event("mark", frame, mark))
         snap.tracks = [(tr.id, tr.box, tr.fired_t is not None, tr.growth) for tr in confirmed]
         self.snap = snap
         return events
@@ -237,7 +248,8 @@ class Watcher:
         st.person_ms = st.ema(st.person_ms, ms, st.person_runs)
         self._empty_runs = 0 if dets else self._empty_runs + 1
         self.tracker.update(dets, t, dt)
-        self.loiter.add_vehicles(t, getattr(self.person, "vehicles", None) or [])
+        self._vehicles = list(getattr(self.person, "vehicles", None) or [])
+        self.loiter.add_vehicles(t, self._vehicles)
         snap.dets, snap.ran = dets, "person"
         out = []
         for _tr, data in self.tracker.approach(t, self.near_line, s.approach_hold_s):

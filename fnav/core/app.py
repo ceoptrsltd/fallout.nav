@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Literal
 from urllib.parse import quote
@@ -24,7 +25,14 @@ from fnav.core.controls import controls_info
 from fnav.core.games import GamesError
 from fnav.core.level import LevelError
 from fnav.core.radio import GENRES, RadioError
-from fnav.core.recordings import RecordingError, attach_events, iter_file, parse_range
+from fnav.core.recordings import (
+    RecordingError,
+    attach_events,
+    attach_marks,
+    iter_file,
+    parse_range,
+    recording_at,
+)
 from fnav.core.runtime import REMOTE_TELEMETRY_EVERY, Core, CoreOptions
 from fnav.core.system import SystemError_
 from fnav.core.tiles import TileError
@@ -310,8 +318,9 @@ def _register_tiles(app: FastAPI, core: Core) -> None:
 def _register_recordings(app: FastAPI, core: Core) -> None:
     @app.get("/api/recordings")
     async def rec_list():
-        """Записи + метки событий охраны в них (переход к моменту срабатывания)."""
-        return attach_events(await core.recordings.list(core.current_segment()), core.alarm.events)
+        """Записи + метки событий охраны в них (переход к моменту срабатывания) и отметки движения без тревоги."""
+        items = attach_events(await core.recordings.list(core.current_segment()), core.alarm.events)
+        return attach_marks(items, core.marks.between)
 
     @app.api_route("/api/recordings/file/{path:path}", methods=["GET", "HEAD"])
     async def rec_file(path: str, request: Request, download: int = 0):
@@ -718,6 +727,12 @@ class SimulateBody(BaseModel):
     camera: Literal["front", "rear"] = "front"  # события камеры: какая их «увидела»
 
 
+class SimulateMarkBody(BaseModel):
+    kind: Literal["motion", "vehicle", "person"] = "motion"
+    camera: Literal["front", "rear"] = "front"
+    dur_s: float = Field(6.0, ge=0, le=600)
+
+
 def _register_alarm(app: FastAPI, core: Core) -> None:
     async def status() -> dict:
         await core.alarm.poll()
@@ -775,12 +790,34 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
         await core.alarm.clear_events()
         return await status()
 
+    @app.get("/api/alarm/marks")
+    async def alarm_marks(limit: int = 50):
+        """Отметки движения без тревоги (новые первыми) с записью, где их смотреть, и счётчики за 24 ч."""
+        now = time.time()
+        items = await core.recordings.list(core.current_segment())
+        marks = [{**m, "rec": recording_at(items, m["ts"], m["camera"], now)}
+                 for m in core.marks.latest(max(0, min(limit, 500)))]
+        return {"marks": marks, "total": len(core.marks.items), "last_24h": core.marks.counts(now - 86400)}
+
+    @app.delete("/api/alarm/marks")
+    async def alarm_marks_clear():
+        core.marks.clear()
+        await core.marks.flush()
+        return {"marks": [], "total": 0, "last_24h": core.marks.counts(time.time())}
+
     if core.mock:
         @app.post("/api/alarm/simulate")
         async def alarm_simulate(body: SimulateBody):
             """Только --mock: событие как от датчика / GPS (если охрана включена)."""
             await core.alarm.simulate(body.kind, body.g, camera=body.camera)
             return await status()
+
+        @app.post("/api/alarm/simulate/mark")
+        async def alarm_simulate_mark(body: SimulateMarkBody):
+            """Только --mock: отметка движения, как от fnav-watch (кусок кончился только что)."""
+            now = time.time()
+            return core.marks.add({"what": body.kind, "camera": body.camera, "start": now - body.dur_s,
+                                   "dur_s": body.dur_s}, now)
 
 
 # ───────────────────────── уровень (docs/contracts/level.md) ─────────────────────────

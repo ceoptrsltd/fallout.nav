@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
           f"face_min {vs.face_min}, face_hold {vs.face_hold_s} s, loiter {vs.loiter_s} s", flush=True)
     busy_until = -1.0
     last_saved = -1e9
-    n_events = 0
+    n_events = n_marks = 0
     t_start = time.perf_counter()
     t = 0.0
     for t, i420 in iter_frames(args.file, args.fps, w, h, args.start, args.duration):
@@ -105,6 +105,12 @@ def main(argv: list[str] | None = None) -> int:
             busy_until = t + args.sim_ms / 1000
         snap = watcher.snap
         for ev in events:
+            if ev.kind == "mark":  # отметка без тревоги: с начала куска движения
+                n_marks += 1
+                st0 = float(ev.data.get("start", t))
+                print(f"{_mmss(st0)}{_clock(args.clock, st0)}  mark  {ev.data.get('what', ''):8s} "
+                      f"{ev.data.get('dur_s', 0)} s", flush=True)
+                continue
             n_events += 1
             print(f"{_mmss(t)}{_clock(args.clock, t)}  EVENT {ev.kind:8s} {json.dumps(ev.data)}", flush=True)
             if args.out:
@@ -117,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     wall = time.perf_counter() - t_start
     print(f"done: {st.frames} frames ({t:.0f} s of video) in {wall:.1f} s; motion in {st.motion_frames}; "
           f"person runs {st.person_runs} (~{st.person_ms:.0f} ms), face runs {st.face_runs} (~{st.face_ms:.0f} ms), "
-          f"gate ~{st.gate_ms:.2f} ms; events {n_events}")
+          f"gate ~{st.gate_ms:.2f} ms; events {n_events}, marks {n_marks}")
     return 0
 
 

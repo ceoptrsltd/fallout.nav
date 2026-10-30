@@ -3,7 +3,7 @@
 
 Ядро раз в секунду читает /status: сообщает «смотреть / не смотреть» (охрана + settings.alarm.vision.enabled) через
 POST /arm, если сервис думает иначе, и передаёт новые события в AlarmService.vision_event (с data.camera — "front" /
-"rear"). Пока распознавание выключено и сервис уже не смотрит — не опрашиваем. Заднюю камеру сервис смотрит сам по
+"rear"), а отметки движения без тревоги ("mark") — в on_mark (fnav/core/marks.py). Пока распознавание выключено и сервис уже не смотрит — не опрашиваем. Заднюю камеру сервис смотрит сам по
 настройкам; её состояние (cameras.rear в /status) — в AlarmVision.rear.
 """
 
@@ -32,10 +32,12 @@ UNAVAILABLE = "Vision service (fnav-watch) is not responding"
 class VisionClient:
     def __init__(self, *, get_settings: Callable[[], VisionSettings], get_armed: Callable[[], bool],
                  on_event: Callable[[str, dict], Awaitable[Any]], base_url: str = WATCH_URL,
-                 transport: httpx.AsyncBaseTransport | None = None, clock: Callable[[], float] = time.time) -> None:
+                 transport: httpx.AsyncBaseTransport | None = None, clock: Callable[[], float] = time.time,
+                 on_mark: Callable[[dict, float], Any] | None = None) -> None:
         self.get_settings = get_settings
         self.get_armed = get_armed
         self.on_event = on_event
+        self.on_mark = on_mark
         self.base_url = base_url.rstrip("/")
         self.clock = clock
         self._client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(2.0, connect=1.0))
@@ -113,7 +115,16 @@ class VisionClient:
         now = self.clock()
         for ev in sorted(st.get("events") or [], key=lambda e: e.get("seq", 0)):
             n, kind, ts = ev.get("seq", 0), ev.get("kind"), ev.get("ts") or 0
-            if last is not None and n <= last or now - ts > STALE_S or kind not in VISION_KINDS:
+            if last is not None and n <= last or now - ts > STALE_S:
+                continue
+            if kind == "mark":  # отметка без тревоги: только на шкалу записи
+                if self.on_mark is not None and isinstance(ev.get("data"), dict):
+                    try:
+                        self.on_mark(dict(ev["data"]), float(ts))
+                    except Exception:
+                        log.exception("vision mark")
+                continue
+            if kind not in VISION_KINDS:
                 continue
             log.warning("vision: %s %s", kind, ev.get("data") or {})
             try:

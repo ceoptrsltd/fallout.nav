@@ -332,11 +332,13 @@ class VisionSettings(_Model):
     face: bool = True  # крупное лицо у центра кадра
     face_min: float = Field(0.06, ge=0.02, le=0.5)  # ширина лица — доля ширины кадра (широкий объектив: 0.06 ≈ 1,3 м)
     face_hold_s: float = Field(3.0, ge=0.5, le=30)
-    loiter: bool = True  # стоит у фургона (ночью — и по силуэту, который нейросеть теряет)
+    loiter: bool = True  # человек стоит у фургона (ночью — и по силуэту, который нейросеть потеряла, если видела)
     loiter_s: float = Field(8.0, ge=3, le=120)  # столько рядом у центра — тревога (раз за присутствие)
     # задняя камера (если включена, rear_camera.enabled): те же правила по её кадрам; ближняя линия — своя
     rear: bool = True
     rear_near_line: float = Field(0.6, ge=0.2, le=1.0)
+    # отметки без тревоги: движение / машина / прохожий — серые метки на шкале записи (не push, не аварийка)
+    marks: bool = True
 
 
 class AlarmSettings(_Model):

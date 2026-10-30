@@ -60,7 +60,7 @@
 Файлы: `{recordings_dir}/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS.ts` (задняя камера — `{recordings_dir}/rear/YYYY-MM-DD/…`, путь
 записи `rear/ДАТА/ИМЯ.ts`), защищено = рядом `…ts.lock`, индекс ключевых кадров — `…ts.idx`. Подробно — `camera.md`.
 
-- `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","camera":"front"|"rear","date":"2026-10-20","start":"2026-10-20T16:40:00","size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool,"events":[…]}]` (обе камеры, новые сверху).
+- `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","camera":"front"|"rear","date":"2026-10-20","start":"2026-10-20T16:40:00","size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool,"events":[…],"marks":[{"kind":"motion"|"vehicle"|"person","ts":..,"offset_s":..,"dur_s":..}]}]` (обе камеры, новые сверху; `events` — события охраны, `marks` — отметки движения без тревоги своей камеры, [vision.md](vision.md) «Отметки»).
 - `GET /api/recordings/file/{path}` — отдача файла с поддержкой `Range` (`video/mp2t`).
 - `GET /api/recordings/hls/{path}.m3u8` (`…/2026-10-20/2026-10-20_16-40-00.ts.m3u8`) — плейлист HLS по записи
   (`application/vnd.apple.mpegurl`, `Cache-Control: no-cache`) для перемотки в любое место без докачки:
@@ -111,7 +111,7 @@
 Полностью — в отдельных контрактах, здесь только перечень:
 
 - **Охрана** — [alarm.md](alarm.md) §4: `GET /api/alarm`, `POST /api/alarm/arm|disarm|silence|test|hazard/test`,
-  `GET /api/alarm/snapshot/{id}.jpg` (задней камеры — `{id}-rear.jpg`; в событии `data.snapshot_rear`, `data.segment_rear`), `DELETE /api/alarm/events`, `POST /api/alarm/simulate` (только `--mock`, иначе 404). Настройки — `settings.alarm`,
+  `GET /api/alarm/snapshot/{id}.jpg` (задней камеры — `{id}-rear.jpg`; в событии `data.snapshot_rear`, `data.segment_rear`), `DELETE /api/alarm/events`, `GET /api/alarm/marks?limit=50` / `DELETE /api/alarm/marks` (отметки движения без тревоги — [vision.md](vision.md) «Отметки»), `POST /api/alarm/simulate` и `POST /api/alarm/simulate/mark` (только `--mock`, иначе 404). Настройки — `settings.alarm`,
   телеметрия — `Telemetry.alarm`, клавиша — действие `"alarm"`. Камера на охране (fnav-watch) — [vision.md](vision.md).
 - **Уровень** — [level.md](level.md): `GET /api/level`, `POST /api/level/calibration/reference|forward`,
   `DELETE /api/level/calibration`. Настройки и калибровка — `settings.level`, телеметрия — `Telemetry.level`.

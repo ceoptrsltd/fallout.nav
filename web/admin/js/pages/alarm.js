@@ -11,7 +11,7 @@ import { toast, banner, badge, confirmDialog, modal, poll } from "../ui.js";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logTicks, impactToSlider, sliderToImpact,
   fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, pushErrorText, toUnix,
-  hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold,
+  hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, markLabel, marksSummary,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
 import { recLink } from "../rec-play.js";
@@ -320,6 +320,63 @@ export function mount(root) {
     }
   }
 
+  // ───── marks: movement without an alarm (fnav-watch) — folded under the events ─────
+  const mkCount = h("span.dim");
+  const mkList = h(".al-marks");
+  const mkClear = h("button.btn.sm.danger", { type: "button", onclick: () => clearMarks() }, icon("trash"), "Clear marks");
+  const mkBox = h("details.al-mkbox", null,
+    h("summary", null, h("span", null, "Marks without an alarm"), mkCount),
+    h(".hint", null, "Whatever moved while the camera watched but was not a person at the van: cars, headlights, shadows, people passing by. No notification, no lights, the recording is not kept — just a grey mark on it."),
+    mkList,
+    h(".btnrow", { style: { marginTop: "8px" } }, mkClear));
+  let mkData = null;
+  mkBox.addEventListener("toggle", () => { if (mkBox.open) loadMarks(); });
+
+  function renderMarks() {
+    const d = mkData;
+    const sum = d ? marksSummary(d.last_24h) : "";
+    mkCount.textContent = d ? (sum ? ` · last 24 h: ${sum}` : " · none in the last 24 h") : "";
+    mkClear.disabled = !d || !d.total;
+    if (!mkBox.open) return;
+    clear(mkList);
+    const list = (d && d.marks) || [];
+    if (!list.length) {
+      mkList.append(h(".al-empty.dim", null, d ? "No marks." : "Loading…"));
+      return;
+    }
+    const now = nowS();
+    for (const m of list) {
+      const rec = m.rec;
+      mkList.append(h(".al-mk", null,
+        h("span.k", null, markLabel(m.kind)),
+        m.camera === "rear" ? h("span.badge.rec-cam", null, "Rear") : h("span"),
+        h("span.dim.mono", null, m.dur_s ? `${Math.round(m.dur_s)} s` : ""),
+        rec ? h("a", { href: "#/recordings?play=" + encodeURIComponent(rec.path) + "&t=" + Math.max(0, Math.round(rec.offset_s)), title: "Watch from this moment" }, "Watch")
+          : h("span.dim", { title: "The recording is gone (deleted to free space)" }, "—"),
+        h("span.when.mono", { title: new Date(m.ts * 1000).toLocaleString() }, fmtWhen(m.ts, now))));
+    }
+  }
+
+  async function loadMarks() {
+    try {
+      mkData = await api.get("/api/alarm/marks?limit=100");
+    } catch {
+      return; // an older device without marks: the summary stays empty
+    }
+    if (!stopped) renderMarks();
+  }
+
+  async function clearMarks() {
+    if (!(await confirmDialog({ title: "Clear the marks?", text: "All marks without an alarm are deleted from the recordings' timelines. Alarm events stay.", okText: "Clear", danger: true }))) return;
+    try {
+      mkData = await api.del("/api/alarm/marks");
+      renderMarks();
+      toast("ok", "Marks cleared");
+    } catch (e) {
+      toast("error", errText(e));
+    }
+  }
+
   function showSnapshot(ev, cam = "front") {
     const img = h("img", { src: appUrl(snapPath(ev.id, cam)), alt: ev.title || "Snapshot", style: { width: "100%", display: "block", background: "#000" } });
     img.addEventListener("error", () => img.replaceWith(h(".dim", null, "The snapshot is gone (the log keeps the last 100).")));
@@ -368,6 +425,7 @@ export function mount(root) {
     try {
       const s = await api.get("/api/alarm");
       if (!stopped) setStatus(s);
+      if (mkBox.open) loadMarks();
     } catch (e) {
       if (stopped) return;
       clear(unavail).append(banner("bad", e.status === 404
@@ -738,7 +796,7 @@ export function mount(root) {
     vsCard = h(".card.al-hzcard", null,
       h("h2", null, "Camera watch"),
       h(".al-hzhead", null, h("span.dim", null, "Status "), vsStatus),
-      h(".hint", null, "While the alarm is armed, the camera looks for a person coming close to the van, someone lingering at it and a face at the windshield. No siren: a notification, the hazard lights and a protected recording."),
+      h(".hint", null, "While the alarm is armed, the camera looks for a person coming close to the van, someone lingering at it and a face at the windshield. No siren: a notification, the hazard lights and a protected recording. Only people raise it: cars, headlights and shadows are just marked on the recording."),
       f({ path: P + "enabled", label: "Watch the camera", type: "switch", switchLabel: "only while the alarm is armed" }),
       f({ path: P + "approach", label: "Person approaching", type: "switch", switchLabel: "grows in the frame and reaches the near line" }),
       f({ path: P + "near_line", label: "Near line", hint: "just above the hood: a person whose feet reach it is close", type: "custom", build: nearLineWidget("api/camera/snapshot.jpg"), wide: true }),
@@ -750,9 +808,12 @@ export function mount(root) {
         help: "Faces are seen in daylight or with light on them; at night a person against a street lamp is a dark silhouette — the rule below catches that." }),
       settings().vision.loiter !== undefined
         ? [
-            f({ path: P + "loiter", label: "Lingering at the van", type: "switch", switchLabel: "someone stays close, near the centre (works at night too)" }),
+            f({ path: P + "loiter", label: "Lingering at the van", type: "switch", switchLabel: "a person stays close, near the centre (at night too, once the camera has seen them)" }),
             f({ path: P + "loiter_s", label: "Lingering for", hint: "once per visit: again only after nobody was there for 10 s", type: "number", min: 3, max: 120, step: 1, unit: "s" }),
           ]
+        : null,
+      settings().vision.marks !== undefined
+        ? f({ path: P + "marks", label: "Marks", type: "switch", switchLabel: "mark everything else that moves on the recordings: cars, headlights, people passing by (no alarm)" })
         : null,
       // the rear camera (settings.rear_camera): the same rules on its picture, its own near line
       settings().vision.rear !== undefined
@@ -803,7 +864,8 @@ export function mount(root) {
     h(".grid.g2", null,
       h(".card", null,
         h(".card-head.al-evhead", null, h("h2", null, "Events ", evCount), testBtn, clearBtn),
-        evList),
+        evList,
+        mkBox),
       h(".card", null,
         h("h2", null, "Notifications"),
         nBox,
@@ -821,6 +883,7 @@ export function mount(root) {
   renderTilt();
   renderEvents(true);
   renderPush();
+  loadMarks();
 
   const offTel = on("telemetry", () => {
     renderState(false);

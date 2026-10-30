@@ -164,6 +164,30 @@ export function kindInfo(kind, camera) {
   return camera === "rear" && REAR_LABELS[kind] ? { ...k, label: REAR_LABELS[kind] } : k;
 }
 
+// marks: what moved while the camera watched, without an alarm (cars, headlights, passers-by) — grey ticks on the
+// recordings and a folded list on the Alarm page (docs/contracts/vision.md "Marks")
+const MARK_LABELS = { motion: "Movement", vehicle: "Vehicle", person: "Person passing by" };
+const MARK_PLURAL = { motion: ["movement", "movements"], vehicle: ["vehicle", "vehicles"], person: ["person", "people"] };
+
+/** Label of a mark kind ("motion" | "vehicle" | "person"). */
+export function markLabel(kind) {
+  return MARK_LABELS[kind] || "Movement";
+}
+
+/** "3 vehicles · 1 person · 8 movements" from {kind: count} (or a list of marks); "" — none. */
+export function marksSummary(counts) {
+  let c = counts;
+  if (Array.isArray(counts)) {
+    c = {};
+    for (const m of counts) if (m && m.kind) c[m.kind] = (c[m.kind] || 0) + 1;
+  }
+  if (!c || typeof c !== "object") return "";
+  return ["vehicle", "person", "motion"]
+    .filter((k) => c[k] > 0)
+    .map((k) => `${c[k]} ${MARK_PLURAL[k][c[k] === 1 ? 0 : 1]}`)
+    .join(" · ");
+}
+
 /** Change marker of the event list (re-render the log only when it changed). */
 export function eventsKey(events) {
   const list = Array.isArray(events) ? events : [];

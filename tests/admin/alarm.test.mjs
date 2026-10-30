@@ -6,6 +6,7 @@ import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logVal, roundG, impactToSlider, sliderToImpact,
   logTicks, fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, isIos, deviceName,
   pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, IMPACT_STEPS,
+  markLabel, marksSummary,
 } from "../../web/admin/js/alarm-fmt.js";
 
 const UA = {
@@ -236,4 +237,15 @@ test("rear camera: event labels and the rear camera's problem in the watch statu
     { text: "Watching · Rear camera: No frames from the rear camera", kind: "warn" });
   assert.deepEqual(visionStatus({ ...v, rear: { watching: true, people: 0, error: null } }), { text: "Watching", kind: "ok" });
   assert.equal(visionStatus({ ...v, enabled: false, rear: { error: "x" } }).text, "Off — the camera does not guard the van");
+});
+
+test("marks without an alarm: labels and the summary line", () => {
+  assert.equal(markLabel("vehicle"), "Vehicle");
+  assert.equal(markLabel("person"), "Person passing by");
+  assert.equal(markLabel("weird"), "Movement");
+  assert.equal(marksSummary({ motion: 8, vehicle: 3, person: 1 }), "3 vehicles · 1 person · 8 movements");
+  assert.equal(marksSummary({ motion: 1, vehicle: 0, person: 2 }), "2 people · 1 movement");
+  assert.equal(marksSummary([{ kind: "vehicle" }, { kind: "vehicle" }, { kind: "motion" }]), "2 vehicles · 1 movement");
+  assert.equal(marksSummary({ motion: 0, vehicle: 0, person: 0 }), "");
+  assert.equal(marksSummary(null), "");
 });

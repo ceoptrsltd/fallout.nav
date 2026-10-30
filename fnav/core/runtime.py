@@ -31,6 +31,7 @@ from fnav.core.games import GamesService
 from fnav.core.imu import ImuService
 from fnav.core.keypad import KeypadService
 from fnav.core.level import LevelService
+from fnav.core.marks import MarkLog
 from fnav.core.navlogic import NavLogic
 from fnav.core.radio import MOCK_STATION, Player, create_radio
 from fnav.core.recordings import Recordings
@@ -176,10 +177,12 @@ class Core:
                                   open_hazard=FakeHazard if opts.mock else open_gpio_hazard)
         self.alarm.protect_rear = self._protect_rear_quiet
         self.alarm.snapshot_rear = self._snapshot_rear_quiet
+        # отметки движения с камер (без тревоги) — серые метки на шкале записей
+        self.marks = MarkLog(paths.data_dir() / "vision_marks.json")
         self.vision = VisionClient(get_settings=lambda: self.store.get().alarm.vision,
                                    get_armed=lambda: self.alarm.state in ("armed", "triggered"),
                                    on_event=self.alarm.vision_event, base_url=opts.watch_url,
-                                   transport=opts.local_transport)
+                                   transport=opts.local_transport, on_mark=self._on_mark)
         self.alarm.vision_status = self.vision.status
         self.level = LevelService(self.imu, lambda: self.store.get().level, self._save_level_calibration,
                                   get_fix=lambda: self.hub.snapshot().gps)
@@ -251,6 +254,7 @@ class Core:
             log.exception("radio/bluetooth start")
         try:
             await self.alarm.start(background=bg)
+            await self.marks.start(background=bg)
             await self.vision.start(background=bg)
             await self.level.start(background=bg)
             if bg:
@@ -274,7 +278,7 @@ class Core:
     async def stop(self) -> None:
         await cancel_tasks(*self._tasks)
         self._tasks.clear()
-        for closer in (self.imu.stop, self.vision.stop, self.alarm.stop, self.level.stop, self.speedlimits.stop, self.weather.stop,
+        for closer in (self.imu.stop, self.vision.stop, self.marks.stop, self.alarm.stop, self.level.stop, self.speedlimits.stop, self.weather.stop,
                        self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop,
                        self.hub.stop, self.camera.stop, self.camera_rear.stop, self.tiles.stop):
             try:
@@ -642,6 +646,12 @@ class Core:
         self._beep("short")
         self.ws.event("camera_view", camera=self.view_camera)
         return {"ok": True, "camera": self.view_camera}
+
+    def _on_mark(self, data: dict, ts: float) -> None:
+        """Отметка движения от fnav-watch (без тревоги) — в журнал отметок, если они включены."""
+        v = self.store.get().alarm.vision
+        if v.marks and (data.get("camera") != "rear" or v.rear):
+            self.marks.add(data, ts)
 
     async def _protect_rear_quiet(self) -> dict:
         """Для сигнализации: защитить запись задней, если она включена (выключена — пусто, без ошибки)."""

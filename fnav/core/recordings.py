@@ -9,7 +9,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -339,6 +339,21 @@ class Recordings:
 EVENT_MARGIN_S = 2.0  # имя файла — с точностью до секунды; событие на стыке сегментов попадёт в оба
 
 
+def _span(it: dict, now: float) -> tuple[float, float] | None:
+    """Начало (unix, по имени файла — местное время) и длительность записи; без времени (nosync) — None.
+    Текущий сегмент — до «сейчас»."""
+    try:
+        t0 = datetime.fromisoformat(it["start"]).timestamp() if it.get("start") else None
+    except ValueError:
+        return None
+    if t0 is None:
+        return None
+    dur = it.get("duration_s") or 0.0
+    if it.get("in_progress"):
+        dur = max(dur, now - t0)
+    return t0, dur
+
+
 def attach_events(items: list[dict], events: Iterable[Any], now: float | None = None) -> list[dict]:
     """Метки событий охраны в записях: offset_s = время события − начало сегмента (по имени файла, местное время).
     Записи без времени (nosync) — без меток. Текущий сегмент — до «сейчас»."""
@@ -346,14 +361,9 @@ def attach_events(items: list[dict], events: Iterable[Any], now: float | None = 
     evs = [e for e in events if e.kind != "test"]
     for it in items:
         marks: list[dict] = []
-        try:
-            t0 = datetime.fromisoformat(it["start"]).timestamp() if it.get("start") else None
-        except ValueError:
-            t0 = None
-        if t0 is not None:
-            dur = it.get("duration_s") or 0.0
-            if it.get("in_progress"):
-                dur = max(dur, now - t0)
+        span = _span(it, now)
+        if span is not None:
+            t0, dur = span
             for e in evs:
                 off = e.ts - t0
                 if -EVENT_MARGIN_S <= off <= dur + EVENT_MARGIN_S:
@@ -362,6 +372,35 @@ def attach_events(items: list[dict], events: Iterable[Any], now: float | None = 
                                   "snapshot": bool((e.data or {}).get("snapshot"))})
         it["events"] = sorted(marks, key=lambda m: m["offset_s"])
     return items
+
+
+def attach_marks(items: list[dict], between: Callable[[float, float, str | None], list[dict]],
+                 now: float | None = None) -> list[dict]:
+    """Отметки движения без тревоги (fnav/core/marks.py) — только своей камеры: {kind, ts, offset_s, dur_s}."""
+    now = time.time() if now is None else now
+    for it in items:
+        out: list[dict] = []
+        span = _span(it, now)
+        if span is not None:
+            t0, dur = span
+            for m in between(t0 - EVENT_MARGIN_S, t0 + dur + EVENT_MARGIN_S, camera_of(it.get("path") or "")):
+                out.append({"kind": m["kind"], "ts": m["ts"], "offset_s": round(min(max(m["ts"] - t0, 0.0), dur), 1),
+                            "dur_s": m["dur_s"]})
+        it["marks"] = out
+    return items
+
+
+def recording_at(items: list[dict], ts: float, camera: str, now: float | None = None) -> dict | None:
+    """Запись камеры, в которую попадает момент ts: {path, offset_s} или None."""
+    now = time.time() if now is None else now
+    for it in items:
+        span = _span(it, now)
+        if span is None or camera_of(it.get("path") or "") != camera:
+            continue
+        t0, dur = span
+        if t0 - EVENT_MARGIN_S <= ts <= t0 + dur + EVENT_MARGIN_S:
+            return {"path": it["path"], "offset_s": round(min(max(ts - t0, 0.0), dur), 1)}
+    return None
 
 
 def _parse_start(name: str) -> datetime | None:

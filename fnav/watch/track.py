@@ -7,7 +7,9 @@ approach_hold_s. Прохожие (высота постоянна, быстро
 
 face: крупное лицо около центра — ≥ 2/3 попыток детектора за face_hold_s (4 из 6 при 2 Гц).
 
-loiter: кто-то стоит рядом около центра ≥ loiter_s — по треку или по крупному «живому» пятну движения (LoiterRule).
+loiter: человек стоит рядом около центра ≥ loiter_s (LoiterRule): по треку — или по крупному «живому» пятну
+движения, если нейросеть видела там человека (ночью теряет силуэт). Пятно без человека — не тревога (свет фар, тени,
+машины — для них отметки, MarkRule в pipeline.py).
 
 Сопоставление — по расстоянию центров в высотах рамки и отношению высот: при 2 Гц рамки соседних детекций часто
 не пересекаются, IoU не годится.
@@ -263,16 +265,22 @@ LOITER_GROWING = 1.2  # рамка за ~1,5 с выросла больше — 
 LOITER_VEHICLE_S = 3.0  # пятно внутри машины, найденной за столько, — не человек
 LOITER_VEHICLE_MIN = 0.5  # уверенность; ночью сеть видит «машину» во всём кадре (кабина) с ~0,45 — не верим
 LOITER_VEHICLE_MAX_H = 0.8  # рамка во весь кадр — это сам фургон
+LOITER_PERSON_HITS = 3  # трек «человек» — столько попаданий детектора (одиночная ложная рамка — нет)
+LOITER_PERSON_LINK_S = 5.0  # человек, увиденный за столько до пятна и рядом по x, — это он (сеть потеряла силуэт)
+LOITER_PERSON_DX = 0.25  # «рядом по x»: центры не дальше столько (в высотах кадра — как y)
 
 
 class LoiterRule:
-    """Кто-то стоит у фургона около центра ≥ loiter_s. Свидетельство на кадре — трек человека рядом (низ рамки у
+    """Человек стоит у фургона около центра ≥ loiter_s. Свидетельство на кадре — трек человека рядом (низ рамки у
     ближней линии) или крупное «живое» тёмное пятно движения там же: ночью нейросеть теряет силуэт против фонаря,
-    а детектор движения держит его (внутри переднего плана фон почти не учится). Прохожие отсеиваются скоростью
-    вбок и тем, что проходят быстрее loiter_s; стоящие машины и предметы — тем, что не шевелятся; фары и смена
-    света — сбросом фона в детекторе движения и яркостью пятна. Срабатывает раз за присутствие; снова — когда у
-    фургона никого не было LOITER_EMPTY_S. Отсчёт loiter_s — с момента, когда человек подошёл (рамка перестала расти):
-    подход — дело правила approach; пятно внутри машины, которую нашла та же нейросеть, не считается."""
+    а детектор движения держит его (внутри переднего плана фон почти не учится). Тревога — только если за это
+    присутствие нейросеть видела человека (трек ≥ LOITER_PERSON_HITS попаданий рядом или за LOITER_PERSON_LINK_S до
+    пятна около того же места): одно пятно — свет фар по брусчатке, тень, выезжающая машина — не тревога (живой
+    случай 30.10: каждые 5–15 минут по ночной парковке). Прохожие отсеиваются скоростью вбок и тем, что проходят
+    быстрее loiter_s; стоящие машины и предметы — тем, что не шевелятся; фары — сбросом фона в детекторе движения
+    и яркостью пятна. Срабатывает раз за присутствие; снова — когда у фургона никого не было LOITER_EMPTY_S. Отсчёт
+    loiter_s — с момента, когда человек подошёл (рамка перестала расти): подход — дело правила approach; пятно
+    внутри машины, которую нашла та же нейросеть, не считается."""
 
     def __init__(self) -> None:
         self.aspect = ASPECT
@@ -289,6 +297,8 @@ class LoiterRule:
         self.box: Box | None = None  # для картинки
         self.source = ""
         self.vehicles: list[tuple[float, Box]] = []  # (t, рамка) машин
+        self.person = False  # за это присутствие нейросеть видела человека
+        self.people: deque[tuple[float, float]] = deque()  # (t, центр по x в высотах кадра) треков-людей
 
     @property
     def present(self) -> bool:
@@ -339,9 +349,21 @@ class LoiterRule:
             return ("motion", b.box)
         return None
 
+    def _note_people(self, t: float, tracks: list[Track]) -> None:
+        for tr in tracks:  # свежие детекции (на этом кадре) подтверждённых треков: когда и где видели человека
+            if tr.last_t == t and len(tr.hist) >= LOITER_PERSON_HITS:
+                self.people.append((t, _centre(tr.box, self.aspect)[0]))
+        while self.people and t - self.people[0][0] > LOITER_PERSON_LINK_S:
+            self.people.popleft()
+
+    def _person_near(self, box: Box) -> bool:
+        cx = _centre(box, self.aspect)[0]
+        return any(abs(px - cx) <= LOITER_PERSON_DX for _, px in self.people)
+
     def update(self, t: float, details, tracks: list[Track], near_line: float, hold_s: float) -> dict | None:
         dt = min(1.0, t - self.last_t) if self.last_t is not None else 0.0
         self.last_t = t
+        self._note_people(t, tracks)
         cand = self._candidate(t, details, tracks, near_line)
         if cand is not None:
             box = cand[1]
@@ -354,19 +376,24 @@ class LoiterRule:
                 if speed > SIDEWAYS:
                     cand = None
         if cand is not None:
+            if self.since is None or self.last_ev is None or t - self.last_ev > LOITER_GAP_S:
+                self.person = False  # новое присутствие
             if self.since is None or self.last_ev is None or t - self.last_ev > LOITER_GAP_S or self._growing(t):
                 self.since, self.covered = t, 0.0  # пришёл (или ещё подходит — отсчёт заново)
             else:
                 self.covered += dt
             self.last_ev = t
             self.source, self.box = cand
+            if not self.person and self._person_near(cand[1]):
+                self.person = True
         else:
             self.box = None
             if self.since is not None and (self.last_ev is None or t - self.last_ev > LOITER_GAP_S):
                 self.since = None
+                self.person = False
         if not self.armed and (self.last_ev is None or t - self.last_ev >= LOITER_EMPTY_S):
             self.armed = True  # у фургона давно никого
-        if not self.armed or self.since is None or cand is None:
+        if not self.armed or self.since is None or cand is None or not self.person:
             return None
         held = t - self.since
         if held < hold_s or self.covered < LOITER_COVER * held:

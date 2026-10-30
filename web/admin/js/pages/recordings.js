@@ -4,7 +4,7 @@ import { h, icon, clear, fmtBytes, fmtDur, isNum } from "../dom.js";
 import { api, appUrl, encPath, errText } from "../api.js";
 import { loadHls } from "../vendor.js";
 import { hlsUrl, playerKind, HLS_MIME, jumpTo, markPos, parseRecLink, recCamera, filterRecs, recTitle, downloadName } from "../rec-play.js";
-import { kindInfo } from "../alarm-fmt.js";
+import { kindInfo, markLabel, marksSummary } from "../alarm-fmt.js";
 import { store } from "../store.js";
 import { modal, confirmDialog, toast, poll, badge, emptyState, banner, segmented } from "../ui.js";
 
@@ -52,12 +52,20 @@ export function openPlayer(rec, { at = null } = {}) {
   video.addEventListener("loadedmetadata", () => {
     if (pendingSeek !== null) { video.currentTime = pendingSeek; pendingSeek = null; }
   });
-  const strip = evs.length ? h(".rec-marks", { title: "Alarm events in this recording" }, evs.map((e) => {
-    const ki = kindInfo(e.kind);
-    const b = h("button.rec-mark.k-" + (ki.kind || "plain"), { type: "button", title: `${evClock(e)} · ${e.title || ki.label}`, onclick: () => seek(jumpTo(e.offset_s)) });
-    b.dataset.off = String(e.offset_s);
+  // marks: movement without an alarm (cars, headlights, passers-by) — grey, under the alarm events
+  const mks = Array.isArray(rec.marks) ? rec.marks : [];
+  const tick = (cls, title, off) => {
+    const b = h("button.rec-mark." + cls, { type: "button", title, onclick: () => seek(jumpTo(off)) });
+    b.dataset.off = String(off);
     return b;
-  })) : null;
+  };
+  const strip = evs.length || mks.length ? h(".rec-marks", { title: "Alarm events (colour) and marks without an alarm (grey) in this recording" },
+    mks.map((m) => tick("k-mark", `${evClock(m)} · ${markLabel(m.kind)}${m.dur_s ? ` (${Math.round(m.dur_s)} s)` : ""} · no alarm`, m.offset_s)),
+    evs.map((e) => {
+      const ki = kindInfo(e.kind);
+      return tick("k-" + (ki.kind || "plain"), `${evClock(e)} · ${e.title || ki.label}`, e.offset_s);
+    })) : null;
+  const mkNote = mks.length ? h(".rec-mknote.dim", null, h("span.rec-mkdot"), `Marks without an alarm: ${marksSummary(mks)}`) : null;
   const placeMarks = () => {
     if (!strip) return;
     const d = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : rec.duration_s;
@@ -77,7 +85,7 @@ export function openPlayer(rec, { at = null } = {}) {
 
   const m = modal({
     title: recTitle(rec),
-    body: [video, strip, evList, status,
+    body: [video, strip, evList, mkNote, status,
       rec.in_progress ? h("div", { style: { marginTop: "8px" } }, banner("warn", "Recording is still in progress: the timeline grows while it is being written.")) : null,
     ],
     foot: [h("a.btn", { href: fileUrl(rec.path), download: downloadName(rec) }, icon("dl"), "Download"), h("button.btn", { onclick: () => m.close() }, "Close")],
@@ -212,6 +220,10 @@ export function mount(root) {
           title: r.events.map((e) => `${evClock(e)} ${e.title}`).join("\n") + "\nClick to watch from the first one",
         }, icon("alarm", 12), `${r.events.length} event${r.events.length === 1 ? "" : "s"}`) : null,
         r.protected ? h("span.badge.warn", null, icon("lock", 12), "protected") : null,
+        r.marks && r.marks.length ? h("button.badge.rec-mkbadge", {
+          type: "button", onclick: () => openPlayer(r, { at: r.marks[0].offset_s }),
+          title: `Marks without an alarm: ${marksSummary(r.marks)}\nClick to watch from the first one`,
+        }, `${r.marks.length} mark${r.marks.length === 1 ? "" : "s"}`) : null,
       ),
       h("span.btnrow", { style: { justifyContent: "flex-end" } },
         h("button.btn.sm", { title: "Watch in browser", onclick: () => openPlayer(r) }, icon("play"), "Watch"),

@@ -92,7 +92,8 @@ async def test_recordings_api(data_dir):
         assert by["2026-10-20/2026-10-20_16-40-00.ts"] | {} == {
             "path": "2026-10-20/2026-10-20_16-40-00.ts", "camera": "front", "date": "2026-10-20",
             "start": "2026-10-20T16:40:00",
-            "size_bytes": 10240, "duration_s": None, "protected": False, "in_progress": False, "events": []}
+            "size_bytes": 10240, "duration_s": None, "protected": False, "in_progress": False, "events": [],
+            "marks": []}
         assert by["nosync/boot-abcd1234_0001.ts"]["start"] is None
 
         # скачивание целиком и по Range

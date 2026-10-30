@@ -274,7 +274,8 @@ class WatchService:
         with self._lock:
             self.seq += 1
             self.events.append({"seq": self.seq, "kind": ev.kind, "ts": round(ev.ts, 3), "data": ev.data})
-        log.warning("event %s #%d %s", ev.kind, self.seq, ev.data)
+        # отметки движения (без тревоги) — частые и не тревожные: в лог тише
+        log.log(logging.INFO if ev.kind == "mark" else logging.WARNING, "event %s #%d %s", ev.kind, self.seq, ev.data)
 
     def _ensure_detectors(self) -> bool:
         if self._nets is not None:
