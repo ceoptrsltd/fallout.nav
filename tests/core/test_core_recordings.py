@@ -96,6 +96,13 @@ async def test_recordings_api(data_dir):
             "marks": []}
         assert by["nosync/boot-abcd1234_0001.ts"]["start"] is None
 
+        # одна запись (кнопка Play у события на странице охраны) — то же, что в списке
+        for rel in ("2026-10-20/2026-10-20_16-40-00.ts", "2026-10-19/2026-10-19_10-00-00.ts", CURRENT):
+            r = await c.get(f"/api/recordings/item/{rel}")
+            assert r.status_code == 200 and r.json() == by[rel], rel
+        assert (await c.get("/api/recordings/item/2026-10-20/2026-10-20_23-59-59.ts")).status_code == 404
+        assert (await c.get("/api/recordings/item/..%2F..%2Fetc%2Fpasswd")).status_code in (400, 404)
+
         # скачивание целиком и по Range
         rel = "2026-10-20/2026-10-20_16-40-00.ts"
         data = files[rel]

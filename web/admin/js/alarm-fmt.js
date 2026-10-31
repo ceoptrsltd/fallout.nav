@@ -188,6 +188,18 @@ export function marksSummary(counts) {
     .join(" · ");
 }
 
+/** The one figure worth showing next to an event's time (the title already says what it was): "0.18 g", "3.2°",
+ *  "120 m", "8 s"; "" — nothing to add. */
+export function eventDetail(ev) {
+  const d = ev && ev.data && typeof ev.data === "object" ? ev.data : {};
+  const n = (v) => typeof v === "number" && Number.isFinite(v);
+  if (ev.kind === "impact" && n(d.peak_g)) return fmtG(d.peak_g);
+  if (ev.kind === "tilt" && n(d.tilt_deg)) return `${d.tilt_deg.toFixed(1)}°`;
+  if (ev.kind === "move" && n(d.distance_m)) return `${Math.round(d.distance_m)} m`;
+  if (ev.kind === "loiter" && n(d.held_s)) return `${Math.round(d.held_s)} s`;
+  return "";
+}
+
 /** Change marker of the event list (re-render the log only when it changed). */
 export function eventsKey(events) {
   const list = Array.isArray(events) ? events : [];

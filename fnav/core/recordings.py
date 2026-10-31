@@ -205,29 +205,8 @@ class Recordings:
                 rel = f"{dir_rel}/{f.name}"
                 seen.add(rel)
                 start_dt = _parse_start(f.name)
-                in_prog = rel == current or (now - st.st_mtime) < IN_PROGRESS_MTIME_S
-                # длительность: кэш по (размер, mtime)
-                c = self._dur_cache.get(rel)
-                if c and c[0] == st.st_size and c[1] == st.st_mtime:
-                    dur = c[2]
-                else:
-                    dur = ts_duration(Path(f.path))
-                    self._dur_cache[rel] = (st.st_size, st.st_mtime, dur)
-                date = dname if _DATE_DIR_RE.match(dname) else (
-                    start_dt.date().isoformat() if start_dt else dname)
-                items.append((
-                    (start_dt.timestamp() if start_dt else st.st_mtime),
-                    {
-                        "path": rel,
-                        "camera": camera_of(rel),
-                        "date": date,
-                        "start": start_dt.isoformat(timespec="seconds") if start_dt else None,
-                        "size_bytes": st.st_size,
-                        "duration_s": dur,
-                        "protected": os.path.exists(f.path + ".lock"),
-                        "in_progress": in_prog,
-                    },
-                ))
+                items.append(((start_dt.timestamp() if start_dt else st.st_mtime),
+                              self._item(rel, f.path, st, dname, current, now)))
         for k in list(self._dur_cache):
             if k not in seen:
                 del self._dur_cache[k]
@@ -237,8 +216,45 @@ class Recordings:
         items.sort(key=lambda t: t[0], reverse=True)
         return [x for _, x in items]
 
+    def _item(self, rel: str, path: str, st: os.stat_result, dname: str, current: str | None, now: float) -> dict:
+        name = rel.rsplit("/", 1)[-1]
+        start_dt = _parse_start(name)
+        in_prog = rel == current or (now - st.st_mtime) < IN_PROGRESS_MTIME_S
+        # длительность: кэш по (размер, mtime)
+        c = self._dur_cache.get(rel)
+        if c and c[0] == st.st_size and c[1] == st.st_mtime:
+            dur = c[2]
+        else:
+            dur = ts_duration(Path(path))
+            self._dur_cache[rel] = (st.st_size, st.st_mtime, dur)
+        date = dname if _DATE_DIR_RE.match(dname) else (start_dt.date().isoformat() if start_dt else dname)
+        return {
+            "path": rel,
+            "camera": camera_of(rel),
+            "date": date,
+            "start": start_dt.isoformat(timespec="seconds") if start_dt else None,
+            "size_bytes": st.st_size,
+            "duration_s": dur,
+            "protected": os.path.exists(path + ".lock"),
+            "in_progress": in_prog,
+        }
+
     async def list(self, current: str | None = None) -> list[dict]:
         return await asyncio.to_thread(self._scan, current)
+
+    def _one(self, rel: str, current: str | None) -> dict:
+        f = resolve(self.root, rel)
+        try:
+            st = f.stat()
+        except OSError:
+            raise RecordingError(404, "No such recording") from None
+        if not f.is_file():
+            raise RecordingError(404, "No such recording")
+        return self._item(rel, str(f), st, f.parent.name, current, time.time())
+
+    async def item(self, rel: str, current: str | None = None) -> dict:
+        """Одна запись (как в списке) — плееру со страницы охраны, без обхода всех каталогов."""
+        return await asyncio.to_thread(self._one, rel, current)
 
     def total_bytes(self) -> int:
         total = 0

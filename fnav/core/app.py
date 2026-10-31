@@ -322,6 +322,12 @@ def _register_recordings(app: FastAPI, core: Core) -> None:
         items = attach_events(await core.recordings.list(core.current_segment()), core.alarm.events)
         return attach_marks(items, core.marks.between)
 
+    @app.get("/api/recordings/item/{path:path}")
+    async def rec_item(path: str):
+        """Одна запись с метками событий и отметками — плееру со страницы охраны (кнопка Play у события)."""
+        items = attach_events([await core.recordings.item(path, core.current_segment())], core.alarm.events)
+        return attach_marks(items, core.marks.between)[0]
+
     @app.api_route("/api/recordings/file/{path:path}", methods=["GET", "HEAD"])
     async def rec_file(path: str, request: Request, download: int = 0):
         f = core.recordings.file(path)

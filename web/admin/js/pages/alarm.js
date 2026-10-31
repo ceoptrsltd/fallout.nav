@@ -4,19 +4,19 @@
 // api/push/* answered by the server behind https …/fnadmin/), the event log and the hazard lights relay
 // (settings.alarm.hazard, test: POST api/alarm/hazard/test).
 import { h, icon, clear, isNum } from "../dom.js";
-import { api, appUrl, errText } from "../api.js";
+import { api, appUrl, encPath, errText } from "../api.js";
 import { SettingsForm } from "../form.js";
 import { store, on, applySettings } from "../store.js";
 import { toast, banner, badge, confirmDialog, poll } from "../ui.js";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logTicks, impactToSlider, sliderToImpact,
   fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, pushErrorText, toUnix,
-  hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, markLabel, marksSummary,
+  hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, markLabel, marksSummary, eventDetail,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
-import { recLink } from "../rec-play.js";
 import { eventExtras } from "../dash-fmt.js";
 import { eventThumb } from "../snap-view.js";
+import { openPlayer } from "./recordings.js";
 import * as push from "../push.js";
 
 const POLL_MS = 1500;
@@ -293,30 +293,48 @@ export function mount(root) {
   const evRows = new Map(); // event id → {sig, el}
   const evMore = h("button.btn.sm.al-evmore", { type: "button", onclick: () => { evShown += EV_PAGE; renderEvents(true); } });
 
+  /** Event card: the snapshot (or the kind's icon) on the left; the title, its time and the one figure worth
+   *  seeing; Play — the kept recording from 5 s before the event, right here in the page. */
   function evRow(ev, now) {
     const ki = kindInfo(ev.kind, ev.data && ev.data.camera);
     const link = eventLink(ev);
-    // the front camera's kept recording, and the rear's when it is on (data.segment_rear); snapshots — the thumbnail
-    const x = eventExtras(ev);
-    const segLink = (seg, text) => h("span", null, text, h("a.mono", { href: recLink(seg, ev.ts), title: "Watch from the moment of the event" }, seg));
+    const x = eventExtras(ev); // kept recordings: the front's (data.segment) and the rear's (data.segment_rear)
+    const detail = eventDetail(ev);
+    const play = (seg, text, title) => h("button.btn.sm.al-play", { type: "button", title, onclick: (e) => playRecording(e.currentTarget, seg, ev.ts) },
+      icon("play", 14), text);
+    const acts = [
+      x.segment ? play(x.segment, "Play", "Watch from 5 s before the event") : null,
+      x.segmentRear ? play(x.segmentRear, x.segment ? "Rear" : "Play rear", "Watch the rear camera from 5 s before the event") : null,
+      link ? h("a.btn.sm.al-play", { href: link.href }, icon(link.href.startsWith("#/tracking") ? "pin" : "info", 14), link.href.startsWith("#/tracking") ? "Map" : link.text) : null,
+    ].filter(Boolean);
     return h(".al-ev." + (ki.kind || "plain"), null,
-      h("span.ic", null, icon(ki.icon)),
-      h(".txt", null,
-        h(".tt", null, ev.title || ki.label),
-        ev.body ? h(".bd", null, ev.body) : null,
-        link || x.segment || x.segmentRear ? h(".ex", null,
-          link ? h("a", { href: link.href }, link.text) : null,
-          x.segment ? segLink(x.segment, "Recording kept: ") : null,
-          x.segmentRear ? segLink(x.segmentRear, "Rear recording kept: ") : null) : null),
-      h(".side", null,
-        h(".when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, isNum(ev.ts) ? fmtWhen(ev.ts, now) : "—"),
-        eventThumb(ev)));
+      eventThumb(ev) || h(".al-evic", null, icon(ki.icon)),
+      h(".al-evmain", null,
+        h(".tt", null, h("span.ki", null, icon(ki.icon, 14)), ev.title || ki.label),
+        h(".meta", null,
+          h("span.when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, isNum(ev.ts) ? fmtWhen(ev.ts, now) : "—"),
+          detail ? h("span.det.mono", null, detail) : null),
+        acts.length ? h(".acts", null, acts) : null));
+  }
+
+  /** Play: a recording in the player here (the page stays) from 5 s before the moment ts (unix s). */
+  async function playRecording(btn, seg, ts) {
+    btn.disabled = true;
+    try {
+      const rec = await api.get("/api/recordings/item/" + encPath(seg));
+      const t0 = rec.start ? Date.parse(rec.start) / 1000 : NaN;
+      openPlayer(rec, { at: isNum(t0) && isNum(ts) ? Math.max(0, ts - t0) : null });
+    } catch (e) {
+      toast(e.status === 404 ? "warn" : "error", e.status === 404 ? "That recording is no longer on the device" : errText(e));
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   /** What a row shows besides its id: the snapshots and the kept recordings come a moment after the event. */
   function evSig(ev) {
     const x = eventExtras(ev);
-    return [ev.title, ev.body, x.snapshot, x.snapshotRear, x.segment, x.segmentRear].join("|");
+    return [ev.title, eventDetail(ev), x.snapshot, x.snapshotRear, x.segment, x.segmentRear].join("|");
   }
 
   function renderEvents(force) {
@@ -382,7 +400,7 @@ export function mount(root) {
         h("span.k", null, markLabel(m.kind)),
         m.camera === "rear" ? h("span.badge.rec-cam", null, "Rear") : h("span"),
         h("span.dim.mono", null, m.dur_s ? `${Math.round(m.dur_s)} s` : ""),
-        rec ? h("a", { href: "#/recordings?play=" + encodeURIComponent(rec.path) + "&t=" + Math.max(0, Math.round(rec.offset_s)), title: "Watch from this moment" }, "Watch")
+        rec ? h("button.btn.sm.al-play", { type: "button", title: "Watch from 5 s before", onclick: (e) => playRecording(e.currentTarget, rec.path, m.ts) }, icon("play", 13), "Play")
           : h("span.dim", { title: "The recording is gone (deleted to free space)" }, "—"),
         h("span.when.mono", { title: new Date(m.ts * 1000).toLocaleString() }, fmtWhen(m.ts, now))));
     }

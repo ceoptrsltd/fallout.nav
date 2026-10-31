@@ -61,6 +61,8 @@
 записи `rear/ДАТА/ИМЯ.ts`), защищено = рядом `…ts.lock`, индекс ключевых кадров — `…ts.idx`. Подробно — `camera.md`.
 
 - `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","camera":"front"|"rear","date":"2026-10-20","start":"2026-10-20T16:40:00","size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool,"events":[…],"marks":[{"kind":"motion"|"vehicle"|"person","ts":..,"offset_s":..,"dur_s":..}]}]` (обе камеры, новые сверху; `events` — события охраны, `marks` — отметки движения без тревоги своей камеры, [vision.md](vision.md) «Отметки»).
+- `GET /api/recordings/item/{path}` — одна запись в том же виде, что в списке (с `events` и `marks`), без обхода всех
+  каталогов: плеер на странице охраны (кнопка Play у события, с 5 с до него); 404 — записи нет, 400 — плохой путь.
 - `GET /api/recordings/file/{path}` — отдача файла с поддержкой `Range` (`video/mp2t`).
 - `GET /api/recordings/hls/{path}.m3u8` (`…/2026-10-20/2026-10-20_16-40-00.ts.m3u8`) — плейлист HLS по записи
   (`application/vnd.apple.mpegurl`, `Cache-Control: no-cache`) для перемотки в любое место без докачки:

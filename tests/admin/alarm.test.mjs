@@ -6,7 +6,7 @@ import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logVal, roundG, impactToSlider, sliderToImpact,
   logTicks, fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, isIos, deviceName,
   pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, IMPACT_STEPS,
-  markLabel, marksSummary,
+  markLabel, marksSummary, eventDetail,
 } from "../../web/admin/js/alarm-fmt.js";
 
 const UA = {
@@ -248,4 +248,15 @@ test("marks without an alarm: labels and the summary line", () => {
   assert.equal(marksSummary([{ kind: "vehicle" }, { kind: "vehicle" }, { kind: "motion" }]), "2 vehicles · 1 movement");
   assert.equal(marksSummary({ motion: 0, vehicle: 0, person: 0 }), "");
   assert.equal(marksSummary(null), "");
+});
+
+test("event card: the one figure next to the time", () => {
+  assert.equal(eventDetail({ kind: "impact", data: { peak_g: 0.18 } }), "0.18 g");
+  assert.equal(eventDetail({ kind: "impact", data: { peak_g: 0.08 } }), "0.080 g");
+  assert.equal(eventDetail({ kind: "tilt", data: { tilt_deg: 3.24 } }), "3.2°");
+  assert.equal(eventDetail({ kind: "move", data: { distance_m: 120.4 } }), "120 m");
+  assert.equal(eventDetail({ kind: "loiter", data: { held_s: 8.3, camera: "rear" } }), "8 s");
+  assert.equal(eventDetail({ kind: "approach", data: { held_s: 2.2 } }), ""); // the title says it all
+  assert.equal(eventDetail({ kind: "impact", data: {} }), "");
+  assert.equal(eventDetail({ kind: "test" }), "");
 });
