@@ -6,10 +6,14 @@ import asyncio
 import logging
 import threading
 import time
+from collections import deque
 
 from .jpeg import LoresFrame, encode_jpeg
 
 log = logging.getLogger("fnav.camera.mjpeg")
+
+HISTORY_S = 12.0  # недавние кадры: снимок «за 5 с до события» для охраны (/snapshot.jpg?before=5)
+HISTORY_STEP_S = 0.5  # в историю — не чаще раза в столько (при клиентах MJPEG кадров больше); ~1 МБ памяти
 
 
 class MjpegHub:
@@ -23,6 +27,8 @@ class MjpegHub:
         self.last_snapshot_request = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._event: asyncio.Event | None = None
+        self._history: deque[tuple[float, bytes]] = deque()  # (monotonic, jpeg) за HISTORY_S
+        self._hist_lock = threading.Lock()
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -31,6 +37,13 @@ class MjpegHub:
     def publish(self, jpeg: bytes) -> None:
         self.jpeg = jpeg
         self.seq += 1
+        now = time.monotonic()
+        with self._hist_lock:
+            h = self._history
+            if not h or now - h[-1][0] >= HISTORY_STEP_S:
+                h.append((now, jpeg))
+            while h and now - h[0][0] > HISTORY_S:
+                h.popleft()
         loop = self._loop
         if loop is not None and not loop.is_closed():
             try:
@@ -43,6 +56,15 @@ class MjpegHub:
         self._event = asyncio.Event()
         if ev is not None:
             ev.set()
+
+    def frame_before(self, seconds: float) -> tuple[float, bytes] | None:
+        """Кадр, ближайший к «seconds назад» (кодер пишет ≥ 1 кадра/с и без зрителей): (возраст, jpeg); None — пусто."""
+        now = time.monotonic()
+        with self._hist_lock:
+            if not self._history:
+                return None
+            t, jpg = min(self._history, key=lambda e: abs(now - seconds - e[0]))
+        return now - t, jpg
 
     async def next_frame(self, last_seq: int, timeout: float = 5.0) -> tuple[int, bytes] | None:
         """Дождаться кадра новее last_seq."""

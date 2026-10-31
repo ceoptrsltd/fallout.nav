@@ -15,6 +15,7 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from .live import LiveClient, LiveHub, LiveUnavailable
+from .mjpeg import HISTORY_S
 from .service import CameraService
 
 BOUNDARY = "frame"
@@ -98,7 +99,18 @@ def create_app(service: CameraService, manage_service: bool = True) -> Starlette
             return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
         return LiveResponse(service.live, client)
 
-    async def snapshot(_: Request) -> Response:
+    async def snapshot(request: Request) -> Response:
+        """Текущий кадр; ?before=N — кадр N секунд назад (до HISTORY_S; охрана: что было перед событием),
+        заголовок X-Frame-Age — сколько ему на самом деле секунд."""
+        try:
+            before = min(max(float(request.query_params.get("before") or 0), 0.0), HISTORY_S)
+        except ValueError:
+            before = 0.0
+        if before > 0:
+            r = hub.frame_before(before)
+            if r is not None:
+                return Response(r[1], media_type="image/jpeg",
+                                headers={"Cache-Control": "no-cache, no-store", "X-Frame-Age": f"{r[0]:.1f}"})
         hub.last_snapshot_request = time.monotonic()
         jpg = hub.jpeg
         if jpg is None:

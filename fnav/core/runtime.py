@@ -659,10 +659,10 @@ class Core:
             return {}
         return await self.camera_rear.protect_current()
 
-    async def _snapshot_rear_quiet(self) -> bytes:
+    async def _snapshot_rear_quiet(self, before_s: float = 0.0) -> bytes:
         if not self.camera_rear.enabled:
             return b""
-        return await self.camera_rear.snapshot()
+        return await self.camera_rear.snapshot(before_s)
 
     async def set_rear_credentials(self, username: str | None, password: str | None) -> dict:
         """Логин — в настройки, пароль — в secrets.env (FNAV_REAR_CAMERA_PASSWORD; пустой — удалить), камере — /reload."""

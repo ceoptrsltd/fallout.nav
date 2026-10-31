@@ -268,11 +268,13 @@ class CameraService:
             return stream, stream.aclose
         raise CameraUnavailable(self.unavailable_text if self.mockcam is None else LIVE_UNAVAILABLE)
 
-    async def snapshot(self) -> bytes:
+    async def snapshot(self, before_s: float = 0.0) -> bytes:
+        """Кадр камеры; before_s — кадр столько секунд назад (fnav-camera хранит последние ~12 с)."""
         self._check_enabled()
         if self.available is not False:
             try:
-                r = await self._client.get(f"{self.base_url}/snapshot.jpg", timeout=3.0)
+                q = f"?before={before_s:g}" if before_s > 0 else ""
+                r = await self._client.get(f"{self.base_url}/snapshot.jpg{q}", timeout=3.0)
                 if r.status_code == 200 and r.content:
                     return r.content
             except httpx.HTTPError:

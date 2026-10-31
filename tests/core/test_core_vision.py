@@ -15,7 +15,7 @@ from fnav.models import AlarmSettings, AlarmVisionCamera, HazardSettings, Vision
 JPEG = b"\xff\xd8snapshot\xff\xd9"
 
 
-async def _snap() -> bytes:
+async def _snap(before_s: float = 0.0) -> bytes:
     return JPEG
 
 
@@ -296,7 +296,7 @@ async def test_snapshot_thumbnail_is_made_once_small_and_goes_with_the_snapshot(
 
     big = _real_jpeg()
 
-    async def snap() -> bytes:
+    async def snap(before_s: float = 0.0) -> bytes:
         return big
 
     svc, _, _ = make_alarm(tmp_path, arm_delay_s=0, vision=VisionSettings(enabled=True))

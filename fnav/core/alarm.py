@@ -83,6 +83,7 @@ HAZARD_BLINK_ON_S, HAZARD_BLINK_OFF_S = 0.7, 0.5  # подтверждение A
 DETECTED = ("armed", "triggered")  # события и сирена — только в этих состояниях
 VISION_KINDS = ("approach", "face", "loiter")  # от камеры (fnav-watch): без сирены — push, аварийка, защита записи
 SNAPSHOTS_MAX = 100  # событий со снимками камер (alarm_snaps/<id>.jpg, задняя — <id>-rear.jpg)
+SNAPSHOT_BEFORE_S = 5.0  # снимок к событию — кадр за столько до него: видно, что к нему привело
 THUMBS_DIR = "thumbs"  # миниатюры снимков для списков (alarm_snaps/thumbs/<имя снимка>)
 
 
@@ -861,7 +862,7 @@ class AlarmService:
         if fn is None:
             return False
         try:
-            jpg = await fn()
+            jpg = await fn(before_s=SNAPSHOT_BEFORE_S)
         except Exception as e:  # noqa: BLE001 — камеры нет: событие идёт дальше
             log.info("alarm: no snapshot: %s", e)
             return False

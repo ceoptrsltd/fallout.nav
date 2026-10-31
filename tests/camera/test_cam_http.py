@@ -72,6 +72,10 @@ def test_status_snapshot_protect(server):
     assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
     assert r.content[:2] == b"\xff\xd8" and r.content[-2:] == b"\xff\xd9"
 
+    r = httpx.get(base + "/snapshot.jpg", params={"before": 5}, timeout=10)  # охрана: кадр «за 5 с до события»
+    assert r.status_code == 200 and r.content[:2] == b"\xff\xd8" and float(r.headers["x-frame-age"]) >= 0
+    assert httpx.get(base + "/snapshot.jpg", params={"before": "x"}, timeout=10).status_code == 200
+
     r = httpx.post(base + "/protect-current").json()
     assert r["ok"] is True and r["segment"] == st["current_segment"]
     assert (svc.root / (r["segment"] + ".lock")).exists()

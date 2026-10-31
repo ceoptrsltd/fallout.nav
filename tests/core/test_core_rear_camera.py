@@ -105,10 +105,14 @@ async def test_alarm_protects_and_snaps_both_cameras(tmp_path):
     svc, _, _ = make_alarm(tmp_path, arm_delay_s=0, vision=VisionSettings(enabled=True),
                            protect=lambda: _ok("2026-10-28/f.ts"))
 
-    async def snap_front():
+    befores: list = []
+
+    async def snap_front(before_s=0.0):
+        befores.append(before_s)
         return b"\xff\xd8front\xff\xd9"
 
-    async def snap_rear():
+    async def snap_rear(before_s=0.0):
+        befores.append(before_s)
         return JPEG
 
     svc.snapshot = snap_front
@@ -123,6 +127,7 @@ async def test_alarm_protects_and_snaps_both_cameras(tmp_path):
     assert ev.data["snapshot"] is True and ev.data["snapshot_rear"] is True
     assert svc.snapshot_path(ev.id, "rear").read_bytes() == JPEG
     assert svc.snapshot_path(ev.id).read_bytes() != JPEG
+    assert befores == [5.0, 5.0]  # снимки обеих камер — за 5 с до события
     await svc.clear_events()
     assert svc.snapshot_path(ev.id, "rear") is None
     await svc.stop()
