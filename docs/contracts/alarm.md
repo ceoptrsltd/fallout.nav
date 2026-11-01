@@ -1,4 +1,4 @@
-# Контракт: охрана (датчик удара MPU-6050, наклон, сдвиг по GPS) и push-уведомления
+# Контракт: охрана (датчик удара MPU-6050, наклон, сдвиг по GPS, пропажа видео камер) и push-уведомления
 
 Тексты интерфейса, уведомлений и ответов API — на английском. Комментарии в коде — как в остальном проекте.
 
@@ -7,7 +7,8 @@
 ```
 MPU-6050 ─I2C-1─► fnav-core: AlarmService ──► событие ─┬─► журнал (data_dir/alarm_events.json), Telemetry.alarm
 GPS (gpsd) ──────►   (охрана вкл/выкл,                 ├─► сирена через колонку Bluetooth (mpv радио)
-                      удар / наклон / сдвиг)            ├─► камера: POST /protect-current (запись не удалится)
+камеры (/status) ─►   удар / наклон / сдвиг /           ├─► камера: POST /protect-current (запись не удалится)
+                      пропало видео)                    │
                                                         └─► outbox (SQLite) ─► fnav-relay POST /device/alarm
 fnav-relay (сервер) ─ Web Push (VAPID, aes128gcm) ─► FCM / Mozilla / Apple ─► телефон (sw.js админки)
 ```
@@ -45,8 +46,35 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 - **Сдвиг по GPS** (`move_enabled`): точка отсчёта — первая точка с `fix` ≠ `none` и `hdop ≤ 5` после перехода в
   `armed`; расстояние ≥ `move_m` → событие `move` (`distance_m`, `lat`, `lon`); дальше — не чаще раза в 300 с и только
   если от последнего сообщённого места снова ≥ `move_m`.
+- **Камера пропала** (`video_loss`) — раздел ниже.
 - События и сирена — только в `armed`/`triggered`. Push одного вида (`kind`) — не чаще раза в `push_cooldown_s`
   (в журнал попадают все события).
+
+### Камера пропала (видео перестало идти)
+
+Передняя камера (fnav-camera) и задняя (fnav-camera-rear, если `rear_camera.enabled`) сообщают в `/status`
+`video_age_s` — сколько секунд нет кадров (`null` — после перезапуска конвейера кадров не было). Ядро опрашивает их
+раз в секунду (`fnav/core/camera.py`); **видео идёт** — сервис отвечает, статус свежий (≤ 5 с), кадр не старше 3 с.
+Не отвечает сам сервис камеры — тоже «нет видео».
+
+`VideoWatch` (`fnav/core/alarm.py`), раз в секунду в `armed`/`triggered`, если `video_loss`:
+
+- Следим только за камерой, у которой **после постановки на охрану видео было**. Не было (сломалась заранее, задняя
+  выключена в сети) — не тревога: на странице охраны строка «Cameras» красная. После перезапуска ядра камера тоже
+  должна сначала «показаться».
+- Кадров нет дольше `video_loss_s` (по умолчанию 20 с) → событие **`video_lost`**: `data.camera` — `"front"` /
+  `"rear"`, нет видео ни с одной — `"both"` (обе в одну проверку или вторая вслед за первой); `data.since` — когда
+  пропало (unix). Одна пропажа — одно событие.
+- Действия — как у событий камер ([vision.md](vision.md)): журнал, push, аварийка, защита записей и снимки обеих камер;
+  **без сирены** (сбой Wi-Fi или перезагрузка камеры выглядят так же). У пропавшей камеры защищается последний
+  сегмент (сервис камеры перезапустил конвейер — тот, что закрыт при остановке, если моложе 10 мин), снимок — её
+  последний кадр (история `/snapshot.jpg?before=5`). Метка на шкале записи и Play в журнале — с `data.since`.
+- Видео снова идёт **10 с подряд** (`VIDEO_BACK_S`; мигающая камера — одна пропажа) → событие **`video_back`**
+  (`data.camera`, `data.lost_s` — сколько не было): журнал и push, **не тревога** (состояние, сирена, аварийка не
+  меняются; экран плашку не показывает).
+- Короткие пропуски (сбой Wi-Fi, перезапуск сервиса камеры: задняя переподключается за 5–10 с, передняя — 2–4 с)
+  короче `video_loss_s`. Камеру выключили в настройках (задняя) или `video_loss = false` — забыта, без `video_back`.
+- Пропало всё устройство (питание, глушилка) — это видит только сервер: `notify_offline` (раздел 6).
 
 ### Состояния
 
@@ -63,7 +91,8 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 3. Сирена (`siren`): через mpv радио на колонку Bluetooth, если она подключена — текущий поток на паузу/замена,
    синтезированный в коде звук сирены (свой WAV в data_dir, без сторонних файлов), громкость 100, `siren_s` секунд,
    потом восстановить, что играло (станция, громкость) или остаться в тишине. Колонки нет — пропустить (в лог).
-   **События камеры (`approach`, `face`, `loiter`) сирену не включают никогда** — [vision.md](vision.md).
+   **События камеры (`approach`, `face`, `loiter`) и пропажа видео (`video_lost`) сирену не включают никогда** —
+   [vision.md](vision.md).
 4. Снимок камеры — кадр **за 5 с до события** (`SNAPSHOT_BEFORE_S`; `GET /snapshot.jpg?before=5` fnav-camera, кадр из
    её истории последних 12 с: видно, что к событию привело) → `data_dir/alarm_snaps/<id>.jpg` (последние 100),
    `data.snapshot = true`; удаляются вместе с журналом. Запись события в админке (кнопка Play) тоже начинается за 5 с.
@@ -111,30 +140,38 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 | `arm_delay_s` | 60 | 0–600 | задержка постановки на охрану, с |
 | `push_cooldown_s` | 60 | 0–3600 | push одного вида не чаще, с |
 | `notify_offline` | false | | сервер шлёт push, если устройство на охране пропало из сети |
+| `video_loss` | true | | тревога, если видео камеры на охране перестало идти |
+| `video_loss_s` | 20 | 5–600 | столько без кадров — камера пропала, с |
 | `sensor_bus` | 1 | 0–30 | номер шины I2C |
 | `sensor_address` | 104 (0x68) | 104 или 105 | адрес датчика |
 
 ## 4. API устройства (только с сессией, как остальной `/api`)
 
-`AlarmEvent = {id: str (uuid4 hex), ts: float (unix), kind: "impact"|"tilt"|"move"|"approach"|"face"|"loiter"|"test", title: str, body: str,
+`AlarmEvent = {id: str (uuid4 hex), ts: float (unix), kind: "impact"|"tilt"|"move"|"approach"|"face"|"loiter"|"video_lost"|"video_back"|"test", title: str, body: str,
 url: str, data: object}` — `url` относительно каталога админки (`"#/alarm"`, для `move` — `"#/tracking"`).
 
 Тексты: `impact` — «Impact detected» / «Hit 0.42 g at 14:03»; `tilt` — «Van tilted» / «Tilted 4.2° at 14:03»;
 `move` — «Van is moving» / «230 m from the parking spot at 14:03»; `approach` — «Person approaching» / «Someone came
 close to the van at 14:03»; `face` — «Someone is looking in» / «A face close to the windshield at 14:03»; `loiter` — «Someone is lingering at the van» /
-«A person has stayed close to the van for 8 s at 14:03» (секунды — `data.held_s`); `test` — «Test alarm» / «Alarm notifications
-work (14:03)». Время — локальное устройства, `HH:MM`.
+«A person has stayed close to the van for 8 s at 14:03» (секунды — `data.held_s`); `video_lost` — «Rear camera lost» /
+«No video from the rear camera since 14:02» (`Front camera lost` …; обе — «Both cameras lost» / «No video from either
+camera since 14:02»; время — `data.since`); `video_back` — «Rear camera is back» / «Video from the rear camera again at
+14:05, after 3 min without it»; `test` — «Test alarm» / «Alarm notifications work (14:03)». Время — локальное устройства,
+`HH:MM`.
 События камер несут `data.camera` (`"front"` / `"rear"`). С задней — свои тексты: `approach` — «Person approaching behind
 the van» / «Someone came close to the back of the van at 14:03»; `face` — «Someone is looking into the rear camera» /
 «A face close to the rear camera at 14:03»; `loiter` — «Someone is lingering behind the van» / «A person has stayed close
-to the back of the van for 8 s at 14:03». Пауза между push (`push_cooldown_s`) для событий камер — отдельно по камерам.
+to the back of the van for 8 s at 14:03». Пауза между push (`push_cooldown_s`) для событий камер (и `video_lost` /
+`video_back`) — отдельно по камерам (`data.camera`).
 При любом срабатывании защищаются и снимаются обе камеры (задняя — если включена): `data.segment`, `data.snapshot`,
 `data.segment_rear`, `data.snapshot_rear`; снимок задней — `GET /api/alarm/snapshot/{id}-rear.jpg`.
 
 `AlarmStatus = {state, armed_at: float|null, arm_in_s: int|null, sensor: {ok: bool, model: str|null, address: int,
 error: str|null}, level_g: float|null, tilt_deg: float|null (текущий угол от базы, null вне armed), siren: bool
 (звучит), events: AlarmEvent[] (новые первыми, ≤ 100), relay: {configured: bool, pending: int}, hazard: {…},
-vision: {enabled, available, watching, people, error, rear: {watching, people, error} | null} ([vision.md](vision.md))}`
+vision: {enabled, available, watching, people, error, rear: {watching, people, error} | null} ([vision.md](vision.md)),
+cameras: [{camera: "front"|"rear", video: bool (кадры идут), lost: bool (было video_lost, ещё не вернулась)}] (задняя —
+если включена)}`
 
 | Метод | Путь | Ответ |
 |---|---|---|
@@ -145,7 +182,7 @@ vision: {enabled, available, watching, people, error, rear: {watching, people, e
 | POST | `/api/alarm/test` | `AlarmStatus` — событие `test` идёт всем путём (журнал → сервер → push), без сирены |
 | GET | `/api/alarm/snapshot/{id}.jpg` | снимок камеры к событию журнала; 404 — нет. `?thumb=1` — миниатюра для списков (192×144, ~5 КБ; уменьшение при декодировании JPEG): делается при первом запросе, лежит в `alarm_snaps/thumbs/`, удаляется вместе со снимком и при очистке журнала |
 | DELETE | `/api/alarm/events` | `AlarmStatus` (и снимки) |
-| POST | `/api/alarm/simulate` | только в `--mock`: `{"kind": "impact"|"tilt"|"move"|"approach"|"face"|"loiter", "g": 0.5, "camera": "front"|"rear"}` → как настоящее событие (если `armed`; камера — с учётом `settings.alarm.vision`) |
+| POST | `/api/alarm/simulate` | только в `--mock`: `{"kind": "impact"|"tilt"|"move"|"approach"|"face"|"loiter", "g": 0.5, "camera": "front"|"rear"}` → как настоящее событие (если `armed`; камера — с учётом `settings.alarm.vision`); `{"kind": "video_lost", "camera", "seconds": 60}` — у mock-камеры пропадает видео на `seconds` (событие — обычным путём, через `video_loss_s`; камера не mock или выключена — 409) |
 
 Настройки — общим механизмом `settings` (как остальные разделы).
 
@@ -155,7 +192,8 @@ siren: bool, seq: int, last: {kind, ts, title}|null}` (`null`, если серв
 **Кнопки**: действие `"alarm"` («Alarm on/off») — переключает `off` ↔ `arming`/`armed` (из `triggered` — `off`).
 
 **Экран**: охрана не `off` — маленький значок в углу (`ARM 45` при обратном отсчёте, `ARMED`); `triggered` — крупная
-мигающая надпись по `last.kind` (`IMPACT` / `TILTED` / `MOVING` / `PERSON` / `FACE`) 10 с после нового `seq`; переключение кнопкой —
+мигающая надпись по `last.kind` (`IMPACT` / `TILTED` / `MOVING` / `PERSON` / `FACE` / `CAMERA`) 10 с после нового `seq`
+(`video_back` и `test` — без надписи); переключение кнопкой —
 вспышка `ALARM ON` / `ALARM OFF` (как вспышка режима радио).
 
 ## 5. Устройство → сервер

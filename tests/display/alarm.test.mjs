@@ -114,3 +114,13 @@ test("bannerPlace: centred, nudged left of a compass on the right, below a centr
   assert.equal(centre.x, free.x);
   assert.ok(centre.y >= 140, "below the compass");
 });
+
+test("banner: a lost camera reads CAMERA; a camera back (no alarm) shows none", () => {
+  assert.equal(bannerWord("video_lost"), "CAMERA");
+  const t = newAlarmTrack();
+  updateAlarmTrack(t, A("armed", 3), 0);
+  updateAlarmTrack(t, hit("video_lost", 4), 5);
+  assert.equal(alarmBanner(t, hit("video_lost", 4), 5.1).word, "CAMERA");
+  updateAlarmTrack(t, hit("video_back", 5), 30); // still triggered: the back note is not an alarm
+  assert.equal(alarmBanner(t, hit("video_back", 5), 30.1), null);
+});

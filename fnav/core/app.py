@@ -729,9 +729,10 @@ def _register_games(app: FastAPI, core: Core) -> None:
 
 
 class SimulateBody(BaseModel):
-    kind: Literal["impact", "tilt", "move", "approach", "face", "loiter"]
+    kind: Literal["impact", "tilt", "move", "approach", "face", "loiter", "video_lost"]
     g: float = Field(0.5, gt=0, le=16)
-    camera: Literal["front", "rear"] = "front"  # события камеры: какая их «увидела»
+    camera: Literal["front", "rear"] = "front"  # события камеры: какая их «увидела»; video_lost — у какой пропадёт
+    seconds: float = Field(60.0, ge=1, le=600)  # video_lost: на сколько пропадёт видео mock-камеры
 
 
 class SimulateMarkBody(BaseModel):
@@ -859,8 +860,13 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
     if core.mock:
         @app.post("/api/alarm/simulate")
         async def alarm_simulate(body: SimulateBody):
-            """Только --mock: событие как от датчика / GPS (если охрана включена)."""
-            await core.alarm.simulate(body.kind, body.g, camera=body.camera)
+            """Только --mock: событие как от датчика / GPS (если охрана включена). video_lost — у mock-камеры пропадает
+            видео на seconds: событие — обычным путём, через video_loss_s (если охрана включена)."""
+            if body.kind == "video_lost":
+                if not await core.drop_camera_video(body.camera, body.seconds):
+                    return _err(409, "That camera is off or is not the mock camera")
+            else:
+                await core.alarm.simulate(body.kind, body.g, camera=body.camera)
             return await status()
 
         @app.post("/api/alarm/simulate/mark")

@@ -368,3 +368,7 @@ def test_attach_events_marks_alarm_events_inside_recordings():
     assert [m["id"] for m in cur["events"]] == ["e2", "e3"]  # e2 — и в следующей (стык); идущая — до «сейчас»
     assert [m["offset_s"] for m in cur["events"]] == [1.0, 100.0]
     assert nosync["events"] == []  # время неизвестно — без меток
+    # пропало видео: метка там, где пропало (data.since), а не через video_loss_s, когда подняли тревогу
+    lost = ev(6, 625.0, kind="video_lost", camera="front", since=t0 + 590.0)
+    done = attach_events([dict(items[1])], [lost], now=t0 + 720)[0]
+    assert [(m["id"], m["offset_s"]) for m in done["events"]] == [("e6", 590.0)]

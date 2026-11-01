@@ -3,8 +3,8 @@
 //
 // - Значок в стопке индикаторов справа внизу (рисует status.js): «ARM 45» — обратный отсчёт, «ARMED»,
 //   «ALARM» — сработала (мигает инверсией).
-// - Крупная мигающая плашка IMPACT / TILTED / MOVING — 10 с после нового alarm.seq, пока состояние «triggered»;
-//   снятие с охраны убирает её сразу.
+// - Крупная мигающая плашка IMPACT / TILTED / MOVING / PERSON / CAMERA — 10 с после нового alarm.seq, пока состояние
+//   «triggered» (события без тревоги — video_back, test — её не показывают); снятие с охраны убирает её сразу.
 // - Вспышка ALARM ON / ALARM OFF на 2.5 с при переключении off ↔ не off (как вспышка режима радио): при играющем
 //   радио — в строке трека плашки радио (новейшая из вспышек побеждает), иначе — своя плашка на месте радио
 //   (radio.js, drawAlarmFlash).
@@ -16,7 +16,10 @@ import { C, blinkOn, blit, capHeight, chamferPath, fontLabel, fontStencil, sprit
 
 export const BANNER_S = 10; // крупная надпись после нового события
 export const FLASH_S = 2.5; // ALARM ON / ALARM OFF — как вспышка режима радио
-const BANNER_WORD = { impact: "IMPACT", tilt: "TILTED", move: "MOVING", approach: "PERSON", face: "FACE", loiter: "PERSON" };
+const BANNER_WORD = { impact: "IMPACT", tilt: "TILTED", move: "MOVING", approach: "PERSON", face: "FACE", loiter: "PERSON",
+  video_lost: "CAMERA" };
+// события без тревоги: плашку не показывают (камера снова передаёт видео, проверка уведомлений)
+const QUIET_KINDS = new Set(["video_back", "test"]);
 
 // ── чистые помощники (tests/display/alarm.test.mjs) ───────────────────────
 
@@ -118,7 +121,7 @@ export function updateAlarmTrack(track, alarm, now) {
 
 /** Крупная плашка сейчас: {word} или null. */
 export function alarmBanner(track, alarm, now) {
-  if (!alarm || alarm.state !== "triggered" || track.seqT0 < 0) return null;
+  if (!alarm || alarm.state !== "triggered" || track.seqT0 < 0 || QUIET_KINDS.has(alarm.last?.kind)) return null;
   const dt = now - track.seqT0;
   if (dt < 0 || dt >= BANNER_S) return null;
   return { word: bannerWord(alarm.last?.kind), t0: track.seqT0 };

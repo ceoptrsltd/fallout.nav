@@ -198,3 +198,37 @@ async def test_client_arms_the_sound_watch_and_collects_loud_sounds(tmp_path):
     await c.poll()
     assert posts == [True, False]
     await c.stop()
+
+
+async def test_client_knows_whether_video_flows(tmp_path):
+    """Охрана: видео идёт — сервис отвечает, статус свежий, последний кадр не старше 3 с."""
+    from fnav.core.camera import CameraService as CamClient
+
+    cam = {"age": 0.4, "up": True}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if not cam["up"]:
+            raise httpx.ConnectError("refused", request=req)
+        return httpx.Response(200, json=CameraStatus(state="recording", camera="rear",
+                                                     video_age_s=cam["age"]).model_dump(mode="json"))
+
+    c = CamClient(mock=False, recordings_root=tmp_path, base_url="http://cam:8083", camera_id="rear",
+                  transport=httpx.MockTransport(handler), get_enabled=lambda: True)
+    assert not c.has_video()  # ещё не опрашивали
+    await c.poll()
+    assert c.has_video()
+    cam["age"] = 3.5  # кадры кончились
+    await c.poll()
+    assert not c.has_video()
+    cam["age"] = None  # конвейер перезапущен, кадров нет
+    await c.poll()
+    assert not c.has_video()
+    cam["age"] = 0.1
+    await c.poll()
+    assert c.has_video()
+    c.status_mono -= 6  # опрос завис — о видео ничего не известно
+    assert not c.has_video()
+    cam["up"] = False  # сервис не отвечает
+    await c.poll()
+    assert not c.has_video()
+    await c.stop()

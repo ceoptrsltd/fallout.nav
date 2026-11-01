@@ -178,6 +178,7 @@ class Core:
                                   open_hazard=FakeHazard if opts.mock else open_gpio_hazard)
         self.alarm.protect_rear = self._protect_rear_quiet
         self.alarm.snapshot_rear = self._snapshot_rear_quiet
+        self.alarm.get_video = self._camera_video
         # отметки движения с камер (без тревоги) — серые метки на шкале записей
         self.marks = MarkLog(paths.data_dir() / "vision_marks.jsonl")
         self.vision = VisionClient(get_settings=lambda: self.store.get().alarm.vision,
@@ -668,6 +669,22 @@ class Core:
         self.marks.add({"what": "sound", "camera": "rear",
                         **{k: ev.get(k) for k in ("start", "dur_s", "peak_db", "clip", "clip_start", "clip_dur_s")}},
                        time.time())
+
+    def _camera_video(self) -> dict[str, bool]:
+        """Идёт ли видео камер (охрана: пропало — тревога); выключенной задней нет."""
+        out = {"front": self.camera.has_video()}
+        if self.camera_rear.enabled:
+            out["rear"] = self.camera_rear.has_video()
+        return out
+
+    async def drop_camera_video(self, camera: str, seconds: float) -> bool:
+        """Только --mock: у mock-камеры «пропадает» видео на seconds. False — камера не mock (или выключена)."""
+        cam = self.camera_rear if camera == "rear" else self.camera
+        if not cam.enabled or not cam.using_mock or cam.mockcam is None:
+            return False
+        cam.mockcam.drop_video(seconds)
+        await cam.poll()
+        return True
 
     async def _protect_rear_quiet(self) -> dict:
         """Для сигнализации: защитить запись задней, если она включена (выключена — пусто, без ошибки)."""

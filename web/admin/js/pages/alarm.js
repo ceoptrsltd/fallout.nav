@@ -12,6 +12,7 @@ import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logTicks, impactToSlider, sliderToImpact,
   fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, pushErrorText, toUnix,
   hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, markLabel, marksSummary, eventDetail, peakText,
+  camerasText, eventMoment,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
 import { eventCamera, eventExtras } from "../dash-fmt.js";
@@ -83,7 +84,7 @@ export function mount(root) {
     const hzOn = !!(settings() && settings().hazard && settings().hazard.enabled);
     const sig = l ? [l.state, left, l.siren, l.hazard, hzOn, l.sensorOk, busy, st && st.armed_at, st && st.relay && st.relay.pending,
       st && st.relay && st.relay.configured, sen0 && sen0.ok, sen0 && sen0.model, sen0 && sen0.error,
-      settings() && settings().arm_delay_s].join("|") : "none";
+      settings() && settings().arm_delay_s, JSON.stringify((st && st.cameras) || null)].join("|") : "none";
     if (!force && sig === stateSig) return;
     stateSig = sig;
     if (!l) {
@@ -140,10 +141,15 @@ export function mount(root) {
       : sen.ok ? h("span.green", null, `${sen.model || "MPU-6050"} · 0x${(sen.address ?? 104).toString(16)}${sen.bus != null ? ` · I²C-${sen.bus}` : ""}`)
       : h("span.red", null, "not responding");
     const rel = relayText(st && st.relay);
-    stKv.append(
-      h("span.k", null, "Sensor"), h("span.v", null, senTxt),
-      h("span.k", null, "Server"), h("span.v", null, st ? h("span." + (rel.kind === "ok" ? "green" : "amber"), null, rel.text) : "—"),
-    );
+    const cams = camerasText(st && st.cameras); // a camera without video is not guarded until it shows up
+    stKv.append(h("span.k", null, "Sensor"), h("span.v", null, senTxt));
+    if (cams) {
+      stKv.append(h("span.k", null, "Cameras"), h("span.v", null, h("span." + (cams.kind === "ok" ? "green" : "red"), {
+        title: cams.kind === "ok" ? "Video from every camera"
+          : "No video: a camera lost while armed raises the alarm; one without video since arming is not watched until it comes back",
+      }, cams.text)));
+    }
+    stKv.append(h("span.k", null, "Server"), h("span.v", null, st ? h("span." + (rel.kind === "ok" ? "green" : "amber"), null, rel.text) : "—"));
     clear(sensorWarn);
     if (sen && !sen.ok) {
       sensorWarn.append(banner("warn", h("div", null, h("b", null, "Shock sensor not responding. "),
@@ -300,7 +306,7 @@ export function mount(root) {
     const link = eventLink(ev);
     const x = eventExtras(ev); // kept recordings: the front's (data.segment) and the rear's (data.segment_rear)
     const detail = eventDetail(ev);
-    const play = (seg, text, title) => h("button.btn.sm.al-play", { type: "button", title, onclick: (e) => playRecording(e.currentTarget, seg, ev.ts) },
+    const play = (seg, text, title) => h("button.btn.sm.al-play", { type: "button", title, onclick: (e) => playRecording(e.currentTarget, seg, eventMoment(ev)) },
       icon("play", 14), text);
     // Play — the recording of the camera that raised the event (the rear's for a rear-camera event), then the other
     const rearFirst = eventCamera(ev) === "rear";
@@ -729,6 +735,13 @@ export function mount(root) {
       f({ path: "alarm.tilt_deg", label: "Tilt threshold", type: "number", min: 0.5, max: 45, step: 0.1, unit: "°", help: "Held for 5 s, measured from the position when the alarm was armed." }),
       f({ path: "alarm.move_enabled", label: "Watch GPS position", type: "switch", switchLabel: "the van leaves the parking spot" }),
       f({ path: "alarm.move_m", label: "Movement distance", type: "number", min: 20, max: 5000, step: 10, unit: "m", validate: int }),
+      !settings() || settings().video_loss !== undefined // an older device has no such setting
+        ? [
+            f({ path: "alarm.video_loss", label: "Camera lost", type: "switch", switchLabel: "a camera stops sending video" }),
+            f({ path: "alarm.video_loss_s", label: "Lost after", hint: "without a single frame", type: "number", min: 5, max: 600, step: 1, unit: "s", validate: int,
+              help: "A camera that had video since the alarm was armed and then goes silent this long raises the alarm: a notification, the hazard lights and the recordings kept (the lost camera's — up to the moment it went silent). No siren: a Wi-Fi drop or a camera rebooting looks the same. Short drop-outs — a Wi-Fi hiccup, a camera service restart — take a few seconds and are ignored. When the video is back, a note goes to the log and your phone." }),
+          ]
+        : null,
       f({ path: "alarm.siren", label: "Siren", type: "switch", switchLabel: "through the Bluetooth speaker" }),
       f({ path: "alarm.siren_s", label: "Siren length", type: "number", min: 5, max: 300, step: 1, unit: "s", validate: int }),
       f({ path: "alarm.arm_delay_s", label: "Arm delay", hint: "after pressing Arm", type: "number", min: 0, max: 600, step: 1, unit: "s", validate: int }),

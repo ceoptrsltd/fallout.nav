@@ -1,6 +1,6 @@
-"""Охрана (docs/contracts/alarm.md): удар и наклон по MPU-6050, сдвиг по GPS; состояния off → arming → armed →
-triggered → armed; журнал событий; действия — защита текущей записи камеры, сирена через колонку Bluetooth (mpv
-радио), push через fnav-relay (outbox SQLite, как у журнала позиций).
+"""Охрана (docs/contracts/alarm.md): удар и наклон по MPU-6050, сдвиг по GPS, пропажа видео камер; состояния off →
+arming → armed → triggered → armed; журнал событий; действия — защита текущей записи камеры, сирена через колонку
+Bluetooth (mpv радио), push через fnav-relay (outbox SQLite, как у журнала позиций).
 
 Отсчёты акселерометра приходят в потоке чтения (fnav/core/imu.py) — обнаружение (Detector) считается там же,
 в event loop попадают только готовые события и величины.
@@ -35,6 +35,7 @@ from fnav.core.imu import ImuService
 from fnav.core.tracking import TOKEN_HEADER, Outbox, RelayConfig
 from fnav.core.util import cancel_tasks, spawn
 from fnav.models import (
+    AlarmCameraVideo,
     AlarmEvent,
     AlarmHazard,
     AlarmLast,
@@ -69,6 +70,8 @@ JOURNAL_MAX = 200
 STATUS_EVENTS = 100
 TICK_S = 0.25
 GPS_EVERY_S = 1.0
+VIDEO_EVERY_S = 1.0  # видео камер — проверка раз в секунду (ядро опрашивает камеры так же)
+VIDEO_BACK_S = 10.0  # пропавшая камера «вернулась», когда видео идёт столько подряд (мигающая — одно событие)
 HEARTBEAT_S = 60.0
 RETRY_MIN_S = 5.0
 OUTBOX_MAX_ROWS = 1000
@@ -82,6 +85,10 @@ HAZARD_BLINK_ON_S, HAZARD_BLINK_OFF_S = 0.7, 0.5  # подтверждение A
 
 DETECTED = ("armed", "triggered")  # события и сирена — только в этих состояниях
 VISION_KINDS = ("approach", "face", "loiter")  # от камеры (fnav-watch): без сирены — push, аварийка, защита записи
+# пропало видео камеры: как события камер (без сирены: бывает и сбой Wi-Fi, и перезагрузка камеры); вернулось —
+# только журнал и push (не тревога)
+NO_SIREN_KINDS = (*VISION_KINDS, "video_lost")
+CAMERA_NAMES = {"front": "front camera", "rear": "rear camera"}
 SNAPSHOTS_MAX = 100  # событий со снимками камер (alarm_snaps/<id>.jpg, задняя — <id>-rear.jpg)
 SNAPSHOT_BEFORE_S = 5.0  # снимок к событию — кадр за столько до него: видно, что к нему привело
 THUMBS_DIR = "thumbs"  # миниатюры снимков для списков (alarm_snaps/thumbs/<имя снимка>)
@@ -99,7 +106,7 @@ def _snap_name(event_id: str, camera: str) -> str:
 
 @dataclass
 class Detection:
-    kind: str  # "impact" | "tilt" | "move" | "approach" | "face" | "loiter"
+    kind: str  # "impact" | "tilt" | "move" | "approach" | "face" | "loiter" | "video_lost" | "video_back"
     data: dict = field(default_factory=dict)
 
 
@@ -276,6 +283,80 @@ class MoveWatch:
                                   "lon": round(cur[1], 7)})
 
 
+@dataclass
+class _CamVideo:
+    seen: bool = False  # видео было (после постановки на охрану): только такая камера может «пропасть»
+    down_since: float | None = None  # monotonic: кадров нет с этой проверки
+    down_ts: float | None = None  # то же, unix-время
+    lost: bool = False  # сообщили video_lost — ждём, пока видео вернётся
+    up_since: float | None = None  # после lost: видео снова идёт с …
+
+
+class VideoWatch:
+    """Пропало видео камеры на охране (docs/contracts/alarm.md «Камера пропала»). Камера, у которой после постановки
+    видео было, без кадров дольше grace_s → video_lost (data.camera: "front" / "rear", без видео обе — "both";
+    data.since — когда пропало); видео снова идёт VIDEO_BACK_S подряд → video_back (data.lost_s — сколько не было).
+    Камеры нет в опросе (задняя выключена) — забыта; видео не было с постановки — не считается (видно на странице
+    охраны). Короткие пропуски (сбой Wi-Fi, перезапуск сервиса камеры — несколько секунд) короче grace_s."""
+
+    def __init__(self) -> None:
+        self.cams: dict[str, _CamVideo] = {}
+
+    def reset(self) -> None:
+        self.cams.clear()
+
+    def is_lost(self, camera: str) -> bool:
+        c = self.cams.get(camera)
+        return bool(c and c.lost)
+
+    def check(self, video: dict[str, bool], grace_s: float, now: float, wall: float) -> list[Detection]:
+        for cam in [c for c in self.cams if c not in video]:
+            del self.cams[cam]
+        out: list[Detection] = []
+        newly: list[str] = []
+        for cam, ok in video.items():
+            c = self.cams.setdefault(cam, _CamVideo())
+            if ok and not c.lost:
+                c.seen, c.down_since, c.down_ts = True, None, None
+            elif ok:
+                if c.up_since is None:
+                    c.up_since = now
+                if now - c.up_since >= VIDEO_BACK_S - EPS:
+                    lost_s = c.up_since - (c.down_since if c.down_since is not None else c.up_since)
+                    out.append(Detection("video_back", {"camera": cam, "lost_s": round(lost_s)}))
+                    c.seen, c.lost, c.up_since, c.down_since, c.down_ts = True, False, None, None, None
+            else:
+                c.up_since = None
+                if not c.seen or c.lost:
+                    continue
+                if c.down_since is None:
+                    c.down_since, c.down_ts = now, wall
+                elif now - c.down_since >= grace_s - EPS:
+                    c.lost = True
+                    newly.append(cam)
+        if newly:
+            down = [cam for cam, c in self.cams.items() if c.lost]
+            since = min(self.cams[cam].down_ts or wall for cam in newly)
+            out.insert(0, Detection("video_lost", {"camera": "both" if len(down) > 1 else newly[0],
+                                                   "since": round(since, 3)}))
+        return out
+
+    def status(self, video: dict[str, bool]) -> list[AlarmCameraVideo]:
+        return [AlarmCameraVideo(camera=cam, video=ok, lost=self.is_lost(cam))  # type: ignore[arg-type]
+                for cam, ok in video.items()]
+
+
+def _gap_text(s: float) -> str:
+    """Сколько не было видео: «40 s», «3 min», «1 h 20 min»."""
+    n = max(0, round(s))
+    if n < 60:
+        return f"{n} s"
+    m = n // 60
+    if m < 60:
+        return f"{m} min"
+    return f"{m // 60} h {m % 60} min" if m % 60 else f"{m // 60} h"
+
+
 def make_event(kind: str, data: dict, ts: float) -> AlarmEvent:
     """Тексты push и журнала (по-английски); время — местное устройства, HH:MM. События камеры с задней
     (data.camera == "rear") — свои тексты: «за фургоном»."""
@@ -305,6 +386,18 @@ def make_event(kind: str, data: dict, ts: float) -> AlarmEvent:
         else:
             title = "Someone is lingering at the van"
             body = f"A person has stayed close to the van for {secs:.0f} s at {hm}"
+    elif kind == "video_lost":
+        since = time.strftime("%H:%M", time.localtime(float(data.get("since") or ts)))
+        cam = data.get("camera")
+        if cam == "both":
+            title, body = "Both cameras lost", f"No video from either camera since {since}"
+        else:
+            name = CAMERA_NAMES.get(str(cam), "camera")
+            title, body = f"{name.capitalize()} lost", f"No video from the {name} since {since}"
+    elif kind == "video_back":
+        name = CAMERA_NAMES.get(str(data.get("camera")), "camera")
+        gap = _gap_text(float(data.get("lost_s") or 0))
+        title, body = f"{name.capitalize()} is back", f"Video from the {name} again at {hm}, after {gap} without it"
     else:
         title, body = "Test alarm", f"Alarm notifications work ({hm})"
     return AlarmEvent(id=uuid.uuid4().hex, ts=round(ts, 3), kind=kind, title=title, body=body, url=url,  # type: ignore[arg-type]
@@ -565,10 +658,13 @@ class AlarmService:
         self.snapshot_rear: Callable[[], Awaitable[bytes]] | None = None
         self.snap_dir = data_dir / "alarm_snaps"
         self.vision_status: Callable[[], AlarmVision] | None = None  # fnav/core/vision.py
+        # идёт ли видео камер ({"front": True, "rear": False}; выключенной задней нет): ставит runtime
+        self.get_video: Callable[[], dict[str, bool]] | None = None
         self.clock = clock
         self.mono = mono
         self.detector = Detector()
         self.move = MoveWatch()
+        self.video = VideoWatch()
         self.siren = Siren(radio, data_dir / "alarm_siren.wav", allowed=lambda: self.state in DETECTED)
         self.hazard = HazardLights(lambda: self.get_settings().hazard, open_hazard, mono=mono)
         self.outbox = Outbox(data_dir / "alarm_outbox.db", max_rows=OUTBOX_MAX_ROWS)
@@ -581,7 +677,7 @@ class AlarmService:
         self._last_event_mono: float | None = None
         self.events: list[AlarmEvent] = []  # новые первыми
         self.seq = 0
-        self._last_push: dict[str, float] = {}  # kind (события задней камеры — kind:rear) → monotonic
+        self._last_push: dict[str, float] = {}  # kind (события камер — kind:камера) → monotonic
         self._pending = 0
         self._notify = get_settings().notify_offline
         self._kick = asyncio.Event()
@@ -674,6 +770,7 @@ class AlarmService:
         self._last_event_mono = None
         self.detector.rebase()
         self.move.reset()
+        self.video.reset()
         log.info("alarm: armed")
 
     async def arm(self) -> AlarmStatus:
@@ -696,6 +793,7 @@ class AlarmService:
         self.state, self.armed_at, self._arm_deadline, self._last_event_mono = "off", None, None, None
         self.detector.clear_base()
         self.move.reset()
+        self.video.reset()
         await self.siren.stop()
         await self.hazard.stop()
         if was != "off":
@@ -747,8 +845,20 @@ class AlarmService:
         if det is not None:
             await self._fire(det)
 
+    async def check_video(self) -> None:
+        """Пропало видео камеры (VideoWatch): video_lost — тревога, video_back — только журнал и push."""
+        cfg = self.get_settings()
+        if self.get_video is None or self.state not in DETECTED or not cfg.video_loss:
+            self.video.reset()  # выключили — после включения камера снова должна «показаться»
+            return
+        for det in self.video.check(self.get_video(), cfg.video_loss_s, self.mono(), self.clock()):
+            if det.kind == "video_lost":
+                await self._fire(det)
+            else:
+                await self._note(det)
+
     async def _tick_loop(self) -> None:
-        next_gps = 0.0
+        next_gps = next_video = 0.0
         while True:
             await asyncio.sleep(TICK_S)
             try:
@@ -756,6 +866,9 @@ class AlarmService:
                 if self.mono() >= next_gps:
                     next_gps = self.mono() + GPS_EVERY_S
                     await self.check_gps()
+                if self.mono() >= next_video:
+                    next_video = self.mono() + VIDEO_EVERY_S
+                    await self.check_video()
             except Exception:
                 log.exception("alarm tick")
 
@@ -793,7 +906,7 @@ class AlarmService:
         else:
             await self._save_state()
         await self._save_events()
-        if (cfg.siren and det.kind not in VISION_KINDS and self.state in DETECTED
+        if (cfg.siren and det.kind not in NO_SIREN_KINDS and self.state in DETECTED
                 and not self.siren.sounding):
             spawn(self.siren.start(cfg.siren_s), name="alarm-siren-start")
         if cfg.hazard.enabled and self.state in DETECTED:
@@ -811,6 +924,17 @@ class AlarmService:
             ev.data["snapshot_rear"] = True
         if seg or snap or seg_rear or snap_rear:
             await self._save_events()
+        await self._enqueue(ev, cooldown=True)
+
+    async def _note(self, det: Detection) -> None:
+        """Событие без тревоги (камера снова передаёт видео): журнал и push; состояние, сирена и аварийка — как были."""
+        if self.state not in DETECTED:
+            return
+        ev = make_event(det.kind, dict(det.data), self.clock())
+        self._record(ev)
+        log.info("alarm: %s - %s", ev.title, ev.body)
+        await self._save_state()
+        await self._save_events()
         await self._enqueue(ev, cooldown=True)
 
     async def vision_event(self, kind: str, data: dict) -> bool:
@@ -901,7 +1025,8 @@ class AlarmService:
             return
         if cooldown:
             # события камер — порознь по камерам: «подходит сзади» после «подходит спереди» — новость
-            key = f"{ev.kind}:rear" if ev.kind in VISION_KINDS and ev.data.get("camera") == "rear" else ev.kind
+            cam = ev.data.get("camera")
+            key = f"{ev.kind}:{cam}" if cam else ev.kind
             now, last = self.mono(), self._last_push.get(key)
             if last is not None and now - last < self.get_settings().push_cooldown_s:
                 log.info("alarm: no push for %s (cooldown)", key)
@@ -1029,6 +1154,7 @@ class AlarmService:
             hazard=self.hazard.status(),
             vision=self.vision_status() if self.vision_status else AlarmVision(
                 enabled=self.get_settings().vision.enabled),
+            cameras=self.video.status(self.get_video()) if self.get_video else [],
         )
 
     def telemetry(self) -> AlarmTelemetry:

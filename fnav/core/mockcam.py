@@ -50,6 +50,20 @@ class MockCamera:
         self._fonts = None
         self.started_utc = datetime.now(UTC).isoformat(timespec="seconds")
         self.current_segment: str | None = None
+        self._drop: tuple[float, float] | None = None  # «камера пропала» (охрана, simulate): monotonic начала и конца
+
+    def drop_video(self, seconds: float) -> None:
+        """Только --mock: видео «пропадает» на seconds (статус — без кадров), потом возвращается."""
+        now = time.monotonic()
+        self._drop = (now, now + seconds)
+        log.info("mock camera %s: no video for %.0f s", self.camera, seconds)
+
+    def _dropped_for(self) -> float | None:
+        """Сколько секунд уже нет видео; None — видео идёт."""
+        d, now = self._drop, time.monotonic()
+        if d is None or now >= d[1]:
+            return None
+        return now - d[0]
 
     # ── картинка ──
     def _render(self, n: int) -> bytes:
@@ -210,6 +224,11 @@ class MockCamera:
 
     # ── статус и «записи» ──
     def status(self) -> CameraStatus:
+        gone = self._dropped_for()
+        if gone is not None:
+            # как у сервиса камеры после перезапуска конвейера без кадров: video_age_s — None
+            return CameraStatus(state="error", camera=self.camera,  # type: ignore[arg-type]
+                                error=f"Camera: no video for {gone:.0f} s (simulated)")
         return CameraStatus(
             state="recording",
             camera=self.camera,  # type: ignore[arg-type]
@@ -221,6 +240,7 @@ class MockCamera:
             sensor_mode="2592x1944",
             output_size="1440x1080",
             time_synced=True,
+            video_age_s=0.0,
         )
 
     def ensure_demo_recordings(self) -> None:

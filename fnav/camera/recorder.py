@@ -200,6 +200,13 @@ class _Aac:
 AUDIO_QUEUE = 100  # кадров AAC сверх очереди видео (16 к/с)
 
 
+def lock_segment(path: Path) -> None:
+    """Защитить сегмент: рядом <имя>.lock — очистка его не удалит."""
+    lock = path.with_name(path.name + ".lock")
+    lock.touch(exist_ok=True)
+    fsync_dir(lock.parent)
+
+
 class Recorder:
     """Принимает H.264 AU (из любого потока), пишет сегменты в своём потоке.
 
@@ -350,9 +357,7 @@ class Recorder:
             rel = self.segment_rel
         if seg is None or rel is None:
             return None
-        lock = seg.path.with_name(seg.path.name + ".lock")
-        lock.touch(exist_ok=True)
-        fsync_dir(lock.parent)
+        lock_segment(seg.path)
         return rel
 
     @property

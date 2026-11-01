@@ -20,6 +20,7 @@ from fnav.core.alarm import (
     Detection,
     Detector,
     MoveWatch,
+    VideoWatch,
     make_event,
     siren_wav,
 )
@@ -786,3 +787,131 @@ async def test_imu_finds_the_sensor_on_its_own_bus_or_the_compass_bus():
     with pytest.raises(OSError) as e:
         imu._open_any()
     assert "on I2C-3" in str(e.value) and "I2C-1" in str(e.value) and imu.bus is None
+
+
+# ── пропало видео камеры ──
+
+
+def test_video_watch_rules():
+    w = VideoWatch()
+    g = 20.0
+    assert w.check({"front": False, "rear": True}, g, 0.0, 1000.0) == []  # у передней видео с постановки не было
+    assert w.check({"front": False, "rear": False}, g, 1.0, 1001.0) == []  # задняя пропала — ждём grace
+    assert w.check({"front": False, "rear": True}, g, 15.0, 1015.0) == []  # вернулась раньше — не событие
+    assert w.check({"front": False, "rear": False}, g, 16.0, 1016.0) == []
+    assert w.check({"front": False, "rear": False}, g, 35.0, 1035.0) == []
+    [d] = w.check({"front": False, "rear": False}, g, 36.0, 1036.0)
+    assert d.kind == "video_lost" and d.data == {"camera": "rear", "since": 1016.0} and w.is_lost("rear")
+    assert w.check({"front": False, "rear": False}, g, 100.0, 1100.0) == []  # одно событие на пропажу
+    assert w.check({"front": False, "rear": True}, g, 101.0, 1101.0) == []  # видео снова — ждём 10 с подряд
+    assert w.check({"front": False, "rear": False}, g, 105.0, 1105.0) == []  # мигает — ещё не вернулась
+    assert w.check({"front": False, "rear": True}, g, 106.0, 1106.0) == []
+    [d] = w.check({"front": False, "rear": True}, g, 116.0, 1116.0)
+    assert d.kind == "video_back" and d.data == {"camera": "rear", "lost_s": 90} and not w.is_lost("rear")
+    # обе: передняя показалась, потом пропали обе в одну проверку — одно событие «both»
+    assert w.check({"front": True, "rear": True}, g, 120.0, 1120.0) == []
+    assert w.check({"front": False, "rear": False}, g, 121.0, 1121.0) == []
+    [d] = w.check({"front": False, "rear": False}, g, 141.0, 1141.0)
+    assert d.data == {"camera": "both", "since": 1121.0}
+    # задняя пропала раньше, передняя — потом: второе событие тоже «both» (теперь нет обеих)
+    w.reset()
+    w.check({"front": True, "rear": True}, g, 0.0, 0.0)
+    w.check({"front": True, "rear": False}, g, 1.0, 1.0)
+    [d] = w.check({"front": True, "rear": False}, g, 21.0, 21.0)
+    assert d.data["camera"] == "rear"
+    w.check({"front": False, "rear": False}, g, 30.0, 30.0)
+    [d] = w.check({"front": False, "rear": False}, g, 50.0, 50.0)
+    assert d.data == {"camera": "both", "since": 30.0}
+    # заднюю выключили в настройках (её нет в опросе) — забыта, без video_back
+    assert w.check({"front": False}, g, 60.0, 60.0) == [] and not w.is_lost("rear")
+    assert [c.model_dump() for c in w.status({"front": False, "rear": True})] == [
+        {"camera": "front", "video": False, "lost": True}, {"camera": "rear", "video": True, "lost": False}]
+
+
+def test_video_event_texts():
+    ts = time.mktime((2026, 10, 27, 14, 3, 0, 0, 0, -1))
+    e = make_event("video_lost", {"camera": "rear", "since": ts - 60}, ts)
+    assert (e.title, e.body, e.url) == ("Rear camera lost", "No video from the rear camera since 14:02", "#/alarm")
+    e = make_event("video_lost", {"camera": "both", "since": ts}, ts)
+    assert (e.title, e.body) == ("Both cameras lost", "No video from either camera since 14:03")
+    e = make_event("video_back", {"camera": "front", "lost_s": 200}, ts)
+    assert (e.title, e.body) == ("Front camera is back", "Video from the front camera again at 14:03, after 3 min without it")
+    assert make_event("video_back", {"camera": "rear", "lost_s": 40}, ts).body.endswith("after 40 s without it")
+    assert make_event("video_back", {"camera": "rear", "lost_s": 4500}, ts).body.endswith("after 1 h 15 min without it")
+
+
+async def test_video_lost_raises_the_alarm_without_siren_and_back_is_a_note(tmp_path):
+    relay = FakeRelay()
+
+    async def protect():
+        return {"ok": True, "segment": "2026-10-27/2026-10-27_14-00-00.ts"}
+
+    async def protect_rear():
+        return {"ok": True, "segment": "rear/2026-10-27/2026-10-27_13-59-00.ts"}
+
+    svc, clk, cfg = make_alarm(tmp_path, arm_delay_s=0, siren=True, video_loss_s=20, protect=protect,
+                               relay=RelayConfig("http://relay", "tok"), transport=httpx.MockTransport(relay))
+    svc.protect_rear = protect_rear
+    sirens: list[float] = []
+
+    async def siren_start(seconds: float) -> bool:
+        sirens.append(seconds)
+        return True
+
+    svc.siren.start = siren_start
+    video = {"front": True, "rear": True}
+    svc.get_video = lambda: dict(video)
+    await svc.start(background=False)
+    await svc.check_video()
+    assert svc.video.cams == {}  # не на охране — не следим
+    await svc.arm()
+    await svc.check_video()
+    assert [c.model_dump() for c in svc.status().cameras] == [
+        {"camera": "front", "video": True, "lost": False}, {"camera": "rear", "video": True, "lost": False}]
+    video["rear"] = False
+    for _ in range(20):
+        clk.tick(1.0)
+        await svc.check_video()
+    assert svc.events == [] and svc.state == "armed"  # 19 с — ещё нет
+    clk.tick(1.0)
+    await svc.check_video()
+    await settle()
+    ev = svc.events[0]
+    assert ev.kind == "video_lost" and ev.title == "Rear camera lost" and svc.state == "triggered"
+    assert ev.data["camera"] == "rear" and ev.data["since"] == pytest.approx(clk.wall - 20)
+    assert ev.data["segment"].endswith(".ts") and ev.data["segment_rear"].startswith("rear/")
+    assert sirens == []  # без сирены: бывает и сбой Wi-Fi
+    assert svc.status().cameras[1].model_dump() == {"camera": "rear", "video": False, "lost": True}
+    clk.tick(31.0)
+    await svc.poll()
+    assert svc.state == "armed"
+    video["rear"] = True
+    for _ in range(11):
+        clk.tick(1.0)
+        await svc.check_video()
+    assert [e.kind for e in svc.events] == ["video_back", "video_lost"] and svc.state == "armed"  # не тревога
+    assert svc.events[0].data == {"camera": "rear", "lost_s": 52}
+    assert svc.outbox.count() == 2
+    # выключили в настройках — не следим (и после включения камера должна снова показаться)
+    cfg["s"] = cfg["s"].model_copy(update={"video_loss": False})
+    video["front"] = False
+    for _ in range(30):
+        clk.tick(1.0)
+        await svc.check_video()
+    assert len(svc.events) == 2 and svc.video.cams == {}
+    await svc.disarm()
+    assert svc.status().cameras[0].lost is False
+    await svc.stop()
+
+
+async def test_video_lost_api_mock(data_dir):
+    async with running_app() as c:
+        await login(c)
+        st = (await c.get("/api/alarm")).json()
+        assert st["cameras"] == [{"camera": "front", "video": True, "lost": False}]  # задняя выключена — её нет
+        r = await c.post("/api/alarm/simulate", json={"kind": "video_lost", "camera": "rear"})
+        assert r.status_code == 409
+        st = (await c.post("/api/alarm/simulate", json={"kind": "video_lost", "seconds": 30})).json()
+        assert st["cameras"] == [{"camera": "front", "video": False, "lost": False}] and st["events"] == []
+        cam = (await c.get("/api/camera/status")).json()
+        assert cam["state"] == "error" and cam["video_age_s"] is None

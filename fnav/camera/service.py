@@ -18,7 +18,7 @@ from fnav.models import CameraId, CameraSettings, CameraStatus, Settings
 from .jpeg import LoresFrame
 from .live import LiveHub, LiveMux
 from .mjpeg import JpegWorker, MjpegHub
-from .recorder import Recorder, TimeSync
+from .recorder import Recorder, TimeSync, lock_segment
 from .rtsp import DEFAULT_URL, RtspPublisher
 from .rtsp_pull import AAC_FRAME, AAC_RATE
 from .shmring import RingWriter
@@ -35,6 +35,7 @@ AAC_FRAME_PTS = AAC_FRAME * 90000 // AAC_RATE  # кадр AAC живого ви�
 REAR_RTSP_URL = "rtsp://127.0.0.1:8554/rear"
 REAR_PORT = 8083
 BUSY_S = 120.0  # чужой файл моложе — текущий сегмент другой камеры: очистка его не трогает
+LAST_SEGMENT_S = 600.0  # сегмента сейчас нет (камера пропала, конвейер перезапущен) — защищаем прошлый, если он моложе
 
 SourceFactory = Callable[[Settings, FrameSink], Source]
 
@@ -166,6 +167,7 @@ class CameraService(FrameSink):
         # lores-кадры для fnav-watch (камера на охране): копируются, только пока он просит
         self.ring = RingWriter(ring_path or ring_default_path(camera_id))
         self._last_video_mono = 0.0
+        self._last_segment: tuple[Path, str, float] | None = None  # закрытый при остановке конвейера: (путь, rel, monotonic)
         self._rate_log: deque[tuple[float, int]] = deque(maxlen=512)
         self._ring_only = False  # кадр нужен только кольцу (JPEG — нет)
         self._ring_want = False
@@ -375,10 +377,14 @@ class CameraService(FrameSink):
                 log.exception("set max exposure failed")
 
     def protect_current(self) -> str | None:
+        """Защитить текущий сегмент; его нет (камера пропала и конвейер перезапущен) — последний закрытый, если он
+        моложе LAST_SEGMENT_S: в нём то, что было перед пропажей."""
         p = self._p
-        if p is None or p.recorder is None:
-            return None
-        rel = p.recorder.protect_current()
+        rel = p.recorder.protect_current() if p is not None and p.recorder is not None else None
+        last = self._last_segment
+        if rel is None and last is not None and time.monotonic() - last[2] <= LAST_SEGMENT_S and last[0].is_file():
+            lock_segment(last[0])
+            rel = last[1]
         if rel:
             rel = self.rel_prefix + rel
             log.info("protected: %s", rel)
@@ -437,6 +443,7 @@ class CameraService(FrameSink):
             codec=getattr(src, "codec", None),
             stream_fps=getattr(src, "stream_fps", None),
             password_set=bool(self._password) if self.rear else None,
+            video_age_s=round(time.monotonic() - self._last_video_mono, 1) if self._last_video_mono else None,
             **self._sound_status(src),
         )
 
@@ -562,6 +569,9 @@ class CameraService(FrameSink):
                 except Exception:
                     log.exception("source stop failed")
             self._p = None
+            rec = p.recorder
+            if rec is not None and rec.current_path is not None and rec.segment_rel:
+                self._last_segment = (rec.current_path, rec.segment_rel, time.monotonic())
             if p.rtsp is not None:  # не задерживаем перезапуск записи ожиданием ffmpeg
                 threading.Thread(target=p.rtsp.stop, name="rtsp-stop", daemon=True).start()
             for part in (p.recorder, p.jpeg):

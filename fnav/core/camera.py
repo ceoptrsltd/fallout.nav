@@ -28,6 +28,8 @@ WHEP_URL = "http://127.0.0.1:8889/cam/whep"
 REAR_CAMERA_URL = "http://127.0.0.1:8083"
 REAR_WHEP_URL = "http://127.0.0.1:8889/rear/whep"
 POLL_S = 1.0
+VIDEO_FRESH_S = 3.0  # последний кадр камеры не старше — видео идёт (ночью кадров меньше, но не реже раза в секунду)
+STATUS_STALE_S = 5.0  # статус старше (опрос завис) — о видео ничего не известно: «нет»
 UNAVAILABLE = "Camera service (fnav-camera) is not responding"
 REAR_UNAVAILABLE = "Rear camera service (fnav-camera-rear) is not responding"
 REAR_OFF = "Rear camera is off (Camera → Rear)"
@@ -88,6 +90,7 @@ class CameraService:
         self._client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(2.0, connect=1.0))
         self.available: bool | None = None
         self.status: CameraStatus = CameraStatus(state="starting" if not mock else "stopped", camera=camera_id)
+        self.status_mono = 0.0  # когда статус обновлён (monotonic)
         self.mockcam = MockCamera(recordings_root, camera=camera_id) if mock else None
         self._listeners: list = []
         self._task: asyncio.Task | None = None
@@ -105,6 +108,14 @@ class CameraService:
     @property
     def enabled(self) -> bool:
         return bool(self.get_enabled())
+
+    def has_video(self) -> bool:
+        """Кадры камеры идут (охрана: пропали — тревога): сервис отвечает (или mock), статус свежий, последний кадр
+        не старше VIDEO_FRESH_S."""
+        if not (self.available or self.using_mock) or time.monotonic() - self.status_mono > STATUS_STALE_S:
+            return False
+        age = self.status.video_age_s
+        return age is not None and age <= VIDEO_FRESH_S
 
     def _check_enabled(self) -> None:
         if not self.enabled:
@@ -196,6 +207,7 @@ class CameraService:
     def _set_status(self, st: CameraStatus) -> CameraStatus:
         old = self.status
         self.status = st
+        self.status_mono = time.monotonic()
         if old != st:
             for cb in list(self._listeners):
                 try:

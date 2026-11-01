@@ -151,17 +151,53 @@ const KINDS = {
   approach: { label: "Person approaching", icon: "cam", kind: "bad" },
   face: { label: "Face at the windshield", icon: "cam", kind: "bad" },
   loiter: { label: "Lingering at the van", icon: "cam", kind: "bad" },
+  // a camera stopped sending video while armed (alarm, no siren) / sends it again (a note, not an alarm)
+  video_lost: { label: "Camera lost", icon: "cam", kind: "bad" },
+  video_back: { label: "Camera back", icon: "cam", kind: "" },
   test: { label: "Test", icon: "info", kind: "" },
 };
 
 /** Event kind for the log: {label, icon, kind}. */
 // events of the rear camera (data.camera === "rear")
 const REAR_LABELS = { approach: "Approaching behind the van", face: "Face at the rear camera", loiter: "Lingering behind the van" };
+// lost / back video: data.camera "front" | "rear" | "both" (both lost at once)
+const VIDEO_LABELS = {
+  video_lost: { front: "Front camera lost", rear: "Rear camera lost", both: "Both cameras lost" },
+  video_back: { front: "Front camera back", rear: "Rear camera back" },
+};
 
 /** Label, icon and tone of an event kind; camera "rear" — the rear camera's wording for camera events. */
 export function kindInfo(kind, camera) {
   const k = KINDS[kind] || { label: kind ? String(kind) : "Event", icon: "info", kind: "" };
+  const v = VIDEO_LABELS[kind] && VIDEO_LABELS[kind][camera];
+  if (v) return { ...k, label: v };
   return camera === "rear" && REAR_LABELS[kind] ? { ...k, label: REAR_LABELS[kind] } : k;
+}
+
+/** How long a camera had no video: "40 s", "3 min", "1 h 20 min". */
+export function gapText(s) {
+  if (typeof s !== "number" || !Number.isFinite(s) || s < 0) return "";
+  const n = Math.round(s);
+  if (n < 60) return `${n} s`;
+  const m = Math.floor(n / 60);
+  if (m < 60) return `${m} min`;
+  return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${Math.floor(m / 60)} h`;
+}
+
+/** The moment a recording of the event is worth watching from (unix s): a lost camera — when its video stopped
+ *  (data.since; the alarm comes video_loss_s later), anything else — the event itself. */
+export function eventMoment(ev) {
+  const since = ev && ev.data && ev.data.since;
+  return ev && ev.kind === "video_lost" && typeof since === "number" && Number.isFinite(since) ? since : ev && ev.ts;
+}
+
+/** The cameras' video on the alarm page (AlarmStatus.cameras): {text, kind} — "Front ok · Rear no video"; null — not
+ *  reported (an older device). */
+export function camerasText(cams) {
+  if (!Array.isArray(cams) || !cams.length) return null;
+  const name = (c) => (c === "rear" ? "Rear" : "Front");
+  const parts = cams.map((c) => `${name(c.camera)} ${c.video ? "ok" : c.lost ? "lost" : "no video"}`);
+  return { text: parts.join(" · "), kind: cams.every((c) => c.video) ? "ok" : "bad" };
 }
 
 // marks: what moved while the camera watched, without an alarm (cars, headlights, passers-by) — grey ticks on the
@@ -204,6 +240,7 @@ export function eventDetail(ev) {
   if (ev.kind === "tilt" && n(d.tilt_deg)) return `${d.tilt_deg.toFixed(1)}°`;
   if (ev.kind === "move" && n(d.distance_m)) return `${Math.round(d.distance_m)} m`;
   if (ev.kind === "loiter" && n(d.held_s)) return `${Math.round(d.held_s)} s`;
+  if (ev.kind === "video_back" && n(d.lost_s)) return `off ${gapText(d.lost_s)}`;
   return "";
 }
 

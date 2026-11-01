@@ -6,7 +6,7 @@ import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logVal, roundG, impactToSlider, sliderToImpact,
   logTicks, fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, isIos, deviceName,
   pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, IMPACT_STEPS,
-  markLabel, marksSummary, eventDetail, peakText,
+  markLabel, marksSummary, eventDetail, peakText, gapText, eventMoment, camerasText,
 } from "../../web/admin/js/alarm-fmt.js";
 
 const UA = {
@@ -263,4 +263,29 @@ test("event card: the one figure next to the time", () => {
   assert.equal(eventDetail({ kind: "approach", data: { held_s: 2.2 } }), ""); // the title says it all
   assert.equal(eventDetail({ kind: "impact", data: {} }), "");
   assert.equal(eventDetail({ kind: "test" }), "");
+});
+
+test("lost camera: labels, the gap, where to watch from, the cameras line", () => {
+  assert.deepEqual(kindInfo("video_lost", "rear"), { label: "Rear camera lost", icon: "cam", kind: "bad" });
+  assert.equal(kindInfo("video_lost", "both").label, "Both cameras lost");
+  assert.equal(kindInfo("video_lost").label, "Camera lost");
+  assert.equal(kindInfo("video_back", "front").label, "Front camera back");
+  assert.equal(kindInfo("video_back", "front").kind, "");
+  assert.equal(gapText(40), "40 s");
+  assert.equal(gapText(200), "3 min");
+  assert.equal(gapText(4500), "1 h 15 min");
+  assert.equal(gapText(7200), "2 h");
+  assert.equal(gapText(null), "");
+  assert.equal(eventDetail({ kind: "video_back", data: { camera: "rear", lost_s: 95 } }), "off 1 min");
+  assert.equal(eventDetail({ kind: "video_lost", data: { camera: "rear", since: 1 } }), "");
+  // the recording is worth watching from when the video stopped, not from the alarm video_loss_s later
+  assert.equal(eventMoment({ kind: "video_lost", ts: 1020, data: { since: 1000 } }), 1000);
+  assert.equal(eventMoment({ kind: "video_lost", ts: 1020, data: {} }), 1020);
+  assert.equal(eventMoment({ kind: "impact", ts: 1020, data: { since: 1000 } }), 1020);
+  assert.equal(camerasText([]), null);
+  assert.equal(camerasText(undefined), null);
+  assert.deepEqual(camerasText([{ camera: "front", video: true }, { camera: "rear", video: true }]), { text: "Front ok · Rear ok", kind: "ok" });
+  assert.deepEqual(camerasText([{ camera: "front", video: true }, { camera: "rear", video: false, lost: true }]),
+    { text: "Front ok · Rear lost", kind: "bad" });
+  assert.equal(camerasText([{ camera: "front", video: false, lost: false }]).text, "Front no video");
 });

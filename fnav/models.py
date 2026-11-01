@@ -359,6 +359,9 @@ class AlarmSettings(_Model):
     arm_delay_s: int = Field(60, ge=0, le=600)  # задержка постановки на охрану
     push_cooldown_s: int = Field(60, ge=0, le=3600)  # push одного вида не чаще
     notify_offline: bool = False  # сервер шлёт push, если устройство на охране пропало из сети
+    # камера пропала: видео, которое было на охране, не идёт дольше video_loss_s → тревога (без сирены)
+    video_loss: bool = True
+    video_loss_s: int = Field(20, ge=5, le=600)
     sensor_bus: int = Field(3, ge=0, le=30)  # шина I2C: 3 — своя (pins 7/29); не нашёлся — ищем и на 1 (с компасом)
     sensor_address: Literal[104, 105] = 104  # 0x68 (AD0 → GND) или 0x69
     hazard: HazardSettings = HazardSettings()
@@ -522,6 +525,8 @@ class CameraStatus(_Model):
     sound_armed: bool | None = None
     sound_level_db: float | None = None
     sound_seq: int | None = None
+    # сколько секунд нет кадров камеры (охрана: видео пропало — тревога); None — с запуска конвейера кадров не было
+    video_age_s: float | None = None
 
 
 # ───────────────────────────── Телеметрия (WebSocket) ─────────────────────────────
@@ -677,7 +682,7 @@ class BtState(_Model):
 # ───────────────────────────── Охрана и уровень (MPU-6050) ─────────────────────────────
 
 AlarmStateName = Literal["off", "arming", "armed", "triggered"]
-AlarmKind = Literal["impact", "tilt", "move", "approach", "face", "loiter", "test"]
+AlarmKind = Literal["impact", "tilt", "move", "approach", "face", "loiter", "video_lost", "video_back", "test"]
 
 
 class AlarmEvent(_Model):
@@ -730,6 +735,14 @@ class AlarmVision(_Model):
     rear: AlarmVisionCamera | None = None  # смотрит и заднюю (alarm.vision.rear и rear_camera.enabled), иначе нет
 
 
+class AlarmCameraVideo(_Model):
+    """Идёт ли видео камеры (охрана: пропало — тревога video_lost). Задняя — только если включена."""
+
+    camera: CameraId
+    video: bool = False  # кадры идут сейчас
+    lost: bool = False  # на охране пропало дольше video_loss_s (было video_lost) и ещё не вернулось
+
+
 class AlarmStatus(_Model):
     state: AlarmStateName = "off"
     armed_at: float | None = None
@@ -742,6 +755,7 @@ class AlarmStatus(_Model):
     relay: AlarmRelay = AlarmRelay()
     hazard: AlarmHazard = AlarmHazard()
     vision: AlarmVision = AlarmVision()
+    cameras: list[AlarmCameraVideo] = []
 
 
 class AlarmLast(_Model):

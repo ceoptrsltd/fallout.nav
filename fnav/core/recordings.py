@@ -386,7 +386,8 @@ def _span(it: dict, now: float) -> tuple[float, float] | None:
 
 def attach_events(items: list[dict], events: Iterable[Any], now: float | None = None) -> list[dict]:
     """Метки событий охраны в записях: offset_s = время события − начало сегмента (по имени файла, местное время).
-    Записи без времени (nosync) — без меток. Текущий сегмент — до «сейчас»."""
+    Записи без времени (nosync) — без меток. Текущий сегмент — до «сейчас». Пропало видео (video_lost) — метка там,
+    где пропало (data.since), а не когда подняли тревогу."""
     now = time.time() if now is None else now
     evs = [e for e in events if e.kind != "test"]
     for it in items:
@@ -395,7 +396,8 @@ def attach_events(items: list[dict], events: Iterable[Any], now: float | None = 
         if span is not None:
             t0, dur = span
             for e in evs:
-                off = e.ts - t0
+                since = (e.data or {}).get("since") if e.kind == "video_lost" else None
+                off = (since if isinstance(since, (int, float)) else e.ts) - t0
                 if -EVENT_MARGIN_S <= off <= dur + EVENT_MARGIN_S:
                     marks.append({"id": e.id, "kind": e.kind, "title": e.title, "ts": e.ts,
                                   "offset_s": round(min(max(off, 0.0), dur), 1),

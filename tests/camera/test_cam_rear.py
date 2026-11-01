@@ -257,3 +257,42 @@ def test_storage_front_cleans_both_but_not_the_rear_segment_being_written(tmp_pa
     res = cleanup(root, target_free_bytes=10**15, free_fn=lambda _p: 0, skip_recent_s=120)
     assert sorted(p.name for p in res.deleted) == ["a.ts", "b.ts", "c.ts"]  # самые старые обеих камер
     assert files["rear/2026-10-28/d.ts"].exists()
+
+
+class _SilentSource:
+    """Камера пропала: источник запускается, но кадров не даёт."""
+
+    sensor_mode = output_size = None
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+    def request_keyframe(self) -> None: ...
+
+
+def test_lost_camera_reports_video_age_and_protects_the_last_segment(tmp_path: Path):
+    """Охрана: video_age_s — сколько нет кадров (после перезапуска конвейера без кадров — None); сегмента сейчас
+    нет — защищается последний закрытый (в нём то, что было перед пропажей), если он моложе LAST_SEGMENT_S."""
+    svc = _rear_service(tmp_path, enabled=True)
+    dead = threading.Event()
+    real = svc.source_factory
+    svc.source_factory = lambda s, sink: _SilentSource() if dead.is_set() else real(s, sink)
+    svc.start()
+    try:
+        assert _wait(lambda: svc.status().state == "recording")
+        assert svc.status().video_age_s is not None and svc.status().video_age_s < 1.0
+        dead.set()
+        svc.restart()
+        assert _wait(lambda: svc._p is not None and isinstance(svc._p.source, _SilentSource))
+        st = svc.status()
+        assert st.video_age_s is None and st.current_segment is None
+        rel = svc.protect_current()
+        assert rel is not None and rel.startswith("rear/")
+        seg = tmp_path / "rec" / rel
+        assert seg.is_file() and seg.with_name(seg.name + ".lock").is_file()
+        path, rel0, _t = svc._last_segment
+        svc._last_segment = (path, rel0, time.monotonic() - 601)  # старше 10 мин — не то, что было перед пропажей
+        assert svc.protect_current() is None
+    finally:
+        svc.stop()
