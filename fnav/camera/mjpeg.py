@@ -14,6 +14,18 @@ log = logging.getLogger("fnav.camera.mjpeg")
 
 HISTORY_S = 12.0  # недавние кадры: снимок «за 5 с до события» для охраны (/snapshot.jpg?before=5)
 HISTORY_STEP_S = 0.5  # в историю — не чаще раза в столько (при клиентах MJPEG кадров больше); ~1 МБ памяти
+FRESH_S = 0.3  # новому зрителю — не кадр старше этого (без зрителей кодер пишет 1 к/с): ждём следующий, свежий
+
+BOUNDARY = "frame"
+# Chromium показывает часть multipart, только когда пришли заголовки следующей части (проверено на Chromium 152:
+# кадр висел на экране до прихода следующего — задержка на кадр). Поэтому заголовки следующей части уходят сразу за
+# кадром; Content-Length не нужен (браузеры ищут границу).
+PART_HEAD = b"--" + BOUNDARY.encode() + b"\r\nContent-Type: image/jpeg\r\n\r\n"
+
+
+def mjpeg_part(jpeg: bytes) -> bytes:
+    """Кадр потока MJPEG и сразу заголовки следующей части (поток начинается с PART_HEAD)."""
+    return jpeg + b"\r\n" + PART_HEAD
 
 
 class MjpegHub:
@@ -21,6 +33,7 @@ class MjpegHub:
 
     def __init__(self) -> None:
         self.jpeg: bytes | None = None
+        self.jpeg_t = 0.0  # monotonic публикации последнего кадра
         self.seq = 0
         self.clients = 0
         self.rates: dict[object, float | None] = {}  # клиент → нужная частота (None — полная)
@@ -35,9 +48,10 @@ class MjpegHub:
         self._event = asyncio.Event()
 
     def publish(self, jpeg: bytes) -> None:
-        self.jpeg = jpeg
-        self.seq += 1
         now = time.monotonic()
+        self.jpeg = jpeg
+        self.jpeg_t = now
+        self.seq += 1
         with self._hist_lock:
             h = self._history
             if not h or now - h[-1][0] >= HISTORY_STEP_S:
@@ -65,6 +79,13 @@ class MjpegHub:
                 return None
             t, jpg = min(self._history, key=lambda e: abs(now - seconds - e[0]))
         return now - t, jpg
+
+    def start_seq(self) -> int:
+        """last_seq для next_frame() нового зрителя: последний кадр, если он свежий (≤ FRESH_S), иначе — ждать
+        следующий (экран не покажет на миг кадр секундной давности: задний вид после нажатия кнопки)."""
+        if self.jpeg is not None and time.monotonic() - self.jpeg_t > FRESH_S:
+            return self.seq
+        return -1
 
     async def next_frame(self, last_seq: int, timeout: float = 5.0) -> tuple[int, bytes] | None:
         """Дождаться кадра новее last_seq."""
@@ -120,15 +141,19 @@ class JpegWorker:
             self._cv.notify()
         self._thr.join(3)
 
-    def wants_frame(self) -> bool:
-        """Источнику: стоит ли вообще копировать lores-кадр сейчас."""
+    def wants_frame(self, ts_us: int | None = None) -> bool:
+        """Источнику: стоит ли вообще копировать lores-кадр сейчас. ts_us — метка кадра (монотонные мкс) от
+        источника с неровным приходом кадров (IP-камера по Wi-Fi: кадры приходят пачками) — прореживание по ней,
+        иначе по моменту прихода; по моменту прихода пачка теряла кадры (15 к/с камеры → 8,7 к/с на экране)."""
         if self.hub.demand:
             want = self.hub.max_rate()
             interval = 1.0 / (min(self.fps, want) if want else self.fps)
         else:
             interval = 1.0
-        now = time.monotonic()
-        if now - self._last >= interval * 0.8:  # по моменту прихода кадра (не по концу кодирования)
+        now = ts_us / 1e6 if ts_us else time.monotonic()
+        if now < self._last:  # метки пошли заново (переподключение)
+            self._last = now - interval
+        if now - self._last >= interval * 0.8:  # не по концу кодирования
             self._last = now
             return True
         return False

@@ -71,7 +71,7 @@ class Sink:
             self.jpeg_ms.append((time.perf_counter() - t) * 1000)
             self.jpeg_size = len(j)
 
-    def wants_lores(self) -> bool:
+    def wants_lores(self, ts_us: int | None = None) -> bool:
         return True
 
     def on_error(self, msg: str) -> None:

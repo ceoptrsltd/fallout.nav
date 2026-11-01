@@ -15,10 +15,9 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from .live import LiveClient, LiveHub, LiveUnavailable
-from .mjpeg import HISTORY_S
+from .mjpeg import BOUNDARY, HISTORY_S, PART_HEAD, mjpeg_part
 from .service import CameraService
 
-BOUNDARY = "frame"
 NO_CACHE = {"Cache-Control": "no-cache, no-store", "Pragma": "no-cache", "X-Accel-Buffering": "no"}
 LIVE_IDLE_S = 15.0  # столько ждём данных живого видео, потом закрываем поток (клиент переподключится)
 
@@ -71,8 +70,9 @@ def create_app(service: CameraService, manage_service: bool = True) -> Starlette
             hub.clients += 1
             hub.rates[token] = fps
             try:
-                seq = -1
+                seq = hub.start_seq()
                 sent = 0.0
+                yield PART_HEAD
                 while True:
                     r = await hub.next_frame(seq, timeout=5.0)
                     if r is None:
@@ -83,8 +83,7 @@ def create_app(service: CameraService, manage_service: bool = True) -> Starlette
                         if now - sent < min_dt:
                             continue
                         sent = now
-                    yield (b"--" + BOUNDARY.encode() + b"\r\nContent-Type: image/jpeg\r\n"
-                           + f"Content-Length: {len(jpg)}\r\n\r\n".encode() + jpg + b"\r\n")
+                    yield mjpeg_part(jpg)
             finally:
                 hub.clients -= 1
                 hub.rates.pop(token, None)

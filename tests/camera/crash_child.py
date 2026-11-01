@@ -29,7 +29,7 @@ class Sink:
     def on_lores(self, frame) -> None:
         pass
 
-    def wants_lores(self) -> bool:
+    def wants_lores(self, ts_us=None) -> bool:
         return False
 
     def on_error(self, msg: str) -> None:

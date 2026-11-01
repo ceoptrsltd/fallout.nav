@@ -405,9 +405,9 @@ class CameraService(FrameSink):
             self._ring_want = False
             self.ring.write(frame.data, frame.kind, frame.w, frame.h, getattr(p.source, "exposure", None))
 
-    def wants_lores(self) -> bool:
+    def wants_lores(self, ts_us: int | None = None) -> bool:
         p = self._p
-        jpeg = bool(p and p.jpeg and p.jpeg.wants_frame())
+        jpeg = bool(p and p.jpeg and p.jpeg.wants_frame(ts_us))
         ring = self._ring_want = p is not None and self.ring.wants_frame()
         self._ring_only = ring and not jpeg
         return jpeg or ring

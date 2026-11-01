@@ -183,6 +183,7 @@ function applySettings(s) {
   layers = activeLayers(settings);
   const ds = settings.display;
   mirrorX = !!ds.mirror_x;
+  camera.setSafeArea(ds.safe_area_pct ?? 5); // задний вид — в видимую область кинескопа
   layout();
   orient.set(ds.orientation);
   rig.setOrientation(ds.orientation);

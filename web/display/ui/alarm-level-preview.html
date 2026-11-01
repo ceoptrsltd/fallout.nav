@@ -96,7 +96,7 @@ const CASES = [
   // rear view (key 4 / GPS-module button): display.camera = "rear"; the video is mirrored (display.rear_mirror) —
   // the camera's own caption reads backwards — the HUD is not
   ["rear", "Rear view: mirrored picture, REAR tag between the clock and the compass", [[0, S({ radio: R, speed: 4 })]], { rear: "ok" }],
-  ["rear-169", "Rear view, 16:9 IP camera: whole frame (contain), bars top and bottom", [[0, S({ speed: 4 })]], { rear: "ok", wide: true, weather: WX }],
+  ["rear-169", "Rear view, 16:9 IP camera: whole frame inside the visible area (contain), bars top and bottom", [[0, S({ speed: 4 })]], { rear: "ok", wide: true, weather: WX }],
   ["rear-v2", "Rear view with the v2 compass (tape across the top): the tag goes right of the clock, below the tape", [[0, S({ speed: 4 })]], { rear: "ok", style: "v2", orient: "north_up" }],
   ["rear-nosignal", "Rear camera down (status error/stopped, stream failed or frozen): NO SIGNAL instead of a frozen frame", [[0, S({ radio: R, speed: 4 })]], { rear: "no_signal" }],
   ["rear-connecting", "Rear camera starting, or the first frame takes more than 1.5 s: CONNECTING", [[0, S({ speed: 0 })]], { rear: "connecting", weather: WX }],
@@ -159,7 +159,8 @@ function camBackground() {
 }
 
 // rear camera as the screen shows it: the camera's frame (a sign with text — reads backwards once mirrored) flipped
-// left-right; a 16:9 frame is shown whole (object-fit: contain) with black bars top and bottom
+// left-right; the frame is shown whole (object-fit: contain) inside the CRT's visible area (display.safe_area_pct,
+// 5 %), black around it — a 16:9 frame gets bars top and bottom
 function rearPicture(wide) {
   const fw = W, fh = wide ? 432 : H;
   const f = document.createElement("canvas"); f.width = fw; f.height = fh;
@@ -172,8 +173,9 @@ function rearPicture(wide) {
   const c = document.createElement("canvas"); c.width = W; c.height = H;
   const x = c.getContext("2d");
   x.fillStyle = "#000"; x.fillRect(0, 0, W, H);
+  const sx = W * 0.05, sy = H * 0.05, sw = W * 0.9, sh = H * 0.9, k = Math.min(sw / fw, sh / fh);
   x.translate(W, 0); x.scale(-1, 1);
-  x.drawImage(f, 0, (H - fh) / 2);
+  x.drawImage(f, sx + (sw - fw * k) / 2, sy + (sh - fh * k) / 2, fw * k, fh * k);
   return c;
 }
 

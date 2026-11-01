@@ -2,8 +2,10 @@
 
 Основной поток идёт в конвейер камеры как есть (``on_video``: запись, MediaMTX) — без перекодирования. Малые кадры
 (``on_lores``: MJPEG для экрана и снимков, кольцо для fnav-watch) — декодированные: со второго потока камеры
-(``lores_url``, отдельный процесс), иначе с основного. Пока малые кадры никому не нужны часто, декодируются только
-ключевые (~1 к/с: свежий снимок для тревоги дёшево); есть зрители или fnav-watch — полная частота lores.
+(``lores_url``, отдельный процесс), иначе с основного. С основного, пока малые кадры никому не нужны часто,
+декодируются только ключевые (~1 к/с: свежий снимок для тревоги дёшево); второй поток декодируется весь (дёшево):
+задний вид на экране получает полную частоту сразу, без ожидания ключевого кадра. Есть зрители или fnav-watch —
+полная частота lores; прореживание — по меткам камеры (по Wi-Fi кадры приходят пачками).
 
 Метки времени: часы камеры привязываются к монотонным часам при подключении; уход больше чем на 2 с (или скачок
 меток) — привязка заново; метки только растут. Камеру нельзя попросить о ключевом кадре — ``request_keyframe`` пуст.
@@ -33,7 +35,7 @@ from .sources import FrameSink
 log = logging.getLogger("fnav.camera.rear")
 
 RESYNC_US = 2_000_000  # часы камеры ушли от наших дальше — привязать заново
-DEMAND_POLL_S = 0.25
+DEMAND_POLL_S = 0.1  # как быстро частота малых кадров догоняет спрос (задний вид на экране — сразу 15 к/с)
 SUB_IDLE_S = 10.0
 
 
@@ -288,14 +290,17 @@ class RtspCameraSource:
         log.info("rear camera: %s %s @ %s fps", self.codec, self.output_size, self.stream_fps or "?")
 
     def _on_lores(self, payload: bytes, ts: int, clock: Clock) -> None:
-        if len(payload) < LORES_HEAD.size or not self.sink.wants_lores():
+        if len(payload) < LORES_HEAD.size:
+            return
+        t = clock.map(ts)  # по меткам камеры: по Wi-Fi кадры приходят пачками, по приходу прореживание теряло кадры
+        if not self.sink.wants_lores(t):
             return
         w, h = LORES_HEAD.unpack_from(payload)
         data = np.frombuffer(payload, np.uint8, offset=LORES_HEAD.size)
         if data.size != w * h * 3 // 2:
             return
         self.lores_size = (w, h)
-        self.sink.on_lores(LoresFrame("yuv420", data.reshape(h * 3 // 2, w), w, h, clock.map(ts)))
+        self.sink.on_lores(LoresFrame("yuv420", data.reshape(h * 3 // 2, w), w, h, t))
 
     def _on_exit(self, name: str, error: str | None) -> None:
         if self._stop.is_set():

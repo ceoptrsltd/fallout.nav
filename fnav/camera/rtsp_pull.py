@@ -6,8 +6,10 @@
 
 Поток не перекодируется: H.264 из RTSP уходит родителю как есть (Annex-B; у ключевого кадра без SPS/PPS
 в потоке — SPS/PPS из SDP). По запросу родителя (строка ``lores <к/с>`` в stdin, 0 — выкл) кадры ещё и
-декодируются (программно), уменьшаются и отдаются как yuv420p. Полный декод дорог (1440×1080 на CM4 — ~24 мс
-процессора на кадр + ~5 мс уменьшение): для экрана и распознавания лучше второй поток камеры (``lores_url``).
+декодируются (программно), уменьшаются и отдаются как yuv420p; второй поток (``--no-video``) декодируется
+целиком (все кадры, дёшево), основной при ≤ 1 к/с — только ключевые кадры. Прореживание — по меткам камеры.
+Полный декод дорог (2560×1440 на CM4 — ~46 мс процессора на кадр вместе с уменьшением, 640×360 — ~6 мс): для
+экрана и распознавания — второй поток камеры (``lores_url``).
 
 Сообщения в stdout: заголовок ``<BBIq`` (тип, флаги, длина, метка времени мкс по часам камеры или -1) + данные:
   * INFO  — JSON {"codec", "width", "height", "fps"};
@@ -176,7 +178,10 @@ def run(url: str, w: Writer, ctl: Control, *, transport: str = "tcp", emit_video
         dec = None
         dec_name = None
         key_only = False  # ≤ 1 к/с — декодировать только ключевые кадры (свежий снимок почти даром)
-        last_lores = 0.0
+        # второй поток (без видео) дешёвый (640×360 — ~6 мс процессора на кадр): декодируем все кадры, без режима
+        # «только ключевые» — задний вид на экране получает 15 к/с сразу, не ждёт ключевого кадра (до 2 с)
+        all_frames = not emit_video
+        last_lores: float | None = None  # метка (с) последнего отданного малого кадра
         t0 = time.monotonic()
         first_pts: int | None = None
         for pkt in container.demux(vs):
@@ -202,13 +207,13 @@ def run(url: str, w: Writer, ctl: Control, *, transport: str = "tcp", emit_video
                 if dec is not None:
                     dec = None  # декодер не нужен — освободить (на Pi — аппаратный блок)
                 continue
-            if dec is not None and key_only != (fps <= 1):
+            if dec is not None and key_only != (fps <= 1 and not all_frames):
                 dec = None  # смена режима — заново с ключевого кадра (иначе P-кадры ссылаются на пропущенные)
             if dec is None:
                 if not key:
                     continue  # декодирование начинаем с ключевого кадра
                 dec, dec_name = open_decoder(extradata)
-                key_only = fps <= 1
+                key_only = fps <= 1 and not all_frames
                 if key_only:
                     try:
                         dec.skip_frame = "NONKEY"
@@ -222,10 +227,12 @@ def run(url: str, w: Writer, ctl: Control, *, transport: str = "tcp", emit_video
                 dec = None
                 continue
             for fr in frames:
-                now = time.monotonic()
-                if now - last_lores < 0.9 / fps:
+                # по метке камеры, не по приходу: по Wi-Fi кадры приходят пачками, и прореживание по приходу
+                # отдавало 8,7 к/с из 15 (замер 2026-11-01)
+                t = ts / 1e6 if ts >= 0 else time.monotonic()
+                if last_lores is not None and 0 <= t - last_lores < 0.9 / fps:
                     continue
-                last_lores = now
+                last_lores = t
                 lw = min(lores_w, fr.width) & ~1
                 lh = max(2, round(lw * fr.height / fr.width)) & ~1
                 small = fr.reformat(width=lw, height=lh, format="yuv420p")

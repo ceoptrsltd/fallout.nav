@@ -152,6 +152,7 @@ function fakeEl() {
       remove: (c) => classes.delete(c),
       contains: (c) => classes.has(c),
     },
+    style: { props: {}, setProperty(k, v) { this.props[k] = v; } },
     addEventListener: (k, f) => (on[k] = f),
     getAttribute: (k) => attrs[k] ?? null,
     removeAttribute: (k) => delete attrs[k],
@@ -350,4 +351,14 @@ test("retained HUD: the rear view is redrawn only when the tag or the message ch
   assert.equal(frame(state(t, { camera: "rear", rearSignal: "ok" })), true, "picture is back");
   assert.equal(frame(state(t, { camera: "front" })), true, "back to the front: the tag goes at once");
   assert.equal(frame(state(t, { camera: "front" })), false);
+});
+
+test("camera layer: the rear view fits the CRT's visible area (display.safe_area_pct)", () => {
+  const { cam, layer: el } = layer();
+  cam.setSafeArea(5);
+  assert.equal(el.style.props["--safe"], "5%", "CSS #camera.rear: inside 5 % margins on every side");
+  cam.setSafeArea(7.5);
+  assert.equal(el.style.props["--safe"], "7.5%");
+  cam.setSafeArea(99);
+  assert.equal(el.style.props["--safe"], "20%", "clamped like the setting");
 });

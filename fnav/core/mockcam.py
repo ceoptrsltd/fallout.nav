@@ -151,18 +151,19 @@ class MockCamera:
             self._idle_since = time.monotonic()
 
     async def mjpeg(self, fps: float | None = None) -> AsyncIterator[bytes]:
+        # как у fnav-camera: заголовки следующей части сразу за кадром
+        from fnav.camera.mjpeg import PART_HEAD, mjpeg_part
+
         min_dt = 0.9 / fps if fps else 0.0
         sent = 0.0
+        yield PART_HEAD
         async for frame in self.frames():
             if min_dt:
                 now = time.monotonic()
                 if now - sent < min_dt:
                     continue
                 sent = now
-            yield (
-                f"--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame)}\r\n\r\n".encode()
-                + frame + b"\r\n"
-            )
+            yield mjpeg_part(frame)
 
     # ── живое видео (MPEG-TS) ──
     @staticmethod

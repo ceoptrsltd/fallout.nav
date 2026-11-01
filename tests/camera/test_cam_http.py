@@ -106,6 +106,11 @@ def test_mjpeg_gives_frames_to_two_clients(server):
         t.join(20)
     assert len(results) == 2
     for buf in results:
+        # заголовки следующей части — сразу за кадром (Chromium иначе показывает кадр только с приходом следующего)
+        assert buf.startswith(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n\xff\xd8")
+        end = buf.index(b"\xff\xd9") + 2
+        nxt = b"\r\n--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+        assert buf[end:end + len(nxt)] == nxt
         parts = [p for p in buf.split(b"--frame\r\n") if p]
         jpegs = [p.split(b"\r\n\r\n", 1)[1] for p in parts if b"\r\n\r\n" in p]
         complete = [j for j in jpegs if j.startswith(b"\xff\xd8") and b"\xff\xd9" in j]

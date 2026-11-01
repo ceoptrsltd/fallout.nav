@@ -54,9 +54,17 @@
       object-fit: cover;
       display: block;
     }
-    /* задний вид (map/camera.js): кадр IP-камеры целиком (обычно 16:9 — полосы сверху и снизу), зеркально как
+    /* задний вид (map/camera.js): кадр IP-камеры целиком, вписанный в видимую область кинескопа (--safe =
+       display.safe_area_pct: поля, которые он срезает; обычно 16:9 — полосы сверху и снизу), зеркально как
        в зеркале заднего вида; .blank — нет кадра этого подключения или нет сигнала (вместо стоп-кадра — чёрный) */
-    #camera.rear { object-fit: contain; }
+    #camera.rear {
+      position: absolute;
+      left: var(--safe, 5%);
+      top: var(--safe, 5%);
+      width: calc(100% - 2 * var(--safe, 5%));
+      height: calc(100% - 2 * var(--safe, 5%));
+      object-fit: contain;
+    }
     #camera.mirror { transform: scaleX(-1); }
     #camera.blank { visibility: hidden; }
     #camera-msg {

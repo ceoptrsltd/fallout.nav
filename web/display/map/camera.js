@@ -3,9 +3,10 @@
 // Поток держится открытым, пока режим «камера», и ещё lingerS после возврата к карте
 // (частые переключения на светофорах не переподключают MJPEG), затем отключается — экономия CPU.
 //
-// Задний вид (map/rearview.js): setCamera("rear") — тот же <img> на api/camera/rear/mjpeg, кадр целиком
-// (object-fit: contain — у IP-камеры обычно 16:9), зеркально по display.rear_mirror (CSS только у видео, HUD
-// не зеркалится; общее display.mirror_x переворачивает весь #root и складывается с этим само). Надписи заднего
+// Задний вид (map/rearview.js): setCamera("rear") — тот же <img> на api/camera/rear/mjpeg, кадр целиком, вписанный
+// в видимую область кинескопа (setSafeArea; object-fit: contain — у IP-камеры обычно 16:9), зеркально по
+// display.rear_mirror (CSS только у видео, HUD не зеркалится; общее display.mirror_x переворачивает весь #root
+// и складывается с этим само). Надписи заднего
 // вида (REAR, нет сигнала) рисует HUD, а не #camera-msg. Пока нового кадра нет, картинка спрятана (.blank):
 // после переключения не видно кадра другой камеры, без сигнала — стоп-кадра (setHold).
 
@@ -33,6 +34,7 @@ export class CameraLayer {
     this.failed = false; // подключение не удалось, ждём повтора
     this.connectedAt = 0; // nowS() последнего подключения
     this.mirror = false;
+    this.safePct = null; // видимая область для заднего вида (setSafeArea)
     this.hold = false; // задний вид без сигнала: картинку спрятать
     this.blank = false; // что сейчас стоит в классе .blank
     this.retryTimer = null;
@@ -111,6 +113,17 @@ export class CameraLayer {
     if (this.shown) this._connect();
     else if (this.streaming) this._disconnect();
     else this._syncBlank();
+  }
+
+  /**
+   * Видимая область кинескопа (display.safe_area_pct — поля, которые он срезает, % с каждой стороны): задний вид
+   * вписывается в неё целиком (CSS #camera.rear по --safe), чтобы с экрана не пропадали края кадра.
+   */
+  setSafeArea(pct) {
+    const p = Math.min(20, Math.max(0, Number(pct) || 0));
+    if (p === this.safePct) return;
+    this.safePct = p;
+    this.layer.style?.setProperty("--safe", `${p}%`);
   }
 
   /** Задний вид без сигнала (map/rearview.js): спрятать картинку, чтобы не висел стоп-кадр. */

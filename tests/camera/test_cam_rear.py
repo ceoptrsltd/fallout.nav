@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import sys
 import threading
 import time
@@ -23,16 +24,17 @@ from fnav.camera.sources import FakeSource
 from fnav.models import LoresSettings, RearCameraSettings, Settings
 
 
-def make_video(path: Path, n: int = 60, w: int = 320, h: int = 180, fps: int = 15, fmt: str = "mpegts") -> Path:
-    """Короткое H.264-видео (libx264, GOP = fps) — «камера» для rtsp_pull."""
+def make_video(path: Path, n: int = 60, w: int = 320, h: int = 180, fps: int = 15, fmt: str = "mpegts",
+               gop: int | None = None) -> Path:
+    """Короткое H.264-видео (libx264, GOP = fps или gop) — «камера» для rtsp_pull."""
     import av
 
     rng = np.random.default_rng(3)
     noise = rng.integers(0, 255, (h, w, 3), dtype=np.uint8)
     with av.open(str(path), "w", format=fmt) as out:
-        st = out.add_stream("libx264", rate=fps)
+        st = out.add_stream("libx264", rate=fps, options={"x264-params": "scenecut=0"} if gop else None)
         st.width, st.height, st.pix_fmt = w, h, "yuv420p"
-        st.codec_context.gop_size = fps
+        st.codec_context.gop_size = gop or fps
         st.codec_context.max_b_frames = 0
         for i in range(n):
             vf = av.VideoFrame.from_ndarray(np.roll(noise, i * 4, axis=1), format="rgb24").reformat(format="yuv420p")
@@ -93,7 +95,7 @@ class Sink:
     def on_lores(self, frame):
         self.lores.append(frame)
 
-    def wants_lores(self):
+    def wants_lores(self, ts_us=None):
         return True
 
     def lores_demand_fps(self):
@@ -131,6 +133,33 @@ def test_source_passes_h264_through_and_decodes_small_frames(tmp_path: Path, fmt
     assert sink.lores, "no decoded frames"
     fr = sink.lores[-1]
     assert (fr.kind, fr.w, fr.h) == ("yuv420", 160, 90) and fr.data.shape == (135, 160)
+
+
+def pull_messages(video: Path, *, emit_video: bool, fps: float) -> list[tuple[int, int]]:
+    """rtsp_pull по файлу (как можно быстрее, без темпа меток) → [(тип, флаги)] сообщений родителю."""
+    buf = io.BytesIO()
+    with pytest.raises(RuntimeError, match="stream ended"):
+        rp.run(str(video), rp.Writer(buf), rp.Control(fps), emit_video=emit_video, lores_w=160)
+    data, pos, out = buf.getvalue(), 0, []
+    while pos < len(data):
+        typ, flags, size, _ts = rp.HEADER.unpack_from(data, pos)
+        pos += rp.HEADER.size + size
+        out.append((typ, flags))
+    return out
+
+
+def test_second_stream_decodes_every_frame_and_thins_by_camera_time(tmp_path: Path):
+    video = make_video(tmp_path / "cam.ts", n=45, gop=45)  # 3 с, один ключевой кадр
+    main = pull_messages(video, emit_video=True, fps=1)
+    assert sum(1 for t, f in main if t == rp.T_VIDEO and f & rp.F_KEY) == 1
+    # основной поток при 1 к/с — только ключевые кадры (декод 1440p дорог): один малый кадр за 3 с
+    assert sum(1 for t, _ in main if t == rp.T_LORES) == 1
+    # второй поток декодируется весь (задний вид не ждёт ключевого кадра), 1 к/с — по меткам камеры, хотя файл
+    # прочитан за доли секунды (по приходу вышел бы один кадр): 0; 0,93; 1,87; 2,8 с
+    sub = pull_messages(video, emit_video=False, fps=1)
+    assert [t for t, _ in sub].count(rp.T_LORES) == 4 and rp.T_VIDEO not in [t for t, _ in sub]
+    # 15 к/с камеры при спросе 15 к/с — все кадры (раньше по приходу пачками терялась почти половина)
+    assert [t for t, _ in pull_messages(video, emit_video=False, fps=15)].count(rp.T_LORES) == 45
 
 
 def test_source_reports_unreachable_camera(tmp_path: Path):
