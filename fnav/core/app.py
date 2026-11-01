@@ -24,6 +24,7 @@ from fnav.core.config import SettingsError
 from fnav.core.controls import controls_info
 from fnav.core.games import GamesError
 from fnav.core.level import LevelError
+from fnav.core.marks import CLIP_RE, CLIPS_DIR
 from fnav.core.radio import GENRES, RadioError
 from fnav.core.recordings import (
     RecordingError,
@@ -734,9 +735,41 @@ class SimulateBody(BaseModel):
 
 
 class SimulateMarkBody(BaseModel):
-    kind: Literal["motion", "vehicle", "person"] = "motion"
+    kind: Literal["motion", "vehicle", "person", "sound"] = "motion"
     camera: Literal["front", "rear"] = "front"
     dur_s: float = Field(6.0, ge=0, le=600)
+
+
+def _clear_sound_clips() -> None:
+    d = paths.data_dir() / CLIPS_DIR
+    try:
+        for p in d.iterdir():
+            if CLIP_RE.match(p.name):
+                p.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _mock_sound_clip(start: float, dur_s: float) -> dict:
+    """--mock: клип громкого звука (WAV 8 кГц: 5 с тишины, гудок dur_s, 3 с тишины) и поля отметки к нему."""
+    import math
+    import struct
+    import wave
+
+    rate, pre, post = 8000, 5.0, 3.0
+    d = paths.data_dir() / CLIPS_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    name = time.strftime("%Y%m%d-%H%M%S", time.localtime(start)) + f"-{int(start * 1000) % 1000:03d}.wav"
+    n = int((pre + dur_s + post) * rate)
+    loud = range(int(pre * rate), int((pre + dur_s) * rate))
+    frames = b"".join(struct.pack("<h", int(12000 * math.sin(2 * math.pi * 660 * i / rate)) if i in loud else 0)
+                      for i in range(n))
+    with wave.open(str(d / name), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(frames)
+    return {"peak_db": -8.7, "clip": name, "clip_start": start - pre, "clip_dur_s": round(n / rate, 1)}
 
 
 def _register_alarm(app: FastAPI, core: Core) -> None:
@@ -810,7 +843,18 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
     async def alarm_marks_clear():
         core.marks.clear()
         await core.marks.flush()
+        await asyncio.to_thread(_clear_sound_clips)
         return {"marks": [], "total": 0, "last_24h": core.marks.counts(time.time())}
+
+    @app.get("/api/alarm/sound/{name}")
+    async def alarm_sound(name: str):
+        """Клип громкого звука у задней камеры (отметка «sound»): WAV, PCM 8 кГц моно, из data_dir/sound_clips."""
+        if not CLIP_RE.match(name):
+            return _err(400, "Bad clip name")
+        p = paths.data_dir() / CLIPS_DIR / name
+        if not p.is_file():
+            return _err(404, "The sound clip is gone")
+        return FileResponse(p, media_type="audio/wav", headers={"Cache-Control": "private, max-age=86400"})
 
     if core.mock:
         @app.post("/api/alarm/simulate")
@@ -823,8 +867,11 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
         async def alarm_simulate_mark(body: SimulateMarkBody):
             """Только --mock: отметка движения, как от fnav-watch (кусок кончился только что)."""
             now = time.time()
+            extra = {}
+            if body.kind == "sound":  # клип: гудок посреди тишины, как настоящий (за 5 с до звука, 3 с после)
+                extra = await asyncio.to_thread(_mock_sound_clip, now - body.dur_s, body.dur_s)
             return core.marks.add({"what": body.kind, "camera": body.camera, "start": now - body.dur_s,
-                                   "dur_s": body.dur_s}, now)
+                                   "dur_s": body.dur_s, **extra}, now)
 
 
 # ───────────────────────── уровень (docs/contracts/level.md) ─────────────────────────

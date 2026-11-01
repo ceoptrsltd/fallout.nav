@@ -1,8 +1,10 @@
 """Живое видео по требованию: отдельный лёгкий H.264 (lores) → MPEG-TS → HTTP-клиенты (/live.ts).
 
 * ``LiveMux`` — превращает access unit второго энкодера в TS-пакеты (вызывается из потока энкодера,
-  только быстрые операции, без блокировок: поток опроса V4L2 не должен ждать — иначе камера встанет).
-  PTS непрерывны и при перезапуске энкодера (смена настроек, перезапуск конвейера).
+  только быстрые операции: поток опроса V4L2 не должен ждать — иначе камера встанет; замок — только против потока
+  звука задней камеры, у передней он всегда свободен). PTS непрерывны и при перезапуске энкодера (смена настроек,
+  перезапуск конвейера). Со звуком (задняя камера с микрофоном): кадры AAC (ADTS) по меткам на той же шкале, что
+  видео; пропал звук дольше AUDIO_LAG_S — вместо него тишина, иначе браузер (MSE, звук и видео вместе) встанет.
 * ``LiveHub`` — клиенты в asyncio: у каждого своя очередь; первый клиент включает энкодер, после ухода
   последнего он выключается через ``grace_s``. Медленный клиент теряет хвост и ждёт следующий ключевой кадр.
 """
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -24,35 +27,78 @@ class LiveUnavailable(Exception):
     pass
 
 
+AUDIO_LAG_S = 0.5  # звук отстал от видео больше чем на столько (пропал) — дописываем тишину
+
+
 class LiveMux:
-    def __init__(self, fps: int) -> None:
+    def __init__(self, fps: int, audio: bool = False) -> None:
         self.fps = max(1, int(fps))
         self._fixer = AccessUnitFixer()
-        self._mux = TsMuxer()
+        self._mux = TsMuxer(audio=audio)
         self._t0: int | None = None
         self._base = PTS_START
         self._last_pts: int | None = None
+        self._lock = threading.Lock()
+        self._silence: bytes | None = None  # кадр тишины AAC (ADTS) от источника звука
+        self._a_frame = 0  # длительность кадра AAC, 90 кГц
+        self._a_next: int | None = None  # PTS, где начнётся следующий кадр звука
 
-    def new_session(self, fps: int | None = None) -> None:
-        """Энкодер (пере)запускается: ждём его первый ключевой кадр, время продолжаем с того же места."""
-        if fps:
-            self.fps = max(1, int(fps))
-        self._fixer = AccessUnitFixer()
-        self._t0 = None
+    @property
+    def audio(self) -> bool:
+        return self._mux.audio
+
+    def new_session(self, fps: int | None = None, audio: bool | None = None) -> None:
+        """Энкодер (пере)запускается: ждём его первый ключевой кадр, время продолжаем с того же места.
+        audio — со звуком или без (меняет PMT; клиенты получат её перед ключевым кадром)."""
+        with self._lock:
+            if fps:
+                self.fps = max(1, int(fps))
+            self._fixer = AccessUnitFixer()
+            self._t0 = None
+            self._a_next = None
+            if audio is not None and audio != self._mux.audio:
+                self._mux = TsMuxer(audio=audio)
+
+    def set_silence(self, adts: bytes, frame_pts: int) -> None:
+        """Кадр тишины AAC и длительность кадра (90 кГц) — для пропусков звука."""
+        with self._lock:
+            self._silence, self._a_frame = adts, max(1, int(frame_pts))
 
     def push(self, au: bytes, keyframe: bool, ts_us: int) -> tuple[bytes, bool] | None:
-        au, keyframe = self._fixer.fix(au, keyframe)
-        if self._t0 is None:
-            if not keyframe or not self._fixer.has_params:
+        with self._lock:
+            au, keyframe = self._fixer.fix(au, keyframe)
+            if self._t0 is None:
+                if not keyframe or not self._fixer.has_params:
+                    return None
+                self._t0 = ts_us
+                if self._last_pts is not None:
+                    self._base = self._last_pts + 90000 // self.fps
+            pts = self._base + pts_from_us(ts_us - self._t0)
+            if self._last_pts is not None and pts <= self._last_pts:
+                pts = self._last_pts + 1
+            self._last_pts = pts
+            out = self._mux.mux(au, pts, keyframe=keyframe)
+            if self._mux.audio and self._silence is not None:
+                if self._a_next is None:
+                    self._a_next = pts
+                fill = bytearray()
+                while self._a_next < pts - int(AUDIO_LAG_S * 90000):
+                    fill += self._mux.mux_audio(self._silence, self._a_next)
+                    self._a_next += self._a_frame
+                out += bytes(fill)
+            return out, keyframe
+
+    def push_audio(self, adts: bytes, ts_us: int, frame_pts: int) -> bytes | None:
+        """Кадр AAC (ADTS), ts_us — его начало на тех же монотонных часах, что у видео. До первого ключевого кадра
+        видео и без звука в PMT — ничего. Наложился на уже выданное (тишину) — сразу за ним, без обратного хода."""
+        with self._lock:
+            if not self._mux.audio or self._t0 is None:
                 return None
-            self._t0 = ts_us
-            if self._last_pts is not None:
-                self._base = self._last_pts + 90000 // self.fps
-        pts = self._base + pts_from_us(ts_us - self._t0)
-        if self._last_pts is not None and pts <= self._last_pts:
-            pts = self._last_pts + 1
-        self._last_pts = pts
-        return self._mux.mux(au, pts, keyframe=keyframe), keyframe
+            pts = self._base + pts_from_us(ts_us - self._t0)
+            if self._a_next is not None and pts < self._a_next:
+                pts = self._a_next
+            self._a_next = pts + max(1, int(frame_pts))
+            return self._mux.mux_audio(adts, pts)
 
 
 @dataclass(eq=False)

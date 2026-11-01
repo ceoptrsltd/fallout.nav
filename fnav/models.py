@@ -141,6 +141,7 @@ class RearCameraSettings(_Model):
     fps: int = Field(25, ge=1, le=60)  # ожидаемая частота (пока камера не сообщила свою)
     bitrate_kbps: int = Field(4000, ge=200, le=25000)  # оценка — запас места под следующий сегмент
     mirror: bool = True  # на экране в машине — зеркально, как в зеркале заднего вида
+    audio: bool = True  # микрофон камеры: звук в живом видео админки, громкие звуки на охране (отметки с клипом)
     # высота подгоняется под пропорции потока; 25 к/с — задний вид на экране: кадры PAL-кинескопа (50 полей/с)
     lores: LoresSettings = LoresSettings(w=768, h=432, fps=25)
 
@@ -340,6 +341,8 @@ class VisionSettings(_Model):
     rear_near_line: float = Field(0.6, ge=0.2, le=1.0)
     # отметки без тревоги: движение / машина / прохожий — серые метки на шкале записи (не push, не аварийка)
     marks: bool = True
+    # громкие звуки у задней камеры (её микрофон, rear_camera.audio), пока стоит охрана: отметка с клипом звука
+    sound: bool = True
 
 
 class AlarmSettings(_Model):
@@ -512,6 +515,12 @@ class CameraStatus(_Model):
     codec: str | None = None  # "h264"
     stream_fps: float | None = None  # частота потока по данным камеры
     password_set: bool | None = None
+    # звук задней камеры: "pcm_mulaw 8000 Hz" (есть микрофон) или None; громкие звуки — пока охрана (sound_armed),
+    # уровень за 1 с (dBFS), счётчик событий (sound_seq: новые — GET /sound/events?after=…)
+    audio: str | None = None
+    sound_armed: bool | None = None
+    sound_level_db: float | None = None
+    sound_seq: int | None = None
 
 
 # ───────────────────────────── Телеметрия (WebSocket) ─────────────────────────────

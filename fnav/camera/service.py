@@ -20,8 +20,10 @@ from .live import LiveHub, LiveMux
 from .mjpeg import JpegWorker, MjpegHub
 from .recorder import Recorder, TimeSync
 from .rtsp import DEFAULT_URL, RtspPublisher
+from .rtsp_pull import AAC_FRAME, AAC_RATE
 from .shmring import RingWriter
 from .shmring import default_path as ring_default_path
+from .sound import SoundMonitor
 from .sources import FakeSource, FrameSink, Source
 from .storage import GB, cleanup, disk_free, repair_latest, segment_reserve_bytes, stats
 
@@ -29,6 +31,7 @@ log = logging.getLogger("fnav.camera")
 
 NO_SPACE = "No space left: all recordings are protected"
 REAR_DIR = "rear"  # записи задней камеры: {recordings_dir}/rear/YYYY-MM-DD/…
+AAC_FRAME_PTS = AAC_FRAME * 90000 // AAC_RATE  # кадр AAC живого видео, 90 кГц
 REAR_RTSP_URL = "rtsp://127.0.0.1:8554/rear"
 REAR_PORT = 8083
 BUSY_S = 120.0  # чужой файл моложе — текущий сегмент другой камеры: очистка его не трогает
@@ -114,6 +117,7 @@ class CameraService(FrameSink):
         live_grace_s: float = 5.0,
         ring_path: Path | None = None,
         camera_id: CameraId = "front",
+        sound_dir: Path | None = None,
     ) -> None:
         self.fake = fake
         self.camera_id: CameraId = camera_id
@@ -165,6 +169,8 @@ class CameraService(FrameSink):
         self._rate_log: deque[tuple[float, int]] = deque(maxlen=512)
         self._ring_only = False  # кадр нужен только кольцу (JPEG — нет)
         self._ring_want = False
+        # микрофон задней камеры: громкие звуки, пока стоит охрана (ядро включает: POST /sound) — клипы WAV
+        self.sound = SoundMonitor(sound_dir or paths.data_dir() / "sound_clips") if self.rear else None
 
     @property
     def cam(self) -> CameraSettings:
@@ -259,9 +265,13 @@ class CameraService(FrameSink):
             if start is None:
                 return "Live stream is not supported by this camera source"
             cam = self.cam
-            self._live_mux.new_session(cam.fps)
+            # со звуком: у камеры есть микрофон (задняя), AAC — пока смотрят
+            audio = bool(getattr(src, "audio_info", None)) and hasattr(src, "start_live_audio")
+            self._live_mux.new_session(cam.fps, audio=audio)
             try:
                 start(cam.live_bitrate_kbps, self._on_live_video)
+                if audio:
+                    src.start_live_audio(self._on_live_audio)  # type: ignore[attr-defined]
             except Exception as e:
                 log.exception("live encoder start failed")
                 return f"Live stream: {e}"
@@ -278,6 +288,8 @@ class CameraService(FrameSink):
             return
         try:
             src.stop_live()  # type: ignore[attr-defined]
+            if hasattr(src, "stop_live_audio"):
+                src.stop_live_audio()
         except Exception:
             log.exception("live encoder stop failed")
         log.info("live encoder stopped")
@@ -290,6 +302,29 @@ class CameraService(FrameSink):
                 self.live.publish(*r)
         except Exception:
             log.exception("live mux failed")
+
+    def _on_live_audio(self, adts: bytes, ts_us: int, silent: bool) -> None:
+        """Поток помощника звука: кадр AAC в живое видео (silent — кадр тишины для пропусков)."""
+        try:
+            if silent:
+                self._live_mux.set_silence(adts, AAC_FRAME_PTS)
+                return
+            r = self._live_mux.push_audio(adts, ts_us, AAC_FRAME_PTS)
+            if r is not None:
+                self.live.publish(r, False)
+        except Exception:
+            log.exception("live audio mux failed")
+
+    # ───────────── звук (задняя камера) ─────────────
+    def on_audio(self, pcm: bytes, ts_us: int) -> None:
+        if self.sound is not None:
+            self.sound.feed(pcm, ts_us)
+
+    def set_sound_armed(self, armed: bool) -> None:
+        """Ядро: охрана стоит — громкие звуки пишутся клипами; снята — нет (разговоры в фургоне не пишутся)."""
+        if self.sound is not None and armed != self.sound.armed:
+            self.sound.armed = armed
+            log.info("loud sounds: %s", "watching" if armed else "off")
 
     # ───────────── едем / стоим ─────────────
     def set_moving(self, moving: bool | None) -> None:
@@ -380,7 +415,16 @@ class CameraService(FrameSink):
             codec=getattr(src, "codec", None),
             stream_fps=getattr(src, "stream_fps", None),
             password_set=bool(self._password) if self.rear else None,
+            **self._sound_status(src),
         )
+
+    def _sound_status(self, src) -> dict:
+        a = getattr(src, "audio_info", None)
+        snd = self.sound
+        if not a or snd is None:
+            return {}
+        return {"audio": f"{a.get('codec')} {a.get('rate')} Hz", "sound_armed": snd.armed,
+                "sound_level_db": snd.level_db, "sound_seq": snd.seq}
 
     # ───────────── FrameSink (вызывается из потока источника) ─────────────
     def on_video(self, au: bytes, keyframe: bool, ts_us: int) -> None:

@@ -113,7 +113,7 @@
 Полностью — в отдельных контрактах, здесь только перечень:
 
 - **Охрана** — [alarm.md](alarm.md) §4: `GET /api/alarm`, `POST /api/alarm/arm|disarm|silence|test|hazard/test`,
-  `GET /api/alarm/snapshot/{id}.jpg` (задней камеры — `{id}-rear.jpg`; в событии `data.snapshot_rear`, `data.segment_rear`; `?thumb=1` — миниатюра ~5 КБ для списков), `DELETE /api/alarm/events`, `GET /api/alarm/marks?limit=50` / `DELETE /api/alarm/marks` (отметки движения без тревоги — [vision.md](vision.md) «Отметки»), `POST /api/alarm/simulate` и `POST /api/alarm/simulate/mark` (только `--mock`, иначе 404). Настройки — `settings.alarm`,
+  `GET /api/alarm/snapshot/{id}.jpg` (задней камеры — `{id}-rear.jpg`; в событии `data.snapshot_rear`, `data.segment_rear`; `?thumb=1` — миниатюра ~5 КБ для списков), `DELETE /api/alarm/events`, `GET /api/alarm/marks?limit=50` / `DELETE /api/alarm/marks` (отметки движения и громких звуков без тревоги — [vision.md](vision.md) «Отметки», «Громкие звуки»), `GET /api/alarm/sound/{имя}.wav` (клип громкого звука), `POST /api/alarm/simulate` и `POST /api/alarm/simulate/mark` (только `--mock`, иначе 404). Настройки — `settings.alarm`,
   телеметрия — `Telemetry.alarm`, клавиша — действие `"alarm"`. Камера на охране (fnav-watch) — [vision.md](vision.md).
 - **Уровень** — [level.md](level.md): `GET /api/level`, `POST /api/level/calibration/reference|forward`,
   `DELETE /api/level/calibration`. Настройки и калибровка — `settings.level`, телеметрия — `Telemetry.level`.

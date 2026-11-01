@@ -39,7 +39,7 @@ async def test_marklog_validates_sorts_persists_and_prunes(tmp_path, monkeypatch
     assert [m["kind"] for m in log.between(now[0] - 40, now[0])] == ["vehicle", "person"]
     assert [m["kind"] for m in log.between(now[0] - 100, now[0], "rear")] == ["motion"]
     assert [m["kind"] for m in log.latest(2)] == ["person", "vehicle"]
-    assert log.counts(now[0] - 45) == {"motion": 0, "vehicle": 1, "person": 1}
+    assert log.counts(now[0] - 45) == {"motion": 0, "vehicle": 1, "person": 1, "sound": 0}
 
     await log.flush()  # дописывает строки в конец
     assert len(path.read_text().splitlines()) == 3
@@ -124,15 +124,49 @@ async def test_marks_api_mock(data_dir):
         assert (await c.get("/api/alarm/marks")).status_code == 401
         await login(c)
         st = (await c.get("/api/alarm/marks")).json()
-        assert st == {"marks": [], "total": 0, "last_24h": {"motion": 0, "vehicle": 0, "person": 0}}
+        assert st == {"marks": [], "total": 0, "last_24h": {"motion": 0, "vehicle": 0, "person": 0, "sound": 0}}
         for kind in ("vehicle", "motion", "motion"):
             r = await c.post("/api/alarm/simulate/mark", json={"kind": kind, "dur_s": 5})
             assert r.status_code == 200 and r.json()["kind"] == kind
         assert (await c.post("/api/alarm/simulate/mark", json={"kind": "loiter"})).status_code == 422
         st = (await c.get("/api/alarm/marks", params={"limit": 2})).json()
         assert [m["kind"] for m in st["marks"]] == ["motion", "motion"] and st["total"] == 3
-        assert st["last_24h"] == {"motion": 2, "vehicle": 1, "person": 0}
+        assert st["last_24h"] == {"motion": 2, "vehicle": 1, "person": 0, "sound": 0}
         assert set(st["marks"][0]) == {"ts", "kind", "camera", "dur_s", "rec"}
         assert (await c.get("/api/alarm")).json()["events"] == []  # отметки — не журнал охраны
+        # громкий звук (у mock — гудок): отметка с клипом, клип отдаётся, имя проверяется
+        m = (await c.post("/api/alarm/simulate/mark", json={"kind": "sound", "camera": "rear", "dur_s": 1.5})).json()
+        assert m["kind"] == "sound" and m["camera"] == "rear" and m["peak_db"] < 0
+        assert abs(m["clip_start"] - (m["ts"] - 5)) < 0.01 and m["clip_dur_s"] == 9.5
+        r = await c.get(f"/api/alarm/sound/{m['clip']}")
+        assert r.status_code == 200 and r.headers["content-type"] == "audio/wav" and r.content[:4] == b"RIFF"
+        assert (await c.get("/api/alarm/sound/..%2Fsettings.json")).status_code in (400, 404)
+        assert (await c.get("/api/alarm/sound/20991231-235959-000.wav")).status_code == 404
+        assert (await c.get("/api/alarm/marks")).json()["last_24h"]["sound"] == 1
         st = (await c.delete("/api/alarm/marks")).json()
         assert st["total"] == 0 and (await c.get("/api/alarm/marks")).json()["marks"] == []
+        assert (await c.get(f"/api/alarm/sound/{m['clip']}")).status_code == 404  # клипы — вместе с отметками
+
+
+async def test_sound_marks_keep_their_clip_and_reach_the_rear_recording(tmp_path):
+    t0 = _ts("2026-11-01T19:28:28")
+    log = MarkLog(tmp_path / "vision_marks.jsonl", clock=lambda: t0 + 700)
+    await log.start(background=False)
+    m = log.add({"what": "sound", "camera": "rear", "start": t0 + 46.0, "dur_s": 1.1, "peak_db": -14.44,
+                 "clip": "20261101-192914-000.wav", "clip_start": t0 + 41.0, "clip_dur_s": 9.1}, t0 + 52)
+    assert m == {"ts": t0 + 46.0, "kind": "sound", "camera": "rear", "dur_s": 1.1, "peak_db": -14.4,
+                 "clip": "20261101-192914-000.wav", "clip_start": t0 + 41.0, "clip_dur_s": 9.1}
+    bad = log.add({"what": "sound", "camera": "rear", "start": t0 + 60, "clip": "../../etc/passwd",
+                   "clip_start": t0 + 55}, t0 + 70)
+    assert "clip" not in bad  # имя клипа не по образцу — отметка без клипа
+    await log.flush()
+    again = MarkLog(tmp_path / "vision_marks.jsonl", clock=lambda: t0 + 700)
+    await again.start(background=False)
+    assert again.items[0] == m  # клип пережил перезапуск
+    items = [{"path": "rear/2026-11-01/2026-11-01_19-28-28.ts", "start": "2026-11-01T19:28:28", "duration_s": 600.0},
+             {"path": "2026-11-01/2026-11-01_19-21-01.ts", "start": "2026-11-01T19:21:01", "duration_s": 600.0}]
+    attach_marks(items, again.between, now=t0 + 700)
+    snd = items[0]["marks"][0]
+    assert snd["clip"] == "20261101-192914-000.wav" and snd["clip_offset_s"] == 41.0 and snd["clip_dur_s"] == 9.1
+    assert snd["offset_s"] == 46.0 and snd["peak_db"] == -14.4
+    assert items[1]["marks"] == []  # отметки задней — только на её записях

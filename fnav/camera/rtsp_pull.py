@@ -11,10 +11,17 @@
 Полный декод дорог (2560×1440 на CM4 — ~46 мс процессора на кадр вместе с уменьшением, 640×360 — ~6 мс): для
 экрана и распознавания — второй поток камеры (``lores_url``).
 
+Звук камеры (``--audio``, микрофон задней камеры): декодируется и отдаётся родителю как PCM s16 моно 8 кГц (уровень
+громкости, клипы громких звуков); по строке ``aac 1`` в stdin — ещё и AAC-LC 16 кГц в ADTS для живого видео (кодируется,
+только пока его кто-то смотрит). Ошибка звука видео не трогает: звук просто выключается.
+
 Сообщения в stdout: заголовок ``<BBIq`` (тип, флаги, длина, метка времени мкс по часам камеры или -1) + данные:
-  * INFO  — JSON {"codec", "width", "height", "fps"};
+  * INFO  — JSON {"codec", "width", "height", "fps", "audio": {"codec", "rate"} | null};
   * VIDEO — access unit, флаг 1 — ключевой кадр;
   * LORES — ``<HH`` (ширина, высота) + плоскости yuv420p подряд;
+  * AUDIO — PCM s16le моно PCM_RATE Гц, метка — начало куска;
+  * AAC   — кадр AAC с заголовком ADTS (AAC_FRAME отсчётов AAC_RATE Гц); флаг F_SILENT — кадр тишины (один, перед
+    первым кадром: родитель закрывает им пропуски звука);
   * ERROR — текст ошибки (перед выходом с кодом 1).
 """
 
@@ -28,11 +35,19 @@ import struct
 import sys
 import threading
 import time
+from fractions import Fraction
 
 HEADER = struct.Struct("<BBIq")
 LORES_HEAD = struct.Struct("<HH")
-T_INFO, T_VIDEO, T_LORES, T_ERROR = 1, 2, 3, 4
+T_INFO, T_VIDEO, T_LORES, T_ERROR, T_AUDIO, T_AAC = 1, 2, 3, 4, 5, 6
 F_KEY = 1
+F_SILENT = 2
+PCM_RATE = 8000  # микрофон IP-камеры — G.711 8 кГц: больше и не нужно
+AAC_RATE = 16000  # живое видео: AAC-LC моно 16 кГц играют все браузеры (MSE)
+AAC_FRAME = 1024  # отсчётов в кадре AAC (64 мс при 16 кГц)
+AAC_KBPS = 32
+AUDIO_RESYNC_US = 500_000  # метки звука ушли от счёта отсчётов дальше (потеря пакетов) — привязать заново
+_ADTS_RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
 URL_ENV = "FNAV_RTSP_URL"
 # программный: на CM4 h264_v4l2m2m через PyAV тратит вдвое больше процессора (58 против 29 мс на кадр 1440×1080,
 # замер 2026-10-28 — копирование кадров), поэтому только как запасной
@@ -113,10 +128,11 @@ class Writer:
 
 
 class Control:
-    """Строки из stdin: ``lores <к/с>``. Читается в своём потоке."""
+    """Строки из stdin: ``lores <к/с>``, ``aac 1|0``. Читается в своём потоке."""
 
-    def __init__(self, lores_fps: float = 0.0) -> None:
+    def __init__(self, lores_fps: float = 0.0, aac: bool = False) -> None:
         self.lores_fps = lores_fps
+        self.aac = aac
         self.eof = False
 
     def run(self, inp) -> None:
@@ -127,7 +143,102 @@ class Control:
                     self.lores_fps = max(0.0, min(60.0, float(parts[1])))
                 except ValueError:
                     pass
+            elif len(parts) == 2 and parts[0] == "aac":
+                self.aac = parts[1] == "1"
         self.eof = True  # родитель закрыл stdin — пора выходить
+
+
+def adts(payload: bytes, rate: int = AAC_RATE, channels: int = 1) -> bytes:
+    """Сырой кадр AAC-LC → кадр ADTS (7 байт заголовка, без CRC)."""
+    n = len(payload) + 7
+    sr = _ADTS_RATES.index(rate)
+    return bytes([0xFF, 0xF1, (1 << 6) | (sr << 2) | (channels >> 2), ((channels & 3) << 6) | (n >> 11),
+                  (n >> 3) & 0xFF, ((n & 7) << 5) | 0x1F, 0xFC]) + payload
+
+
+def aac_encoder():
+    import av
+
+    enc = av.CodecContext.create("aac", "w")
+    enc.sample_rate = AAC_RATE
+    enc.layout = "mono"
+    enc.format = "fltp"
+    enc.bit_rate = AAC_KBPS * 1000
+    enc.time_base = Fraction(1, AAC_RATE)
+    enc.open()
+    return enc
+
+
+def silent_aac() -> bytes:
+    """Кадр тишины AAC (ADTS) — им родитель закрывает пропуски звука в живом видео."""
+    import av
+    import numpy as np
+
+    enc = aac_encoder()
+    pkts = []
+    for i in range(4):  # первые кадры — разгон кодера
+        f = av.AudioFrame.from_ndarray(np.zeros((1, AAC_FRAME), np.float32), format="fltp", layout="mono")
+        f.sample_rate, f.pts, f.time_base = AAC_RATE, i * AAC_FRAME, Fraction(1, AAC_RATE)
+        pkts += enc.encode(f)
+    pkts += enc.encode(None)
+    return adts(bytes(pkts[min(1, len(pkts) - 1)]))
+
+
+class AudioPath:
+    """Звуковая дорожка камеры: декодирование → PCM s16 моно PCM_RATE (AUDIO); при ``aac`` — AAC-LC в ADTS (AAC)."""
+
+    def __init__(self, stream, w: Writer) -> None:
+        import av
+
+        self.stream = stream
+        self.w = w
+        self.pcm = av.AudioResampler(format="s16", layout="mono", rate=PCM_RATE)
+        self.enc = None
+        self.aac_rs = None
+        self.fifo = None
+        self.t0 = 0  # мкс камеры, к которым привязан отсчёт 0 кодера AAC
+        self.fed = 0  # отсчётов AAC_RATE, отданных в FIFO кодера
+        self.out = 0  # отсчётов, отданных кодеру
+
+    def info(self) -> dict:
+        cc = self.stream.codec_context
+        return {"codec": cc.name, "rate": cc.sample_rate}
+
+    def packet(self, pkt, aac: bool) -> None:
+        for fr in pkt.decode():
+            t = int(fr.pts * fr.time_base * 1_000_000) if fr.pts is not None and fr.time_base else pts_us(pkt)
+            for o in self.pcm.resample(fr):
+                self.w.send(T_AUDIO, o.to_ndarray().tobytes(), 0, t)
+            if aac:
+                self._aac(fr, t)
+            elif self.enc is not None:
+                self.enc = self.aac_rs = self.fifo = None  # живое видео без звука — кодер не нужен
+
+    def _aac(self, fr, t: int) -> None:
+        import av
+
+        if self.enc is None:
+            self.enc = aac_encoder()
+            self.aac_rs = av.AudioResampler(format="fltp", layout="mono", rate=AAC_RATE)
+            self.fifo = av.AudioFifo()
+            self.t0, self.fed, self.out = t, 0, 0
+            self.w.send(T_AAC, silent_aac(), F_SILENT, -1)
+        expected = self.t0 + self.fed * 1_000_000 // AAC_RATE
+        if t >= 0 and abs(t - expected) > AUDIO_RESYNC_US:
+            self.t0 += t - expected
+        for o in self.aac_rs.resample(fr):
+            o.pts = None
+            self.fifo.write(o)
+            self.fed += o.samples
+        while self.fifo.samples >= AAC_FRAME:
+            f = self.fifo.read(AAC_FRAME)
+            f.pts, f.time_base = self.out, Fraction(1, AAC_RATE)
+            self.out += AAC_FRAME
+            for pk in self.enc.encode(f):
+                if pk.pts is not None and pk.pts < 0:
+                    continue  # разгон кодера (отрицательные метки) — не звук
+                ts = self.t0 + int(pk.pts) * 1_000_000 // AAC_RATE if pk.pts is not None else -1
+                self.w.send(T_AAC, adts(bytes(pk)), 0, ts)
 
 
 def open_decoder(extradata: bytes | None):
@@ -153,10 +264,11 @@ def pts_us(pkt) -> int:
 
 
 def run(url: str, w: Writer, ctl: Control, *, transport: str = "tcp", emit_video: bool = True,
-        lores_w: int = 768, realtime: bool = False, timeout_s: float = 10.0) -> None:
+        lores_w: int = 768, realtime: bool = False, timeout_s: float = 10.0, audio: bool = False) -> None:
     import av
 
-    opts = {"rtsp_transport": transport, "allowed_media_types": "video", "max_delay": "500000"}
+    opts = {"rtsp_transport": transport, "allowed_media_types": "video+audio" if audio else "video",
+            "max_delay": "500000"}
     if not url.startswith("rtsp"):
         opts = {}  # файл (тесты): без RTSP-опций
     container = av.open(url, options=opts, timeout=(timeout_s, timeout_s))
@@ -172,8 +284,14 @@ def run(url: str, w: Writer, ctl: Control, *, transport: str = "tcp", emit_video
         # RTSP отдаёт Annex-B; MP4/MKV (файл вместо камеры) — avcC: длины NAL вместо стартовых кодов
         nal_len = (extradata[4] & 3) + 1 if extradata and extradata[0] == 1 and len(extradata) > 4 else 0
         rate = vs.average_rate or vs.guessed_rate
+        ap: AudioPath | None = None
+        if audio and container.streams.audio:
+            try:
+                ap = AudioPath(container.streams.audio[0], w)
+            except Exception as e:  # noqa: BLE001 — нет звука — есть видео
+                log.warning("audio: %s", e)
         info = {"codec": codec, "width": vs.codec_context.width, "height": vs.codec_context.height,
-                "fps": float(rate) if rate else None}
+                "fps": float(rate) if rate else None, "audio": ap.info() if ap else None}
         w.send(T_INFO, json.dumps(info).encode())
         dec = None
         dec_name = None
@@ -184,10 +302,17 @@ def run(url: str, w: Writer, ctl: Control, *, transport: str = "tcp", emit_video
         last_lores: float | None = None  # метка (с) последнего отданного малого кадра
         t0 = time.monotonic()
         first_pts: int | None = None
-        for pkt in container.demux(vs):
+        for pkt in container.demux(*([vs, ap.stream] if ap else [vs])):
             if ctl.eof:
                 return
             if pkt.size == 0:
+                continue
+            if ap is not None and pkt.stream.index == ap.stream.index:
+                try:
+                    ap.packet(pkt, ctl.aac)
+                except Exception as e:  # noqa: BLE001 — сбой звука не останавливает видео
+                    log.warning("audio stopped: %s", e)
+                    ap = None
                 continue
             ts = pts_us(pkt)
             key = bool(pkt.is_keyframe)
@@ -261,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lores-w", type=int, default=768)
     ap.add_argument("--lores-fps", type=float, default=0.0)
     ap.add_argument("--realtime", action="store_true", help="pace a file input by its timestamps (tests)")
+    ap.add_argument("--audio", action="store_true", help="the camera's audio too: PCM (and AAC on request)")
     args = ap.parse_args(argv)
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     url = os.environ.get(URL_ENV, "")
@@ -271,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
         if not url:
             raise RuntimeError(f"{URL_ENV} is not set")
         run(url, w, ctl, transport=args.transport, emit_video=not args.no_video, lores_w=args.lores_w,
-            realtime=args.realtime)
+            realtime=args.realtime, audio=args.audio)
         return 0
     except BrokenPipeError:
         return 0

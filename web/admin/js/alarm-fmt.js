@@ -165,11 +165,18 @@ export function kindInfo(kind, camera) {
 }
 
 // marks: what moved while the camera watched, without an alarm (cars, headlights, passers-by) — grey ticks on the
-// recordings and a folded list on the Alarm page (docs/contracts/vision.md "Marks")
-const MARK_LABELS = { motion: "Movement", vehicle: "Vehicle", person: "Person passing by" };
-const MARK_PLURAL = { motion: ["movement", "movements"], vehicle: ["vehicle", "vehicles"], person: ["person", "people"] };
+// recordings and a folded list on the Alarm page (docs/contracts/vision.md "Marks"); "sound" — a loud sound at the
+// rear camera's microphone while armed, with a clip of it
+const MARK_LABELS = { motion: "Movement", vehicle: "Vehicle", person: "Person passing by", sound: "Loud sound" };
+const MARK_PLURAL = { motion: ["movement", "movements"], vehicle: ["vehicle", "vehicles"], person: ["person", "people"],
+  sound: ["loud sound", "loud sounds"] };
 
-/** Label of a mark kind ("motion" | "vehicle" | "person"). */
+/** A loud sound's peak, "−14 dB" (dBFS of the camera's microphone); "" — not known. */
+export function peakText(db) {
+  return typeof db === "number" && Number.isFinite(db) ? `${Math.round(db)} dB`.replace("-", "\u2212") : "";
+}
+
+/** Label of a mark kind ("motion" | "vehicle" | "person" | "sound"). */
 export function markLabel(kind) {
   return MARK_LABELS[kind] || "Movement";
 }
@@ -182,7 +189,7 @@ export function marksSummary(counts) {
     for (const m of counts) if (m && m.kind) c[m.kind] = (c[m.kind] || 0) + 1;
   }
   if (!c || typeof c !== "object") return "";
-  return ["vehicle", "person", "motion"]
+  return ["vehicle", "person", "sound", "motion"]
     .filter((k) => c[k] > 0)
     .map((k) => `${c[k]} ${MARK_PLURAL[k][c[k] === 1 ? 0 : 1]}`)
     .join(" · ");

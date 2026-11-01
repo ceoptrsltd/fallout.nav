@@ -15,7 +15,7 @@ import httpx
 
 from fnav import paths
 from fnav.core import secretsfile as sf
-from fnav.core.alarm import AlarmService
+from fnav.core.alarm import DETECTED, AlarmService
 from fnav.core.auth import AuthManager
 from fnav.core.bluetooth import create_bluetooth
 from fnav.core.camera import (
@@ -148,7 +148,8 @@ class Core:
         self.camera_rear = CameraService(mock=opts.mock, recordings_root=paths.recordings_dir() / "rear",
                                          base_url=opts.rear_camera_url, whep_url=opts.rear_whep_url,
                                          transport=opts.local_transport, camera_id="rear",
-                                         get_enabled=lambda: self.store.get().rear_camera.enabled)
+                                         get_enabled=lambda: self.store.get().rear_camera.enabled,
+                                         get_sound_armed=self._sound_wanted, on_sound=self._on_sound)
         self.view_camera = "front"  # что показывает экран в режиме камеры (кнопка «камеры»: передняя ↔ задняя)
         self.system = SystemService(mock=opts.mock)
         self.video = VideoOutput(mock=opts.mock)
@@ -652,6 +653,21 @@ class Core:
         v = self.store.get().alarm.vision
         if v.marks and (data.get("camera") != "rear" or v.rear):
             self.marks.add(data, ts)
+
+    def _sound_wanted(self) -> bool:
+        """Громкие звуки у задней камеры пишутся клипами, только пока стоит охрана (и это включено)."""
+        s = self.store.get()
+        return bool(s.alarm.vision.sound and s.rear_camera.audio and self.alarm.state in DETECTED)
+
+    def _on_sound(self, ev: dict) -> None:
+        """Громкий звук у задней камеры на охране — отметка с клипом (без тревоги, как отметки движения)."""
+        clip, start = ev.get("clip"), ev.get("start")
+        if isinstance(start, (int, float)) and clip and any(
+                m.get("clip") == clip for m in self.marks.between(start - 5, start + 5, "rear")):
+            return  # уже есть (ядро или сервис камеры перезапускались)
+        self.marks.add({"what": "sound", "camera": "rear",
+                        **{k: ev.get(k) for k in ("start", "dur_s", "peak_db", "clip", "clip_start", "clip_dur_s")}},
+                       time.time())
 
     async def _protect_rear_quiet(self) -> dict:
         """Для сигнализации: защитить запись задней, если она включена (выключена — пусто, без ошибки)."""

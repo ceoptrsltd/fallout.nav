@@ -2,7 +2,8 @@
 охраны, не push, не аварийка, не защита записи; серые метки на шкале записи и свёрнутый список на странице охраны.
 
 data_dir/vision_marks.jsonl — по строке JSON на отметку {ts, kind, camera, dur_s} (ts — начало куска движения, unix;
-kind — "motion" | "vehicle" | "person"). В памяти — последние MARKS_MAX и не старше MARKS_MAX_AGE_S, по времени.
+kind — "motion" | "vehicle" | "person"; "sound" — громкий звук у задней камеры на охране (fnav-camera-rear), у неё ещё
+peak_db и клип: clip — имя файла в data_dir/sound_clips, clip_start (unix), clip_dur_s). В памяти — последние MARKS_MAX и не старше MARKS_MAX_AGE_S, по времени.
 Карта памяти: новые отметки дописываются в конец файла (не чаще раза в SAVE_EVERY_S и при остановке), целиком файл
 переписывается, только когда в нём набралось COMPACT_AT устаревших строк или отметки очистили. Оборванная
 последняя строка (питание пропало при записи) при чтении пропускается.
@@ -16,6 +17,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -25,7 +27,9 @@ from fnav.core.util import cancel_tasks
 
 log = logging.getLogger("fnav.core.marks")
 
-MARK_KINDS = ("motion", "vehicle", "person")
+MARK_KINDS = ("motion", "vehicle", "person", "sound")
+CLIP_RE = re.compile(r"^\d{8}-\d{6}-\d{3}\.wav$")  # клип громкого звука (fnav/camera/sound.py clip_name)
+CLIPS_DIR = "sound_clips"
 CAMERAS = ("front", "rear")
 MARKS_MAX = 5000
 MARKS_MAX_AGE_S = 30 * 86400
@@ -40,12 +44,27 @@ def _num(v: object) -> float | None:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+def _sound_extras(m: dict) -> dict:
+    """Поля отметки «sound»: пик (dBFS) и клип (имя файла, начало и длина) — только проверенные."""
+    out: dict = {}
+    if (v := _num(m.get("peak_db"))) is not None:
+        out["peak_db"] = round(max(-120.0, min(0.0, v)), 1)
+    clip = m.get("clip")
+    if isinstance(clip, str) and CLIP_RE.match(clip) and (cs := _num(m.get("clip_start"))) is not None:
+        out.update(clip=clip, clip_start=round(cs, 3),
+                   clip_dur_s=round(max(0.0, min(MAX_DUR_S, _num(m.get("clip_dur_s")) or 0.0)), 1))
+    return out
+
+
 def _clean(m: object) -> dict | None:
     if not (isinstance(m, dict) and _num(m.get("ts")) is not None and m.get("kind") in MARK_KINDS
             and m.get("camera") in CAMERAS):
         return None
-    return {"ts": float(m["ts"]), "kind": m["kind"], "camera": m["camera"],
-            "dur_s": max(0.0, min(MAX_DUR_S, _num(m.get("dur_s")) or 0.0))}
+    out = {"ts": float(m["ts"]), "kind": m["kind"], "camera": m["camera"],
+           "dur_s": max(0.0, min(MAX_DUR_S, _num(m.get("dur_s")) or 0.0))}
+    if m["kind"] == "sound":
+        out.update(_sound_extras(m))
+    return out
 
 
 def _line(m: dict) -> str:
@@ -148,7 +167,8 @@ class MarkLog:
 
     # ── данные ──
     def add(self, data: dict, ts: float | None = None) -> dict | None:
-        """Событие "mark" от fnav-watch (data: what, start, dur_s, camera; ts — когда пришло) → запись или None."""
+        """Событие "mark" от fnav-watch (data: what, start, dur_s, camera; ts — когда пришло) или громкий звук
+        (what "sound", ещё peak_db, clip, clip_start, clip_dur_s) → запись или None."""
         now = self.clock() if ts is None else ts
         kind = data.get("what")
         camera = data.get("camera") or "front"
@@ -159,6 +179,8 @@ class MarkLog:
             start = now
         m = {"ts": round(start, 3), "kind": kind, "camera": camera,
              "dur_s": round(max(0.0, min(MAX_DUR_S, _num(data.get("dur_s")) or 0.0)), 1)}
+        if kind == "sound":
+            m.update(_sound_extras(data))
         i = bisect.bisect_right(self._ts, m["ts"])
         self.items.insert(i, m)
         self._ts.insert(i, m["ts"])

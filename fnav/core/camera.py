@@ -76,6 +76,8 @@ class CameraService:
         get_speed: Callable[[], float | None] | None = None,
         camera_id: CameraId = "front",
         get_enabled: Callable[[], bool] | None = None,
+        get_sound_armed: Callable[[], bool] | None = None,
+        on_sound: Callable[[dict], None] | None = None,
     ):
         self.mock = mock
         self.camera_id: CameraId = camera_id
@@ -91,6 +93,10 @@ class CameraService:
         self._task: asyncio.Task | None = None
         self.get_speed = get_speed
         self.motion = MotionState()
+        # микрофон задней камеры: громкие звуки — пока стоит охрана; новые (seq) забираем и отдаём on_sound
+        self.get_sound_armed = get_sound_armed
+        self.on_sound = on_sound
+        self._sound_seq = 0
 
     @property
     def using_mock(self) -> bool:
@@ -152,7 +158,40 @@ class CameraService:
             moving = self.motion.update(self.get_speed(), time.monotonic())
             if moving != st.moving and await self._send_motion(moving):
                 st = st.model_copy(update={"moving": moving})
+        if self.available and st.audio:
+            st = await self._sync_sound(st)
         return self._set_status(st)
+
+    async def _sync_sound(self, st: CameraStatus) -> CameraStatus:
+        """Охрана → сервису камеры (громкие звуки пишутся только на ней); его новые громкие звуки → on_sound.
+        Сервис перезапустился (seq меньше) — с начала; повторы отсеивает получатель (по имени клипа)."""
+        if self.get_sound_armed is not None and st.sound_armed is not None:
+            want = bool(self.get_sound_armed())
+            if want != st.sound_armed:
+                try:
+                    r = await self._client.post(f"{self.base_url}/sound", json={"armed": want}, timeout=2.0)
+                    r.raise_for_status()
+                    st = st.model_copy(update={"sound_armed": want})
+                except httpx.HTTPError as e:
+                    log.warning("camera %s: sound watch: %s", self.camera_id, e)
+        seq = st.sound_seq or 0
+        if seq < self._sound_seq:
+            self._sound_seq = 0
+        if self.on_sound is not None and seq > self._sound_seq:
+            try:
+                r = await self._client.get(f"{self.base_url}/sound/events", params={"after": self._sound_seq},
+                                           timeout=2.0)
+                r.raise_for_status()
+                for ev in r.json().get("events") or []:
+                    if isinstance(ev, dict) and isinstance(ev.get("seq"), int):
+                        self._sound_seq = max(self._sound_seq, ev["seq"])
+                        try:
+                            self.on_sound(ev)
+                        except Exception:
+                            log.exception("sound event")
+            except (httpx.HTTPError, ValueError) as e:
+                log.warning("camera %s: sound events: %s", self.camera_id, e)
+        return st
 
     def _set_status(self, st: CameraStatus) -> CameraStatus:
         old = self.status

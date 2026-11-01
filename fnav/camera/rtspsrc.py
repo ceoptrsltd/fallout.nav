@@ -7,6 +7,9 @@
 задний вид на экране получает полную частоту сразу, без ожидания ключевого кадра. Есть зрители или fnav-watch —
 полная частота lores; прореживание — по меткам камеры (по Wi-Fi кадры приходят пачками).
 
+Звук (``rear_camera.audio``, микрофон камеры): забирает помощник второго потока (нет второго — основного), PCM —
+в ``sink.on_audio`` (громкие звуки на охране), AAC — в живое видео, пока его смотрят (``start_live_audio``).
+
 Метки времени: часы камеры привязываются к монотонным часам при подключении; уход больше чем на 2 с (или скачок
 меток) — привязка заново; метки только растут. Камеру нельзя попросить о ключевом кадре — ``request_keyframe`` пуст.
 """
@@ -29,7 +32,20 @@ import numpy as np
 from fnav.models import RearCameraSettings
 
 from .jpeg import LoresFrame
-from .rtsp_pull import F_KEY, HEADER, LORES_HEAD, T_ERROR, T_INFO, T_LORES, T_VIDEO, URL_ENV, redact
+from .rtsp_pull import (
+    F_KEY,
+    F_SILENT,
+    HEADER,
+    LORES_HEAD,
+    T_AAC,
+    T_AUDIO,
+    T_ERROR,
+    T_INFO,
+    T_LORES,
+    T_VIDEO,
+    URL_ENV,
+    redact,
+)
 from .sources import FrameSink
 
 log = logging.getLogger("fnav.camera.rear")
@@ -81,10 +97,12 @@ class Clock:
         return ts
 
 
-def default_cmd(*, video: bool, transport: str, lores_w: int) -> list[str]:
+def default_cmd(*, video: bool, transport: str, lores_w: int, audio: bool = False) -> list[str]:
     cmd = [sys.executable, "-m", "fnav.camera.rtsp_pull", "--transport", transport, "--lores-w", str(lores_w)]
     if not video:
         cmd.append("--no-video")
+    if audio:
+        cmd.append("--audio")
     return cmd
 
 
@@ -102,6 +120,7 @@ class _Helper:
         self.stderr_tail: deque[str] = deque(maxlen=8)
         self.error: str | None = None
         self.sent_fps: float | None = None
+        self.sent_aac: bool | None = None
         self._stopping = False
 
     def start(self) -> None:
@@ -118,6 +137,16 @@ class _Helper:
             self.proc.stdin.write(f"lores {fps:g}\n".encode())
             self.proc.stdin.flush()
             self.sent_fps = fps
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+    def set_aac(self, on: bool) -> None:
+        if self.sent_aac == on or self.proc is None or self.proc.stdin is None:
+            return
+        try:
+            self.proc.stdin.write(f"aac {1 if on else 0}\n".encode())
+            self.proc.stdin.flush()
+            self.sent_aac = on
         except (BrokenPipeError, OSError, ValueError):
             pass
 
@@ -209,8 +238,15 @@ class RtspCameraSource:
         self.stream_fps: float | None = None
         self.lores_size: tuple[int, int] | None = None
         self.exposure = None
+        self.audio_info: dict | None = None  # {"codec", "rate"} — у камеры есть звук (сообщил помощник)
+        self._audio_sub = bool(rear.audio and self.lores_url)  # звук — с помощника второго потока
+        self._audio_main = bool(rear.audio and not self.lores_url)
         self._clock = Clock(mono)
         self._lores_clock = Clock(mono)
+        self._audio_clock = Clock(mono)
+        self._aac_clock = Clock(mono)
+        self._live_audio: Callable[[bytes, int, bool], None] | None = None
+        self._aac_silence: bytes | None = None
         self._main: _Helper | None = None
         self._sub: _Helper | None = None
         self._sub_used = 0.0
@@ -228,9 +264,12 @@ class RtspCameraSource:
         self._stop.clear()
         lores_main = not self.lores_url
         self._main = _Helper("main", self.url, self.cmd_factory(video=True, transport=self.rear.transport,
-                                                                 lores_w=self.rear.lores.w),
+                                                                 lores_w=self.rear.lores.w,
+                                                                 **({"audio": True} if self._audio_main else {})),
                              self._on_main_msg, self._on_exit)
         self._main.start()
+        if self._audio_main and self._live_audio is not None:
+            self._main.set_aac(True)
         if lores_main:
             self._main.set_lores(1)
         log.info("rear camera: connecting to %s%s", redact(self.url),
@@ -258,6 +297,24 @@ class RtspCameraSource:
     def stop_live(self) -> None:
         self._live = None
 
+    # звук живого видео: AAC, пока есть зрители (кадр тишины — первым, с silent=True)
+    def start_live_audio(self, on_aac: Callable[[bytes, int, bool], None]) -> None:
+        self._live_audio = on_aac
+        if self._aac_silence is not None:
+            on_aac(self._aac_silence, -1, True)
+        h = self._audio_helper()
+        if h is not None:
+            h.set_aac(True)
+
+    def stop_live_audio(self) -> None:
+        self._live_audio = None
+        h = self._audio_helper()
+        if h is not None:
+            h.set_aac(False)
+
+    def _audio_helper(self) -> _Helper | None:
+        return self._sub if self._audio_sub else self._main if self._audio_main else None
+
     # ── сообщения помощников ──
     def _on_main_msg(self, typ: int, flags: int, ts: int, payload: bytes) -> None:
         if typ == T_VIDEO:
@@ -271,16 +328,47 @@ class RtspCameraSource:
             self._on_info(payload)
         elif typ == T_LORES:
             self._on_lores(payload, ts, self._clock)
+        elif typ in (T_AUDIO, T_AAC):
+            self._on_audio_msg(typ, flags, ts, payload)
 
     def _on_sub_msg(self, typ: int, flags: int, ts: int, payload: bytes) -> None:
         if typ == T_LORES:
             self._on_lores(payload, ts, self._lores_clock)
+        elif typ in (T_AUDIO, T_AAC):
+            self._on_audio_msg(typ, flags, ts, payload)
+        elif typ == T_INFO and self._audio_sub:
+            self._on_audio_info(payload)
+
+    def _on_audio_info(self, payload: bytes) -> None:
+        try:
+            a = json.loads(payload).get("audio")
+        except (ValueError, AttributeError):
+            return
+        if a != self.audio_info:
+            self.audio_info = a if isinstance(a, dict) else None
+            log.info("rear camera: audio %s", f"{a.get('codec')} {a.get('rate')} Hz" if self.audio_info else "none")
+
+    def _on_audio_msg(self, typ: int, flags: int, ts: int, payload: bytes) -> None:
+        if typ == T_AUDIO:
+            fn = getattr(self.sink, "on_audio", None)
+            if fn is not None:
+                fn(payload, self._audio_clock.map(ts))
+            return
+        cb = self._live_audio
+        if flags & F_SILENT:
+            self._aac_silence = payload
+            if cb is not None:
+                cb(payload, -1, True)
+        elif cb is not None:
+            cb(payload, self._aac_clock.map(ts), False)
 
     def _on_info(self, payload: bytes) -> None:
         try:
             info = json.loads(payload)
         except ValueError:
             return
+        if self._audio_main:
+            self._on_audio_info(payload)
         w, h = info.get("width"), info.get("height")
         if w and h:
             self.output_size = f"{w}x{h}"
@@ -335,9 +423,12 @@ class RtspCameraSource:
                     if self._sub is None:
                         self._sub = _Helper("sub", self.lores_url,
                                             self.cmd_factory(video=False, transport=self.rear.transport,
-                                                             lores_w=self.rear.lores.w),
+                                                             lores_w=self.rear.lores.w,
+                                                             **({"audio": True} if self._audio_sub else {})),
                                             self._on_sub_msg, self._on_exit)
                         self._sub.start()
+                        if self._audio_sub and self._live_audio is not None:
+                            self._sub.set_aac(True)
                     self._sub.set_lores(fps)
                 elif self._sub is not None and now - self._sub_used > SUB_IDLE_S:
                     sub, self._sub = self._sub, None

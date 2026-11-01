@@ -1,4 +1,4 @@
-"""Собственный минимальный MPEG-TS муксер (одна программа, одна дорожка H.264) и восстановление файла.
+"""Собственный минимальный MPEG-TS муксер (одна программа: H.264 и, для живого видео, AAC) и восстановление файла.
 
 Почему свой, а не libavformat:
   * каждый access unit превращается в целое число 188-байтных пакетов и отдаётся одним ``write()``
@@ -19,8 +19,10 @@ SYNC = 0x47
 PID_PAT = 0x0000
 PID_PMT = 0x1000
 PID_VIDEO = 0x0100
+PID_AUDIO = 0x0101  # AAC (ADTS) — только живое видео задней камеры со звуком; записи — без звука
 PID_NULL = 0x1FFF
 STREAM_TYPE_H264 = 0x1B
+STREAM_TYPE_AAC = 0x0F
 PTS_MASK = (1 << 33) - 1
 # Метка «файл закрыт корректно»: null-пакет (плееры его игнорируют) с этой подписью.
 END_MARKER = b"FNAV-END-OF-SEGMENT"
@@ -61,16 +63,19 @@ def _pat() -> bytes:
     return _section(body)
 
 
-def _pmt() -> bytes:
-    body = bytes([0x02, 0xB0, 18, 0x00, 0x01, 0xC1, 0x00, 0x00,
+def _pmt(audio: bool = False) -> bytes:
+    es = bytes([STREAM_TYPE_H264, 0xE0 | (PID_VIDEO >> 8), PID_VIDEO & 0xFF, 0xF0, 0x00])
+    if audio:
+        es += bytes([STREAM_TYPE_AAC, 0xE0 | (PID_AUDIO >> 8), PID_AUDIO & 0xFF, 0xF0, 0x00])
+    body = bytes([0x02, 0xB0, 13 + len(es), 0x00, 0x01, 0xC1, 0x00, 0x00,
                   0xE0 | (PID_VIDEO >> 8), PID_VIDEO & 0xFF,  # PCR PID
-                  0xF0, 0x00,  # program_info_length = 0
-                  STREAM_TYPE_H264, 0xE0 | (PID_VIDEO >> 8), PID_VIDEO & 0xFF, 0xF0, 0x00])
+                  0xF0, 0x00]) + es  # program_info_length = 0
     return _section(body)
 
 
 _PAT = _pat()
 _PMT = _pmt()
+_PMT_AV = _pmt(audio=True)
 
 
 def _ts_bytes(prefix: int, v: int) -> bytes:
@@ -91,10 +96,13 @@ def _pcr_bytes(pcr_base: int) -> bytes:
 
 
 class TsMuxer:
-    """Muxes H.264 access units (Annex-B, с AUD) в MPEG-TS. Каждый вызов возвращает кратно 188 байт."""
+    """Muxes H.264 access units (Annex-B, с AUD) в MPEG-TS. Каждый вызов возвращает кратно 188 байт.
+    audio=True — в PMT ещё дорожка AAC (``mux_audio``: кадры ADTS), PCR — по-прежнему на видео."""
 
-    def __init__(self) -> None:
-        self._cc = {PID_PAT: 0, PID_PMT: 0, PID_VIDEO: 0, PID_NULL: 0}
+    def __init__(self, audio: bool = False) -> None:
+        self.audio = audio
+        self._pmt = _PMT_AV if audio else _PMT
+        self._cc = {PID_PAT: 0, PID_PMT: 0, PID_VIDEO: 0, PID_AUDIO: 0, PID_NULL: 0}
         # заранее готовые заголовки «продолжение PES, только payload» для 16 значений CC
         self._cont_hdr = [bytes([SYNC, (PID_VIDEO >> 8) & 0x1F, PID_VIDEO & 0xFF, 0x10 | cc])
                           for cc in range(16)]
@@ -111,7 +119,7 @@ class TsMuxer:
 
     def tables(self) -> bytes:
         """PAT + PMT."""
-        return self._psi_packet(PID_PAT, _PAT) + self._psi_packet(PID_PMT, _PMT)
+        return self._psi_packet(PID_PAT, _PAT) + self._psi_packet(PID_PMT, self._pmt)
 
     def end_marker(self) -> bytes:
         hdr = bytes([SYNC, (PID_NULL >> 8) & 0x1F, PID_NULL & 0xFF, 0x10 | self._next_cc(PID_NULL)])
@@ -160,6 +168,29 @@ class TsMuxer:
             out += bytes([SYNC, (PID_VIDEO >> 8) & 0x1F, PID_VIDEO & 0xFF, 0x30 | cc]) + af + pes[pos:]
             cc = (cc + 1) & 0x0F
         self._cc[PID_VIDEO] = cc
+        return bytes(out)
+
+
+    def mux_audio(self, adts: bytes, pts: int) -> bytes:
+        """Кадр(ы) AAC с заголовками ADTS — один PES на PID_AUDIO (pts — 90 кГц)."""
+        opt = bytes([0x84, 0x80, 5]) + _ts_bytes(0x2, pts)
+        pes = b"\x00\x00\x01\xc0" + (len(opt) + len(adts)).to_bytes(2, "big") + opt + adts
+        out = bytearray()
+        pos, n, first = 0, len(pes), True
+        while pos < n:
+            r = n - pos
+            pusi = 0x40 if first else 0x00
+            if r >= 184:
+                out += bytes([SYNC, pusi | ((PID_AUDIO >> 8) & 0x1F), PID_AUDIO & 0xFF, 0x10 | self._next_cc(PID_AUDIO)])
+                out += pes[pos:pos + 184]
+                pos += 184
+            else:  # хвост: адаптационное поле со stuffing
+                af_len = 183 - r
+                af = bytes([af_len]) + ((b"\x00" + b"\xff" * (af_len - 1)) if af_len > 0 else b"")
+                out += bytes([SYNC, pusi | ((PID_AUDIO >> 8) & 0x1F), PID_AUDIO & 0xFF,
+                              0x30 | self._next_cc(PID_AUDIO)]) + af + pes[pos:]
+                pos = n
+            first = False
         return bytes(out)
 
 

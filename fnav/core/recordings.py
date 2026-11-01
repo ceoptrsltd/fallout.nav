@@ -400,8 +400,12 @@ def attach_marks(items: list[dict], between: Callable[[float, float, str | None]
         if span is not None:
             t0, dur = span
             for m in between(t0 - EVENT_MARGIN_S, t0 + dur + EVENT_MARGIN_S, camera_of(it.get("path") or "")):
-                out.append({"kind": m["kind"], "ts": m["ts"], "offset_s": round(min(max(m["ts"] - t0, 0.0), dur), 1),
-                            "dur_s": m["dur_s"]})
+                e = {"kind": m["kind"], "ts": m["ts"], "offset_s": round(min(max(m["ts"] - t0, 0.0), dur), 1),
+                     "dur_s": m["dur_s"]}
+                if m.get("clip"):  # громкий звук: клип и где он начинается на шкале этой записи
+                    e.update(clip=m["clip"], clip_offset_s=round(m["clip_start"] - t0, 2),
+                             clip_dur_s=m.get("clip_dur_s"), peak_db=m.get("peak_db"))
+                out.append(e)
         it["marks"] = out
     return items
 

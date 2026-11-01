@@ -4,13 +4,15 @@ import { h, icon, clear, fmtBytes, fmtDur, isNum } from "../dom.js";
 import { api, appUrl, encPath, errText } from "../api.js";
 import { loadHls } from "../vendor.js";
 import { hlsUrl, playerKind, HLS_MIME, jumpTo, markPos, parseRecLink, recCamera, filterRecs, recTitle, downloadName } from "../rec-play.js";
-import { kindInfo, markLabel, marksSummary } from "../alarm-fmt.js";
+import { kindInfo, markLabel, marksSummary, peakText } from "../alarm-fmt.js";
 import { store } from "../store.js";
 import { modal, confirmDialog, toast, poll, badge, emptyState, banner, segmented } from "../ui.js";
 
 let camFilter = "all"; // All / Front / Rear: kept while the app is open
 
 function fileUrl(path) { return appUrl("api/recordings/file/" + encPath(path)); }
+/** A loud sound's clip (the rear camera's microphone, WAV): api/alarm/sound/<name>. */
+export function soundUrl(name) { return appUrl("api/alarm/sound/" + encodeURIComponent(name)); }
 function timeOf(r) {
   if (r.start) { const m = String(r.start).match(/T(\d\d:\d\d:\d\d)/); if (m) return m[1]; }
   const m = r.path.match(/_(\d\d)-(\d\d)-(\d\d)\.ts$/);
@@ -60,12 +62,53 @@ export function openPlayer(rec, { at = null } = {}) {
     return b;
   };
   const strip = evs.length || mks.length ? h(".rec-marks", { title: "Alarm events (colour) and marks without an alarm (grey) in this recording" },
-    mks.map((m) => tick("k-mark", `${evClock(m)} · ${markLabel(m.kind)}${m.dur_s ? ` (${Math.round(m.dur_s)} s)` : ""} · no alarm`, m.offset_s)),
+    mks.map((m) => m.kind === "sound"
+      ? tick("k-mark.k-sound", `${evClock(m)} · ${markLabel(m.kind)}${m.peak_db != null ? ` (${peakText(m.peak_db)})` : ""}${m.clip ? " · with sound" : ""} · no alarm`, m.offset_s)
+      : tick("k-mark", `${evClock(m)} · ${markLabel(m.kind)}${m.dur_s ? ` (${Math.round(m.dur_s)} s)` : ""} · no alarm`, m.offset_s)),
     evs.map((e) => {
       const ki = kindInfo(e.kind);
       return tick("k-" + (ki.kind || "plain"), `${evClock(e)} · ${e.title || ki.label}`, e.offset_s);
     })) : null;
   const mkNote = mks.length ? h(".rec-mknote.dim", null, h("span.rec-mkdot"), `Marks without an alarm: ${marksSummary(mks)}`) : null;
+  // loud sounds (the rear camera's microphone, while armed): their clips play together with the video, in step —
+  // the recording itself has no sound; Sound off — silent
+  const clips = mks.filter((x) => x.clip && Number.isFinite(x.clip_offset_s) && x.clip_dur_s > 0);
+  const audio = clips.length ? h("audio", { preload: "none" }) : null;
+  let soundOn = true;
+  let clipNow = null;
+  const syncClip = () => {
+    if (!audio) return;
+    const t = video.currentTime;
+    // the video really plays: not paused, not seeking and not waiting for data (a stalled video stops the clip too)
+    const playing = !video.paused && !video.seeking && video.readyState >= 3;
+    const c = soundOn && playing ? clips.find((x) => t >= x.clip_offset_s && t < x.clip_offset_s + x.clip_dur_s) : null;
+    if (!c) {
+      if (!audio.paused) audio.pause();
+      clipNow = null;
+      return;
+    }
+    const want = t - c.clip_offset_s;
+    if (clipNow !== c) {
+      clipNow = c;
+      audio.src = soundUrl(c.clip);
+      audio.currentTime = want;
+    } else if (Math.abs(audio.currentTime - want) > 0.3) audio.currentTime = want;
+    audio.playbackRate = video.playbackRate;
+    if (audio.paused) {
+      const p = audio.play();
+      if (p && p.catch) p.catch(() => {});
+    }
+  };
+  if (audio) for (const evName of ["timeupdate", "play", "playing", "pause", "waiting", "stalled", "seeking", "seeked", "ratechange"]) video.addEventListener(evName, syncClip);
+  const clipTimer = audio ? setInterval(syncClip, 400) : null; // drift and stalls without an event
+  const sndBtn = audio ? h("button.btn.sm.rec-sndbtn.on", { type: "button", title: "Loud sounds in this recording play with the video (the camera's microphone)" },
+    icon("vol", 13), h("span", null, "Sound: on")) : null;
+  if (sndBtn) sndBtn.onclick = () => {
+    soundOn = !soundOn;
+    sndBtn.classList.toggle("on", soundOn);
+    sndBtn.lastChild.textContent = soundOn ? "Sound: on" : "Sound: off";
+    syncClip();
+  };
   const placeMarks = () => {
     if (!strip) return;
     const d = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : rec.duration_s;
@@ -85,12 +128,13 @@ export function openPlayer(rec, { at = null } = {}) {
 
   const m = modal({
     title: recTitle(rec),
-    body: [video, strip, evList, mkNote, status,
+    body: [video, strip, evList, mkNote, sndBtn ? h(".rec-snd", null, sndBtn, audio) : null, status,
       rec.in_progress ? h("div", { style: { marginTop: "8px" } }, banner("warn", "Recording is still in progress: the timeline grows while it is being written.")) : null,
     ],
     foot: [h("a.btn", { href: fileUrl(rec.path), download: downloadName(rec) }, icon("dl"), "Download"), h("button.btn", { onclick: () => m.close() }, "Close")],
     onClose: () => {
       closed = true;
+      if (audio) { clearInterval(clipTimer); audio.pause(); audio.removeAttribute("src"); }
       if (hls) { try { hls.destroy(); } catch { /* */ } hls = null; }
       video.pause();
       video.removeAttribute("src");

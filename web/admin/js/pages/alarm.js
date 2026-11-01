@@ -11,12 +11,12 @@ import { toast, banner, badge, confirmDialog, poll } from "../ui.js";
 import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logTicks, impactToSlider, sliderToImpact,
   fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, pushErrorText, toUnix,
-  hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, markLabel, marksSummary, eventDetail,
+  hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, markLabel, marksSummary, eventDetail, peakText,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
 import { eventCamera, eventExtras } from "../dash-fmt.js";
 import { eventThumb } from "../snap-view.js";
-import { openPlayer } from "./recordings.js";
+import { openPlayer, soundUrl } from "./recordings.js";
 import * as push from "../push.js";
 
 const POLL_MS = 1500;
@@ -379,7 +379,7 @@ export function mount(root) {
   const mkClear = h("button.btn.sm.danger", { type: "button", onclick: () => clearMarks() }, icon("trash"), "Clear marks");
   const mkBox = h("details.al-mkbox", null,
     h("summary", null, h("span", null, "Marks without an alarm"), mkCount),
-    h(".hint", null, "Whatever moved while the camera watched but was not a person at the van: cars, headlights, shadows, people passing by. No notification, no lights, the recording is not kept — just a grey mark on it."),
+    h(".hint", null, "Whatever moved while the camera watched but was not a person at the van: cars, headlights, shadows, people passing by — and loud sounds at the rear camera's microphone, with a clip of the sound. No notification, no lights, the recording is not kept — just a grey mark on it."),
     mkList,
     h(".btnrow", { style: { marginTop: "8px" } }, mkClear));
   let mkData = null;
@@ -400,14 +400,39 @@ export function mount(root) {
     const now = nowS();
     for (const m of list) {
       const rec = m.rec;
+      const sound = m.kind === "sound";
       mkList.append(h(".al-mk", null,
         h("span.k", null, markLabel(m.kind)),
         m.camera === "rear" ? h("span.badge.rec-cam", null, "Rear") : h("span"),
-        h("span.dim.mono", null, m.dur_s ? `${Math.round(m.dur_s)} s` : ""),
-        rec ? h("button.btn.sm.al-play", { type: "button", title: "Watch from 5 s before", onclick: (e) => playRecording(e.currentTarget, rec.path, m.ts) }, icon("play", 13), "Play")
-          : h("span.dim", { title: "The recording is gone (deleted to free space)" }, "—"),
+        h("span.dim.mono", { title: sound ? "The loudest moment, dB of the microphone's full scale" : "" },
+          sound ? peakText(m.peak_db) : m.dur_s ? `${Math.round(m.dur_s)} s` : ""),
+        h("span.al-mkacts", null,
+          sound && m.clip ? h("button.btn.sm.al-play", { type: "button", title: "Listen to the clip: from 5 s before the sound", onclick: (e) => listen(e.currentTarget, m.clip) }, icon("vol", 13), "Listen") : null,
+          rec ? h("button.btn.sm.al-play", { type: "button", title: sound ? "Watch from 5 s before, with the sound" : "Watch from 5 s before", onclick: (e) => playRecording(e.currentTarget, rec.path, m.ts) }, icon("play", 13), "Play")
+            : sound && m.clip ? null : h("span.dim", { title: "The recording is gone (deleted to free space)" }, "—")),
         h("span.when.mono", { title: new Date(m.ts * 1000).toLocaleString() }, fmtWhen(m.ts, now))));
     }
+  }
+
+  // Listen: a loud sound's clip on its own; the same button again — stop
+  let clipAudio = null;
+  let clipBtn = null;
+  function listen(btn, name) {
+    const again = clipBtn === btn;
+    if (clipAudio) { clipAudio.pause(); clipAudio = null; }
+    if (clipBtn) clipBtn.classList.remove("on");
+    clipBtn = null;
+    if (again) return;
+    clipAudio = new Audio(soundUrl(name));
+    clipBtn = btn;
+    btn.classList.add("on");
+    clipAudio.onended = clipAudio.onerror = () => {
+      if (clipAudio && clipAudio.error) toast("warn", "That sound clip is no longer on the device");
+      btn.classList.remove("on");
+      if (clipBtn === btn) { clipBtn = null; clipAudio = null; }
+    };
+    const p = clipAudio.play();
+    if (p && p.catch) p.catch(() => {});
   }
 
   async function loadMarks() {
@@ -860,6 +885,10 @@ export function mount(root) {
         : null,
       settings().vision.marks !== undefined
         ? f({ path: P + "marks", label: "Marks", type: "switch", switchLabel: "mark everything else that moves on the recordings: cars, headlights, people passing by (no alarm)" })
+        : null,
+      settings().vision.sound !== undefined
+        ? f({ path: P + "sound", label: "Loud sounds", type: "switch", switchLabel: "the rear camera's microphone: a loud sound gets a mark on the recording with a clip of it (no alarm)",
+          help: "Only while the alarm is armed: nothing is recorded while you are in the van. The clip starts 5 s before the sound; the last 300 clips are kept (30 days at most)." })
         : null,
       // the rear camera (settings.rear_camera): the same rules on its picture, its own near line
       settings().vision.rear !== undefined

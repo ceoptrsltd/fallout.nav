@@ -6,7 +6,7 @@ import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logVal, roundG, impactToSlider, sliderToImpact,
   logTicks, fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, isIos, deviceName,
   pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, IMPACT_STEPS,
-  markLabel, marksSummary, eventDetail,
+  markLabel, marksSummary, eventDetail, peakText,
 } from "../../web/admin/js/alarm-fmt.js";
 
 const UA = {
@@ -244,6 +244,10 @@ test("marks without an alarm: labels and the summary line", () => {
   assert.equal(markLabel("person"), "Person passing by");
   assert.equal(markLabel("weird"), "Movement");
   assert.equal(marksSummary({ motion: 8, vehicle: 3, person: 1 }), "3 vehicles · 1 person · 8 movements");
+  assert.equal(markLabel("sound"), "Loud sound");
+  assert.equal(marksSummary({ motion: 2, sound: 1, person: 0 }), "1 loud sound · 2 movements");
+  assert.equal(peakText(-14.4), "−14 dB");
+  assert.equal(peakText(null), "");
   assert.equal(marksSummary({ motion: 1, vehicle: 0, person: 2 }), "2 people · 1 movement");
   assert.equal(marksSummary([{ kind: "vehicle" }, { kind: "vehicle" }, { kind: "motion" }]), "2 vehicles · 1 movement");
   assert.equal(marksSummary({ motion: 0, vehicle: 0, person: 0 }), "");

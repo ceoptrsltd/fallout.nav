@@ -133,9 +133,10 @@ export class WhepClient {
  * only while someone is watching) played with mpegts.js through MSE, with latency chasing.
  */
 export class TsLiveClient {
-  constructor(video, { url = appUrl("api/camera/live.ts"), onState } = {}) {
+  constructor(video, { url = appUrl("api/camera/live.ts"), onState, audio = false } = {}) {
     this.video = video;
     this.url = url;
+    this.audio = audio; // the stream carries AAC (the rear camera's microphone)
     this.onState = onState || (() => {});
     this.player = null;
     this.closed = false;
@@ -149,7 +150,7 @@ export class TsLiveClient {
     if (!mpegts.isSupported()) throw new Error("this browser has no MSE support");
     this.onState("connecting");
     const p = (this.player = mpegts.createPlayer(
-      { type: "mpegts", isLive: true, url: this.url, hasAudio: false, hasVideo: true },
+      { type: "mpegts", isLive: true, url: this.url, hasAudio: this.audio, hasVideo: true },
       {
         enableWorker: false,
         enableStashBuffer: false, // live: hand data to MSE immediately
@@ -227,7 +228,7 @@ export class TsLiveClient {
  * Live video of one camera: the player box and a stats line under it. start() picks the transport (see the top),
  * stop() ends all streaming; fitAspect — the box takes the video's proportions (an IP camera is usually 16:9).
  */
-function livePlayer({ whepUrl, tsUrl, fitAspect = false }) {
+function livePlayer({ whepUrl, tsUrl, fitAspect = false, onSound = null }) {
   const video = h("video", { autoplay: true, muted: true, playsinline: true, hidden: true });
   video.muted = true;
   const msg = h(".overlay-msg", null, "Connecting…");
@@ -240,6 +241,7 @@ function livePlayer({ whepUrl, tsUrl, fitAspect = false }) {
   }
 
   let mode = null; // "webrtc" | "stream" — what is playing (or connecting) now
+  let soundOn = false; // the rear camera's microphone: only the stream carries it (AAC), WebRTC here has none
   let client = null;
   let gen = 0;
   let retryTimer = null;
@@ -257,8 +259,22 @@ function livePlayer({ whepUrl, tsUrl, fitAspect = false }) {
 
   /** Automatic choice: WebRTC on the device's network (stream if it fails), the stream through the server. */
   function start() {
-    if (REMOTE) startStream();
+    if (REMOTE || soundOn) startStream();
     else startWebrtc();
+  }
+
+  /** Sound on / off. Called from the click itself: a user gesture is what lets the page play sound. */
+  function setSound(on) {
+    soundOn = !!on;
+    video.muted = !soundOn;
+    if (soundOn && !(mode === "stream" && client && client.audio)) startStream();
+    if (onSound) onSound(soundOn);
+  }
+
+  /** Stop everything; sound goes off with it (a later start without a click could not play sound anyway). */
+  function stop() {
+    if (soundOn) { soundOn = false; video.muted = true; if (onSound) onSound(false); }
+    stopAll();
   }
 
   async function startWebrtc() {
@@ -308,6 +324,7 @@ function livePlayer({ whepUrl, tsUrl, fitAspect = false }) {
     };
     const c = (client = new TsLiveClient(video, {
       url: tsUrl,
+      audio: soundOn,
       onState: (s, why) => {
         if (my !== gen) return;
         if (s === "playing") { video.hidden = false; showMsg(""); }
@@ -323,7 +340,7 @@ function livePlayer({ whepUrl, tsUrl, fitAspect = false }) {
         const s = c.stats(prev);
         if (!s) return;
         prev = s;
-        statsEl.textContent = `${s.w || "?"}×${s.h || "?"} · ${fmt(s.fps, 0)} fps · ${s.kbps ? Math.round(s.kbps) + " kbit/s" : "…"} · dropped: ${s.dropped} · MPEG-TS on demand`;
+        statsEl.textContent = `${s.w || "?"}×${s.h || "?"} · ${fmt(s.fps, 0)} fps · ${s.kbps ? Math.round(s.kbps) + " kbit/s" : "…"} · dropped: ${s.dropped} · MPEG-TS on demand${c.audio ? " · with sound" : ""}`;
       }, 1000);
     } catch (e) {
       if (my !== gen) return;
@@ -333,7 +350,7 @@ function livePlayer({ whepUrl, tsUrl, fitAspect = false }) {
     }
   }
 
-  return { box, statsEl, start, stop: stopAll, showMsg };
+  return { box, statsEl, start, stop, showMsg, setSound, sound: () => soundOn };
 }
 
 const kindCls = (k) => (k === "bad" ? "red" : k === "warn" ? "amber" : k === "ok" ? "green" : "");
@@ -422,7 +439,12 @@ export function mount(root) {
   const rearCfg = () => (store.settings && store.settings.rear_camera) || null;
   const rearOn = () => !!(rearCfg() && rearCfg().enabled);
   const hasRear = !!rearCfg(); // older device software: no rear camera, the page is the front camera only
-  const rear = livePlayer({ whepUrl: appUrl("api/camera/rear/whep"), tsUrl: appUrl("api/camera/rear/live.ts"), fitAspect: true });
+  // Sound: the rear camera's microphone (shown when the camera reports one)
+  const soundBtn = h("button.btn.sm.cam-sound", { type: "button", hidden: true, title: "Listen to the rear camera's microphone" },
+    icon("vol"), h("span", null, "Sound"));
+  const rear = livePlayer({ whepUrl: appUrl("api/camera/rear/whep"), tsUrl: appUrl("api/camera/rear/live.ts"), fitAspect: true,
+    onSound: (on) => { soundBtn.classList.toggle("on", on); soundBtn.lastChild.textContent = on ? "Sound on" : "Sound"; } });
+  soundBtn.onclick = () => rear.setSound(!rear.sound());
 
   // ── rear status ──
   const rRefs = {};
@@ -444,6 +466,7 @@ export function mount(root) {
     setR("br", s.bitrate);
     setR("drop", s.dropped.text, s.dropped.kind);
     setR("seg", s.segment);
+    soundBtn.hidden = !(c && c.audio);
     // the first snapshot by itself, once the camera delivers pictures
     if (tab === "rear" && !snapTaken && !document.hidden && s.state.kind === "ok") takeSnapshot();
     // password_set as the camera reports it (not right after a save: the status lags a moment behind)
@@ -580,6 +603,10 @@ export function mount(root) {
       help: "Off: live view only. Both cameras share the recordings limit (Front → Camera settings); the oldest recordings go first." }),
     rf({ path: "rear_camera.mirror", label: "Mirror on the car screen", type: "switch", switchLabel: "like a rear-view mirror",
       help: "Only the car screen: recordings and this page show the picture as the camera sees it. Applied at once." }),
+    store.settings?.rear_camera?.audio !== undefined
+      ? rf({ path: "rear_camera.audio", label: "Microphone", type: "switch", switchLabel: "sound in the live video here and loud sounds while armed",
+        help: "Recordings stay silent: only loud sounds while the alarm is armed are kept, as short clips (Alarm → Loud sounds)." })
+      : null,
     h("details.al-adv.cam-adv", null, h("summary", null, "Estimates"),
       h(".hint", null, "Used only until the camera reports its own values."),
       rf({ path: "rear_camera.fps", label: "Expected frame rate", type: "number", min: 1, max: 60, step: 1, unit: "fps" }),
@@ -617,7 +644,7 @@ export function mount(root) {
   const rearOnBox = h(".cam-layout", null,
     h("div", null,
       h(".card", null,
-        h(".card-head", null, h("h2", null, "Live video"), h("button.btn.sm", { type: "button", title: "Reconnect", onclick: () => reload("rear") }, icon("refresh"), "Reload")),
+        h(".card-head", null, h("h2", null, "Live video"), soundBtn, h("button.btn.sm", { type: "button", title: "Reconnect", onclick: () => reload("rear") }, icon("refresh"), "Reload")),
         rear.box, rear.statsEl,
       ),
     ),

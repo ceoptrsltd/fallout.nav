@@ -149,3 +149,52 @@ def test_settings_migration_key4_to_camera_switch(tmp_path):
     assert (s.keypad.key4, s.keypad.key5, s.keypad.key2_hold) == ("protect", "camera_switch", "camera_switch")
     f.write_text(json.dumps({"version": 2, "keypad": {"key4": "video_toggle"}}), encoding="utf-8")
     assert load_settings_file(f)[0].keypad.key4 == "video_toggle"  # выбрано после миграции — не трогаем
+
+
+async def test_client_arms_the_sound_watch_and_collects_loud_sounds(tmp_path):
+    """Микрофон задней камеры: ядро включает громкие звуки по охране и забирает новые (seq), повторы — нет."""
+    from fnav.core.camera import CameraService as CamClient
+
+    cam = {"armed": False, "seq": 0, "events": []}
+    posts: list = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/status":
+            return httpx.Response(200, json=CameraStatus(
+                state="recording", camera="rear", audio="pcm_mulaw 8000 Hz", sound_armed=cam["armed"],
+                sound_seq=cam["seq"]).model_dump(mode="json"))
+        if req.url.path == "/sound" and req.method == "POST":
+            cam["armed"] = json.loads(req.content)["armed"]
+            posts.append(cam["armed"])
+            return httpx.Response(200, json={"ok": True, "armed": cam["armed"]})
+        if req.url.path == "/sound/events":
+            after = int(req.url.params.get("after", 0))
+            return httpx.Response(200, json={"events": [e for e in cam["events"] if e["seq"] > after],
+                                             "seq": cam["seq"]})
+        raise httpx.ConnectError("refused", request=req)
+
+    armed = [False]
+    got: list = []
+    c = CamClient(mock=False, recordings_root=tmp_path, base_url="http://cam:8083", camera_id="rear",
+                  transport=httpx.MockTransport(handler), get_enabled=lambda: True,
+                  get_sound_armed=lambda: armed[0], on_sound=got.append)
+    st = await c.poll()
+    assert posts == [] and st.audio == "pcm_mulaw 8000 Hz"  # охраны нет — сервис и так не пишет
+    armed[0] = True
+    st = await c.poll()
+    assert posts == [True] and st.sound_armed is True
+    ev = {"seq": 1, "start": 1000.0, "dur_s": 1.1, "peak_db": -14.4, "clip": "20261101-192914-000.wav",
+          "clip_start": 995.0, "clip_dur_s": 9.1}
+    cam["events"].append(ev)
+    cam["seq"] = 1
+    await c.poll()
+    await c.poll()
+    assert got == [ev]  # один раз
+    cam["seq"], cam["events"] = 1, [dict(ev, clip="20261101-193001-000.wav")]  # сервис камеры перезапустился
+    c._sound_seq = 5  # ядро помнит больше, чем у сервиса — начинаем с начала
+    await c.poll()
+    assert [e["clip"] for e in got] == ["20261101-192914-000.wav", "20261101-193001-000.wav"]
+    armed[0] = False
+    await c.poll()
+    assert posts == [True, False]
+    await c.stop()

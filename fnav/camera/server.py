@@ -143,6 +143,28 @@ def create_app(service: CameraService, manage_service: bool = True) -> Starlette
         await asyncio.to_thread(service.set_moving, moving)
         return JSONResponse({"ok": True, "max_exposure_ms": service.status().max_exposure_ms})
 
+    async def sound(request: Request) -> JSONResponse:
+        """Ядро: стоит ли охрана — {"armed": bool}; громкие звуки пишутся клипами только на охране."""
+        try:
+            armed = (await request.json())["armed"]
+            if not isinstance(armed, bool):
+                raise TypeError
+        except (ValueError, KeyError, TypeError):
+            return JSONResponse({"ok": False, "error": 'expected {"armed": true | false}'}, status_code=400)
+        if service.sound is None:
+            return JSONResponse({"ok": False, "error": "No microphone on this camera"}, status_code=409)
+        service.set_sound_armed(armed)
+        return JSONResponse({"ok": True, "armed": service.sound.armed})
+
+    async def sound_events(request: Request) -> JSONResponse:
+        """Громкие звуки новее ?after=N (seq), старые первыми: {seq, start, dur_s, peak_db, floor_db, clip, …}."""
+        try:
+            after = int(request.query_params.get("after") or 0)
+        except ValueError:
+            after = 0
+        snd = service.sound
+        return JSONResponse({"events": snd.events_after(after) if snd else [], "seq": snd.seq if snd else 0})
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
         hub.bind_loop(asyncio.get_running_loop())
@@ -166,6 +188,8 @@ def create_app(service: CameraService, manage_service: bool = True) -> Starlette
             Route("/reload", reload, methods=["POST"]),
             Route("/restart", restart, methods=["POST"]),
             Route("/motion", motion, methods=["POST"]),
+            Route("/sound", sound, methods=["POST"]),
+            Route("/sound/events", sound_events, methods=["GET"]),
         ],
         lifespan=lifespan,
     )
