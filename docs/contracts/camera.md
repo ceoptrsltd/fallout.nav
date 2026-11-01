@@ -119,8 +119,16 @@ OV5647 2592×1944 (полный кадр) ─ISP→ main 1440×1080 YUV420 ─�
 
 Тот же сервис вторым экземпляром: `python -m fnav.camera --camera rear` (unit `fnav-camera-rear`, HTTP
 `127.0.0.1:8083`, те же маршруты). Настройки — `settings.rear_camera` (`enabled`, `url` rtsp://… без логина, `username`,
-`lores_url` — второй поток камеры, `transport`, `record`, `fps`/`bitrate_kbps` — оценки, `mirror`, `lores`); пароль —
-`FNAV_REAR_CAMERA_PASSWORD` в `secrets.env` (`/etc/fnav/secrets.env`, unit задаёт `FNAV_SECRETS`).
+`lores_url` — второй поток камеры, `transport`, `record`, `fps`/`bitrate_kbps` — оценки, `mirror`, `lores`: по
+умолчанию 25 к/с — задний вид на экране, кадры PAL-кинескопа); пароль — `FNAV_REAR_CAMERA_PASSWORD` в `secrets.env`
+(`/etc/fnav/secrets.env`, unit задаёт `FNAV_SECRETS`).
+
+Камера в фургоне — Kruger&Matz Connect C150 (Tuya, плата FH8852V201, RTSP `:8554/profile0` и `/profile1`, ONVIF
+`:6688`, логин `admin`). Настроена по ONVIF Media2 (через Media1 она пишет «H264», а шлёт H.265): основной поток
+H.264 2560×1440, 25 к/с, ключевой кадр раз в секунду, до 2,5 Мбит/с; второй — H.264 640×360, 25 к/с, до 512 кбит/с;
+экспозиция — приоритет частоты, выдержка ≤ 1/25 с. При слабом свете камера всё равно отдаёт ~16,7 к/с (выдержка
+1/60 с): её параметры экспозиции в ONVIF, похоже, только для вида. Сброс камеры вернёт H.265 — сервис скажет
+`video codec is hevc`.
 
 ```
 IP-камера ─RTSP/TCP→ процесс fnav.camera.rtsp_pull (PyAV) ─ H.264 как есть ─┬─► регистратор rear/YYYY-MM-DD/…ts (+ .idx)

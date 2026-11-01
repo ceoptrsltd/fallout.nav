@@ -23,14 +23,15 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=10
 
-# Recording and the screen come first: this service only gets CPU time nobody else wants (SCHED_IDLE for its
-# threads and an idle cgroup, so it does not compete as a peer of other services either), on core 3 only, and
-# idle-class I/O. No CPUQuota: idle scheduling already yields, a quota would only add stalls.
-CPUSchedulingPolicy=idle
-CPUWeight=idle
-Nice=19
-CPUAffinity=3
-IOSchedulingClass=idle
+# While armed this service IS the alarm, so it must get its core even when the screen is busy: with SCHED_IDLE
+# (the old setting) the rear view on the screen while armed (Chromium ~2 cores) starved NanoDet to 1.3-1.5 s a
+# frame and no rule could fire (01.11). It works only while armed (disarmed it sleeps, ~0.3 % of a core), so a
+# priority above the screen costs nothing on the road. One inference thread; recording keeps its Nice -5.
+# No CPUQuota: a quota would only add stalls.
+CPUWeight=200
+Nice=0
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 OOMScoreAdjust=500
 MemoryHigh=300M
 MemoryMax=400M

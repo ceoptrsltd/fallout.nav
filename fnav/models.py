@@ -141,7 +141,8 @@ class RearCameraSettings(_Model):
     fps: int = Field(25, ge=1, le=60)  # ожидаемая частота (пока камера не сообщила свою)
     bitrate_kbps: int = Field(4000, ge=200, le=25000)  # оценка — запас места под следующий сегмент
     mirror: bool = True  # на экране в машине — зеркально, как в зеркале заднего вида
-    lores: LoresSettings = LoresSettings(w=768, h=432)  # высота подгоняется под пропорции потока
+    # высота подгоняется под пропорции потока; 25 к/с — задний вид на экране: кадры PAL-кинескопа (50 полей/с)
+    lores: LoresSettings = LoresSettings(w=768, h=432, fps=25)
 
 
 class StorageSettings(_Model):

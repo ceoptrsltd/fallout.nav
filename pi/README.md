@@ -167,8 +167,9 @@ sudo systemctl unmask serial-getty@ttyAMA0.service serial-getty@serial0.service
 
 - `fnav-core` is started as `python -m fnav.core` and relies on its defaults (`0.0.0.0:80`); `fnav-camera` as `python -m fnav.camera`.
 - `fnav-core` runs without `NoNewPrivileges`/capability bounding because it calls `sudo -n systemctl reboot|poweroff` and `nmcli`.
-- `fnav-watch` (camera on alarm duty, `python -m fnav.watch`, `127.0.0.1:8082`) runs with `CPUSchedulingPolicy=idle`,
-  `CPUWeight=idle`, `Nice=19`, `CPUAffinity=3` and idle I/O: it only uses CPU time nobody else wants. Frames come from
+- `fnav-watch` (camera on alarm duty, `python -m fnav.watch`, `127.0.0.1:8082`) runs with `CPUWeight=200`, `Nice=0`
+  (above the screen, below the recorder's Nice -5): while armed it is the alarm and must get its core even when the
+  screen is busy; disarmed it sleeps. One inference thread. Frames come from
   `fnav-camera` through `/dev/shm/fnav-lores` (copied only while fnav-watch is watching, i.e. while the alarm is armed and
   "camera watch" is on). Not watching it sleeps (no frames, no models loaded). Models: `fnav/watch/models/` (OpenCV DNN,
   `opencv-python-headless` from the `pi` extra). Tuning view: `curl -o d.jpg http://127.0.0.1:8082/debug.jpg`, numbers:
