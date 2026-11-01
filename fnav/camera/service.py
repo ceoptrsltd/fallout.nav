@@ -169,8 +169,10 @@ class CameraService(FrameSink):
         self._rate_log: deque[tuple[float, int]] = deque(maxlen=512)
         self._ring_only = False  # кадр нужен только кольцу (JPEG — нет)
         self._ring_want = False
-        # микрофон задней камеры: громкие звуки, пока стоит охрана (ядро включает: POST /sound) — клипы WAV
+        # микрофон задней камеры: громкие звуки, пока стоит охрана (ядро включает: POST /sound) — клипы WAV;
+        # AAC — в записи (rear_camera.record_audio) и в живое видео, пока его смотрят
         self.sound = SoundMonitor(sound_dir or paths.data_dir() / "sound_clips") if self.rear else None
+        self._aac_on = False
 
     @property
     def cam(self) -> CameraSettings:
@@ -265,18 +267,17 @@ class CameraService(FrameSink):
             if start is None:
                 return "Live stream is not supported by this camera source"
             cam = self.cam
-            # со звуком: у камеры есть микрофон (задняя), AAC — пока смотрят
-            audio = bool(getattr(src, "audio_info", None)) and hasattr(src, "start_live_audio")
+            # со звуком: у камеры есть микрофон (задняя)
+            audio = bool(getattr(src, "audio_info", None)) and hasattr(src, "start_aac")
             self._live_mux.new_session(cam.fps, audio=audio)
             try:
                 start(cam.live_bitrate_kbps, self._on_live_video)
-                if audio:
-                    src.start_live_audio(self._on_live_audio)  # type: ignore[attr-defined]
             except Exception as e:
                 log.exception("live encoder start failed")
                 return f"Live stream: {e}"
             self._live_src = src
             self._live_bitrate = cam.live_bitrate_kbps
+            self._sync_aac()
             log.info("live encoder started (%dx%d, %d kbps)", cam.lores.w, cam.lores.h, cam.live_bitrate_kbps)
         elif not self._live_wanted and self._live_src is not None:
             self._live_stop()
@@ -288,10 +289,9 @@ class CameraService(FrameSink):
             return
         try:
             src.stop_live()  # type: ignore[attr-defined]
-            if hasattr(src, "stop_live_audio"):
-                src.stop_live_audio()
         except Exception:
             log.exception("live encoder stop failed")
+        self._sync_aac()
         log.info("live encoder stopped")
 
     def _on_live_video(self, au: bytes, keyframe: bool, ts_us: int) -> None:
@@ -303,17 +303,39 @@ class CameraService(FrameSink):
         except Exception:
             log.exception("live mux failed")
 
-    def _on_live_audio(self, adts: bytes, ts_us: int, silent: bool) -> None:
-        """Поток помощника звука: кадр AAC в живое видео (silent — кадр тишины для пропусков)."""
+    def _record_audio(self) -> bool:
+        rc = self.settings.rear_camera
+        return self.rear and rc.audio and rc.record_audio
+
+    def _sync_aac(self) -> None:
+        """AAC нужен записи (rear_camera.record_audio) или живому видео со звуком — включить / выключить у источника."""
+        p = self._p
+        src = p.source if p else None
+        if src is None or not hasattr(src, "start_aac"):
+            return
+        want = self._live_src is src or (p.recorder is not None and self._record_audio())  # type: ignore[union-attr]
+        if want and not self._aac_on:
+            src.start_aac(self._on_aac)
+            self._aac_on = True
+        elif not want and self._aac_on:
+            src.stop_aac()
+            self._aac_on = False
+
+    def _on_aac(self, adts: bytes, ts_us: int, silent: bool) -> None:
+        """Поток помощника звука: кадр AAC в запись и в живое видео (silent — кадр тишины для пропусков живого)."""
         try:
             if silent:
                 self._live_mux.set_silence(adts, AAC_FRAME_PTS)
                 return
-            r = self._live_mux.push_audio(adts, ts_us, AAC_FRAME_PTS)
-            if r is not None:
-                self.live.publish(r, False)
+            p = self._p
+            if p is not None and p.recorder is not None and self._record_audio():
+                p.recorder.push_audio(adts, ts_us)
+            if self._live_src is not None:
+                r = self._live_mux.push_audio(adts, ts_us, AAC_FRAME_PTS)
+                if r is not None:
+                    self.live.publish(r, False)
         except Exception:
-            log.exception("live audio mux failed")
+            log.exception("audio mux failed")
 
     # ───────────── звук (задняя камера) ─────────────
     def on_audio(self, pcm: bytes, ts_us: int) -> None:
@@ -513,8 +535,11 @@ class CameraService(FrameSink):
         self._p = p  # sink начинает принимать кадры
         p.source = self.source_factory(s, self)
         self._apply_exposure_limit(p)  # до start(): предел попадёт в начальные controls
+        self._aac_on = False  # новый источник: AAC у него ещё не просили
         p.source.start()
         p.started_mono = time.monotonic()
+        with self._lock:
+            self._sync_aac()
         with self._lock:
             if self._live_wanted:  # конвейер перезапустился, а зрители остались
                 self._sync_live()

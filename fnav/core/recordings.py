@@ -17,6 +17,7 @@ from urllib.parse import quote
 
 from fnav import paths
 from fnav.camera.tsindex import KeyIndex, chunks, sidecar_path, update_index
+from fnav.camera.tsmux import has_audio_track
 
 _DIR_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 _FILE_RE = re.compile(r"^[A-Za-z0-9_\-.]{1,128}\.ts$")
@@ -166,6 +167,7 @@ class Recordings:
     def __init__(self, root: Path | None = None):
         self._root = root
         self._dur_cache: dict[str, tuple[int, float, float | None]] = {}
+        self._audio_cache: dict[str, bool] = {}  # запись → есть ли звук (PMT не меняется)
         self._idx_cache: OrderedDict[str, KeyIndex] = OrderedDict()
         self._idx_lock = threading.Lock()
 
@@ -210,6 +212,8 @@ class Recordings:
         for k in list(self._dur_cache):
             if k not in seen:
                 del self._dur_cache[k]
+        for k in [k for k in self._audio_cache if k not in seen]:
+            del self._audio_cache[k]
         with self._idx_lock:
             for k in [k for k in self._idx_cache if k not in seen]:
                 del self._idx_cache[k]
@@ -237,7 +241,17 @@ class Recordings:
             "duration_s": dur,
             "protected": os.path.exists(path + ".lock"),
             "in_progress": in_prog,
+            "audio": self._has_audio(rel, path),
         }
+
+    def _has_audio(self, rel: str, path: str) -> bool:
+        """Запись со звуком (задняя камера с микрофоном): по PMT в начале файла, один раз на файл."""
+        if camera_of(rel) != "rear":
+            return False
+        v = self._audio_cache.get(rel)
+        if v is None:
+            v = self._audio_cache[rel] = has_audio_track(Path(path))
+        return v
 
     async def list(self, current: str | None = None) -> list[dict]:
         return await asyncio.to_thread(self._scan, current)

@@ -191,8 +191,22 @@ class _AU:
     ts_us: int
 
 
+@dataclass
+class _Aac:
+    data: bytes  # кадр AAC с заголовком ADTS
+    ts_us: int
+
+
+AUDIO_QUEUE = 100  # кадров AAC сверх очереди видео (16 к/с)
+
+
 class Recorder:
-    """Принимает H.264 AU (из любого потока), пишет сегменты в своём потоке."""
+    """Принимает H.264 AU (из любого потока), пишет сегменты в своём потоке.
+
+    Звук (задняя камера с микрофоном): ``push_audio`` — кадры AAC (ADTS) второй дорожкой в тех же сегментах, метки — на
+    тех же монотонных часах, что у видео. Первый кадр звука делает ``audio`` = True: сегмент без звука в PMT закрывается
+    на ближайшем ключевом кадре, следующие — со звуком. Восстановление после обрыва — как было: хвост режется по
+    началу последнего PES видео (звук за ним уходит с ним)."""
 
     def __init__(
         self,
@@ -220,7 +234,9 @@ class Recorder:
         self.on_segment_start = on_segment_start
         self.on_sync = on_sync  # (path, synced_bytes, frames_in_segment) — для тестов/диагностики
 
-        self._q: queue.Queue[_AU | None] = queue.Queue(maxsize=queue_frames)
+        self._q: queue.Queue[_AU | _Aac | None] = queue.Queue(maxsize=queue_frames)
+        self.audio = False  # пришёл звук — сегменты со второй дорожкой AAC
+        self._a_last: int | None = None  # PTS последнего кадра звука в сегменте (поток писателя)
         self._fixer = AccessUnitFixer()
         self._mux: TsMuxer | None = None
         self._seg: SegmentFile | None = None
@@ -299,6 +315,16 @@ class Recorder:
             self.frames_dropped += 1
             self._resync = True
 
+    def push_audio(self, adts: bytes, ts_us: int) -> None:
+        """Кадр AAC (ADTS); очередь полна — кадр звука теряется (видео важнее)."""
+        if not self.audio:
+            self.audio = True
+            self._q.maxsize += AUDIO_QUEUE  # место и для звука (Queue читает maxsize при каждом put)
+        try:
+            self._q.put_nowait(_Aac(adts, ts_us))
+        except queue.Full:
+            pass
+
     def _account_rate(self, ts_us: int, n: int) -> None:
         t = ts_us / 1e6
         self._rate.append((t, n))
@@ -341,7 +367,10 @@ class Recorder:
             try:
                 if item is None:
                     return
-                self._handle(item)
+                if isinstance(item, _Aac):
+                    self._handle_audio(item)
+                else:
+                    self._handle(item)
             except Exception:
                 log.exception("recorder: unexpected error")
             finally:
@@ -378,6 +407,9 @@ class Recorder:
                             except Exception:
                                 log.exception("request_keyframe failed")
 
+        if key and self._seg is not None and self._mux is not None and self.audio and not self._mux.audio:
+            self._close_segment()  # пришёл звук: с этого ключевого кадра — сегмент со звуком в PMT
+
         try:
             if self._seg is None:
                 if not key:
@@ -398,12 +430,32 @@ class Recorder:
             self._close_segment(silent=True)
             self._need_key = True
 
+    def _handle_audio(self, item: _Aac) -> None:
+        seg, mux, first = self._seg, self._mux, self._seg_first_ts
+        if seg is None or mux is None or not mux.audio or first is None or self.paused:
+            return  # звук — только внутри сегмента, начатого ключевым кадром
+        pts = PTS_START + pts_from_us(item.ts_us - first)
+        if pts < 0:
+            return
+        if self._a_last is not None and pts <= self._a_last:
+            pts = self._a_last + 1
+        self._a_last = pts
+        try:
+            seg.write(mux.mux_audio(item.data, pts))
+        except OSError as e:
+            log.error("recorder write error: %s", e)
+            self.write_error = f"Recording write error: {e}"
+            self._error_until = time.monotonic() + 5.0
+            self._close_segment(silent=True)
+            self._need_key = True
+
     def _open_segment(self, first_ts: int) -> None:
         now = self.clock()
         synced = self.time_sync.value
         path = dated_path(self.root, now) if synced else nosync_path(self.root, boot_id())
         seg = SegmentFile(path)
-        mux = TsMuxer()
+        mux = TsMuxer(audio=self.audio)
+        self._a_last = None
         seg.write(mux.tables())
         try:
             self._idx = SidecarWriter(path)

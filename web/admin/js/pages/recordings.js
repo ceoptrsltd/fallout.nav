@@ -33,7 +33,9 @@ function dayTitle(d) {
  */
 export function openPlayer(rec, { at = null } = {}) {
   const video = h("video.rec-video", { controls: true, autoplay: true, playsinline: true });
-  video.muted = true;
+  // a recording with sound (the rear camera's microphone): played with it — the Play click allows sound; if the
+  // browser still refuses, muted (the volume button is there)
+  video.muted = !rec.audio;
   video.playsInline = true;
   const status = h(".dim", { style: { marginTop: "8px", fontSize: "12.5px" } }, "Loading player…");
   let hls = null;
@@ -70,9 +72,9 @@ export function openPlayer(rec, { at = null } = {}) {
       return tick("k-" + (ki.kind || "plain"), `${evClock(e)} · ${e.title || ki.label}`, e.offset_s);
     })) : null;
   const mkNote = mks.length ? h(".rec-mknote.dim", null, h("span.rec-mkdot"), `Marks without an alarm: ${marksSummary(mks)}`) : null;
-  // loud sounds (the rear camera's microphone, while armed): their clips play together with the video, in step —
-  // the recording itself has no sound; Sound off — silent
-  const clips = mks.filter((x) => x.clip && Number.isFinite(x.clip_offset_s) && x.clip_dur_s > 0);
+  // loud sounds (the rear camera's microphone, while armed): in a recording without sound their clips play
+  // together with the video, in step; Sound off — silent. A recording with sound plays its own.
+  const clips = rec.audio ? [] : mks.filter((x) => x.clip && Number.isFinite(x.clip_offset_s) && x.clip_dur_s > 0);
   const audio = clips.length ? h("audio", { preload: "none" }) : null;
   let soundOn = true;
   let clipNow = null;
@@ -142,7 +144,7 @@ export function openPlayer(rec, { at = null } = {}) {
     },
   });
   video.addEventListener("loadedmetadata", () => {
-    if (status.className !== "red") status.textContent = `${rec.path} · ${video.videoWidth}×${video.videoHeight} · H.264 · ${how} · click anywhere on the timeline to jump there`;
+    if (status.className !== "red") status.textContent = `${rec.path} · ${video.videoWidth}×${video.videoHeight} · H.264${rec.audio ? " + sound" : ""} · ${how} · click anywhere on the timeline to jump there`;
   });
   video.addEventListener("error", () => {
     if (hls || closed) return; // hls.js reports its own errors
@@ -180,7 +182,12 @@ export function openPlayer(rec, { at = null } = {}) {
         hls.attachMedia(video);
       }
       const p = video.play();
-      if (p && p.catch) p.catch(() => {});
+      if (p && p.catch) p.catch(() => {
+        if (closed || video.muted) return;
+        video.muted = true; // autoplay with sound refused: play muted
+        const p2 = video.play();
+        if (p2 && p2.catch) p2.catch(() => {});
+      });
     } catch (e) {
       fail("Could not play: " + (e.message || e));
     }

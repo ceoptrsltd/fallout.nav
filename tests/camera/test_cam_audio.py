@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 import pytest
+from camhelpers import decode_file
 
 from fnav.camera import rtsp_pull as rp
 from fnav.camera import sound as snd
@@ -238,3 +239,45 @@ async def test_sound_routes(tmp_path):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(front, manage_service=False)),
                                  base_url="http://cam") as c:
         assert (await c.post("/sound", json={"armed": True})).status_code == 409  # у передней микрофона нет
+
+
+def test_recorder_writes_sound_into_the_segments(tmp_path, frames_10s):
+    """Звук пришёл посреди сегмента: сегмент без звука закрывается на ключевом кадре, следующие — со звуком; файл
+    читается (видео и AAC), обрыв восстанавливается как раньше."""
+    import av
+    from test_cam_recorder import make_rec
+
+    from fnav.camera.storage import list_recordings
+    from fnav.camera.tsmux import has_audio_track, repair_ts
+
+    rec = make_rec(tmp_path, segment_s=600)
+    rec.start()
+    aac = _aac_frames(60)
+    a_us, ai = frames_10s[0][2] + 1_000_000, 0  # звук — с первой секунды
+    for au, key, ts in frames_10s[:75]:
+        rec.push(au, key, ts)
+        while ai < len(aac) and a_us <= ts:
+            rec.push_audio(aac[ai], a_us)
+            ai += 1
+            a_us += rp.AAC_FRAME * 1_000_000 // rp.AAC_RATE
+        assert rec.drain()
+    rec.stop()
+    files = sorted(list_recordings(tmp_path))
+    assert len(files) == 2  # без звука — до первого ключевого кадра после звука, дальше — со звуком
+    assert not has_audio_track(files[0]) and has_audio_track(files[1])
+    with av.open(str(files[1])) as c:
+        assert {s.type for s in c.streams} == {"video", "audio"}
+        n_v = n_a = 0
+        for pkt in c.demux():
+            if pkt.stream.type == "audio":
+                n_a += sum(fr.samples for fr in pkt.decode())
+            elif pkt.size:
+                n_v += 1
+    assert n_v == 75 - 15 and n_a > 2 * rp.AAC_RATE  # с ключевого кадра 15 (звук уже был): 60 кадров, ~4 с звука
+    size = files[1].stat().st_size
+    with open(files[1], "r+b") as f:  # «питание пропало» посреди записи
+        f.truncate(size - 300)
+    before, after = repair_ts(files[1])
+    assert after < before and has_audio_track(files[1])
+    n, errors, _ = decode_file(files[1])
+    assert errors == 0 and n > 30

@@ -8,7 +8,7 @@
 полная частота lores; прореживание — по меткам камеры (по Wi-Fi кадры приходят пачками).
 
 Звук (``rear_camera.audio``, микрофон камеры): забирает помощник второго потока (нет второго — основного), PCM —
-в ``sink.on_audio`` (громкие звуки на охране), AAC — в живое видео, пока его смотрят (``start_live_audio``).
+в ``sink.on_audio`` (громкие звуки на охране), AAC (``start_aac``) — в записи и в живое видео.
 
 Метки времени: часы камеры привязываются к монотонным часам при подключении; уход больше чем на 2 с (или скачок
 меток) — привязка заново; метки только растут. Камеру нельзя попросить о ключевом кадре — ``request_keyframe`` пуст.
@@ -245,7 +245,7 @@ class RtspCameraSource:
         self._lores_clock = Clock(mono)
         self._audio_clock = Clock(mono)
         self._aac_clock = Clock(mono)
-        self._live_audio: Callable[[bytes, int, bool], None] | None = None
+        self._aac_cb: Callable[[bytes, int, bool], None] | None = None
         self._aac_silence: bytes | None = None
         self._main: _Helper | None = None
         self._sub: _Helper | None = None
@@ -268,7 +268,7 @@ class RtspCameraSource:
                                                                  **({"audio": True} if self._audio_main else {})),
                              self._on_main_msg, self._on_exit)
         self._main.start()
-        if self._audio_main and self._live_audio is not None:
+        if self._audio_main and self._aac_cb is not None:
             self._main.set_aac(True)
         if lores_main:
             self._main.set_lores(1)
@@ -297,17 +297,17 @@ class RtspCameraSource:
     def stop_live(self) -> None:
         self._live = None
 
-    # звук живого видео: AAC, пока есть зрители (кадр тишины — первым, с silent=True)
-    def start_live_audio(self, on_aac: Callable[[bytes, int, bool], None]) -> None:
-        self._live_audio = on_aac
+    # звук в AAC (записи, живое видео): кадры в on_aac(adts, ts_us, silent); кадр тишины — первым, silent=True
+    def start_aac(self, on_aac: Callable[[bytes, int, bool], None]) -> None:
+        self._aac_cb = on_aac
         if self._aac_silence is not None:
             on_aac(self._aac_silence, -1, True)
         h = self._audio_helper()
         if h is not None:
             h.set_aac(True)
 
-    def stop_live_audio(self) -> None:
-        self._live_audio = None
+    def stop_aac(self) -> None:
+        self._aac_cb = None
         h = self._audio_helper()
         if h is not None:
             h.set_aac(False)
@@ -354,12 +354,15 @@ class RtspCameraSource:
             if fn is not None:
                 fn(payload, self._audio_clock.map(ts))
             return
-        cb = self._live_audio
+        cb = self._aac_cb
         if flags & F_SILENT:
             self._aac_silence = payload
             if cb is not None:
                 cb(payload, -1, True)
         elif cb is not None:
+            if self._aac_clock.offset is None and self._audio_clock.offset is not None:
+                # те же часы камеры, что у PCM: иначе в метках AAC оказалась бы задержка кодера
+                self._aac_clock.offset = self._audio_clock.offset
             cb(payload, self._aac_clock.map(ts), False)
 
     def _on_info(self, payload: bytes) -> None:
@@ -427,7 +430,7 @@ class RtspCameraSource:
                                                              **({"audio": True} if self._audio_sub else {})),
                                             self._on_sub_msg, self._on_exit)
                         self._sub.start()
-                        if self._audio_sub and self._live_audio is not None:
+                        if self._audio_sub and self._aac_cb is not None:
                             self._sub.set_aac(True)
                     self._sub.set_lores(fps)
                 elif self._sub is not None and now - self._sub_used > SUB_IDLE_S:

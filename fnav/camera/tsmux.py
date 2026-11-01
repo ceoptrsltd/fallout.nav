@@ -270,6 +270,21 @@ def _null_end_packet() -> bytes:
     return pkt + b"\xff" * (TS - len(pkt))
 
 
+def has_audio_track(path: Path) -> bool:
+    """Есть ли в записи дорожка звука (AAC в PMT): PAT/PMT пишутся в начале файла — читаем первые пакеты."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(TS * 4)
+    except OSError:
+        return False
+    sig = bytes([STREAM_TYPE_AAC, 0xE0 | (PID_AUDIO >> 8), PID_AUDIO & 0xFF])
+    for off in range(0, len(head) - TS + 1, TS):
+        pkt = head[off:off + TS]
+        if pkt[0] == SYNC and _pid(pkt) == PID_PMT and sig in pkt:
+            return True
+    return False
+
+
 def count_pes(data: bytes, pid: int = PID_VIDEO) -> int:
     """Число начал PES на PID (для тестов/selftest)."""
     n = 0

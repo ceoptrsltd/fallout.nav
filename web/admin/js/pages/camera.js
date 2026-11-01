@@ -605,7 +605,11 @@ export function mount(root) {
       help: "Only the car screen: recordings and this page show the picture as the camera sees it. Applied at once." }),
     store.settings?.rear_camera?.audio !== undefined
       ? rf({ path: "rear_camera.audio", label: "Microphone", type: "switch", switchLabel: "sound in the live video here and loud sounds while armed",
-        help: "Recordings stay silent: only loud sounds while the alarm is armed are kept, as short clips (Alarm → Loud sounds)." })
+        help: "Loud sounds while the alarm is armed also get a mark with a short clip (Alarm → Loud sounds)." })
+      : null,
+    store.settings?.rear_camera?.record_audio !== undefined
+      ? rf({ path: "rear_camera.record_audio", label: "Record the sound", type: "switch", switchLabel: "the microphone in the rear recordings, all the time",
+        help: "AAC 32 kbit/s: about 14 MB an hour on top of the video. Off: recordings stay silent, loud sounds still get their clips." })
       : null,
     h("details.al-adv.cam-adv", null, h("summary", null, "Estimates"),
       h(".hint", null, "Used only until the camera reports its own values."),
