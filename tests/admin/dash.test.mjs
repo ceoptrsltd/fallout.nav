@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 import {
   EVENTS_N, POLL, pollDelay, alarmLive, alarmActions, alarmWord, armedFor, armProgress, armHint, alarmChips,
-  recentEvents, recentKey, eventExtras, snapPath, thumbPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
+  recentEvents, recentKey, eventExtras, eventCamera, snapCams, snapPath, thumbPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
 } from "../../web/admin/js/dash-fmt.js";
 
@@ -129,6 +129,16 @@ test("events: newest first, n of them; extras; change key sees a snapshot added 
   assert.equal(thumbPath("b746dce4655142babc03073033a00062", "rear"), "api/alarm/snapshot/b746dce4655142babc03073033a00062-rear.jpg?thumb=1");
   assert.equal(snapPath("b746dce4", "rear"), "api/alarm/snapshot/b746dce4-rear.jpg");
   assert.equal(snapPath("b746dce4", "front"), "api/alarm/snapshot/b746dce4.jpg");
+  // the snapshot of the camera that raised the event first: a rear-camera event shows the rear's
+  const both = { snapshot: true, snapshot_rear: true };
+  assert.equal(eventCamera({ data: { camera: "rear" } }), "rear");
+  assert.equal(eventCamera({ data: {} }), "front");
+  assert.equal(eventCamera(null), "front");
+  assert.deepEqual(snapCams({ data: { ...both, camera: "rear" } }), ["rear", "front"]);
+  assert.deepEqual(snapCams({ data: { ...both, camera: "front" } }), ["front", "rear"]);
+  assert.deepEqual(snapCams({ kind: "impact", data: both }), ["front", "rear"]);
+  assert.deepEqual(snapCams({ data: { snapshot: true, camera: "rear" } }), ["front"], "no rear snapshot: the front's");
+  assert.deepEqual(snapCams({ data: {} }), []);
   assert.equal(eventAgo(1000, 1000 + 5 * 60 + 10), "5 min ago");
   assert.equal(eventAgo(null, 1000), "—");
 });

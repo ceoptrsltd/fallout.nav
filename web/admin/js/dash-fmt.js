@@ -146,6 +146,21 @@ export function eventExtras(ev) {
   };
 }
 
+/** Which camera raised the event: "rear" (data.camera — the rear camera's watch) or "front" (everything else). */
+export function eventCamera(ev) {
+  return ev && ev.data && ev.data.camera === "rear" ? "rear" : "front";
+}
+
+/**
+ * Cameras with a snapshot of the event, the one that raised it first: a rear-camera event shows the rear's snapshot
+ * (the front's is just the street ahead — at night a black square).
+ */
+export function snapCams(ev) {
+  const x = eventExtras(ev);
+  const cams = [x.snapshot ? "front" : null, x.snapshotRear ? "rear" : null].filter(Boolean);
+  return eventCamera(ev) === "rear" ? cams.reverse() : cams;
+}
+
 /** Change marker of the shown events: ids plus the snapshots / recordings added a moment after the event itself. */
 export function recentKey(events) {
   return (events || []).map((e) => {

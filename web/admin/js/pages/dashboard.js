@@ -11,7 +11,7 @@ import { eventThumb } from "../snap-view.js";
 import { installEntry } from "../install.js";
 import {
   EVENTS_N, pollDelay, alarmLive, alarmActions, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
-  recentEvents, recentKey, eventExtras, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
+  recentEvents, recentKey, eventExtras, eventCamera, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
 } from "../dash-fmt.js";
 
@@ -223,7 +223,13 @@ export function mount(root) {
       const x = eventExtras(ev);
       const when = h("span.when.mono", { title: isNum(ev.ts) ? new Date(ev.ts * 1000).toLocaleString() : "" }, eventAgo(ev.ts, now));
       whens.push([when, ev.ts]);
-      const thumb = eventThumb(ev); // the front's first; the modal shows both
+      const thumb = eventThumb(ev); // the camera that raised it; the modal shows both
+      const recs = [
+        x.segment ? h("a", { href: recLink(x.segment, ev.ts), title: "Watch from the moment of the event: " + x.segment },
+          x.segmentRear ? "Front recording kept" : "Recording kept") : null,
+        x.segmentRear ? h("a", { href: recLink(x.segmentRear, ev.ts), title: "Watch from the moment of the event: " + x.segmentRear }, "Rear recording kept") : null,
+      ];
+      if (eventCamera(ev) === "rear") recs.reverse(); // a rear-camera event: its own recording first
       evList.append(h(".db-ev." + (ki.kind || "plain"), null,
         h("span.ic", null, icon(ki.icon)),
         h(".txt", null,
@@ -231,8 +237,7 @@ export function mount(root) {
           ev.body ? h(".bd", null, ev.body) : null,
           x.link || x.segment || x.segmentRear ? h(".ex", null,
             x.link ? h("a", { href: x.link.href }, x.link.text) : null,
-            x.segment ? h("a", { href: recLink(x.segment, ev.ts), title: "Watch from the moment of the event: " + x.segment }, "Recording kept") : null,
-            x.segmentRear ? h("a", { href: recLink(x.segmentRear, ev.ts), title: "Watch from the moment of the event: " + x.segmentRear }, "Rear recording kept") : null) : null),
+            ...recs) : null),
         thumb));
     }
   }

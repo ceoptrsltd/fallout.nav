@@ -14,7 +14,7 @@ import {
   hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, markLabel, marksSummary, eventDetail,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
-import { eventExtras } from "../dash-fmt.js";
+import { eventCamera, eventExtras } from "../dash-fmt.js";
 import { eventThumb } from "../snap-view.js";
 import { openPlayer } from "./recordings.js";
 import * as push from "../push.js";
@@ -302,9 +302,13 @@ export function mount(root) {
     const detail = eventDetail(ev);
     const play = (seg, text, title) => h("button.btn.sm.al-play", { type: "button", title, onclick: (e) => playRecording(e.currentTarget, seg, ev.ts) },
       icon("play", 14), text);
+    // Play — the recording of the camera that raised the event (the rear's for a rear-camera event), then the other
+    const rearFirst = eventCamera(ev) === "rear";
+    const front = x.segment ? play(x.segment, rearFirst ? "Front" : "Play", "Watch the front camera from 5 s before the event") : null;
+    const rear = x.segmentRear ? play(x.segmentRear, rearFirst ? "Play" : x.segment ? "Rear" : "Play rear",
+      "Watch the rear camera from 5 s before the event") : null;
     const acts = [
-      x.segment ? play(x.segment, "Play", "Watch from 5 s before the event") : null,
-      x.segmentRear ? play(x.segmentRear, x.segment ? "Rear" : "Play rear", "Watch the rear camera from 5 s before the event") : null,
+      ...(rearFirst ? [rear, front] : [front, rear]),
       link ? h("a.btn.sm.al-play", { href: link.href }, icon(link.href.startsWith("#/tracking") ? "pin" : "info", 14), link.href.startsWith("#/tracking") ? "Map" : link.text) : null,
     ].filter(Boolean);
     return h(".al-ev." + (ki.kind || "plain"), null,
