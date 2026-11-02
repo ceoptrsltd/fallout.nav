@@ -344,13 +344,10 @@ class Core:
             await asyncio.sleep(0.5)
 
     async def _pause_radio_for_game(self) -> bool:
-        if not getattr(self.radio, "want_play", False):
-            return False
-        await self.radio.stop_playback()
-        return True
+        return await self.radio.pause_for_game()  # «на паузе ради игры» — в radio_state.json
 
     async def _resume_radio_after_game(self) -> None:
-        await self.radio.resume()
+        await self.radio.resume_after_game()  # ничего, если радио молчало не ради игры
 
     def settings_message(self) -> str:
         return json.dumps({"type": "settings", "settings": self.store.get().model_dump(mode="json")},

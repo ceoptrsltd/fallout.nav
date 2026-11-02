@@ -19,8 +19,10 @@ GAMEPAD = [
 ]
 
 BUTTON = [
-    {"control": "Short press", "title": "Video output on / off", "hint": "Beep and LED confirm"},
-    {"control": "Long press", "title": "Protect recording", "hint": "The current recording is never deleted"},
+    {"control": "Short press", "title": "Front / rear camera",
+     "hint": "Shows the rear camera on the car screen; press again to go back (needs the rear camera turned on)"},
+    {"control": "Long press", "title": "Protect recording",
+     "hint": "The current recordings are never deleted; beep and LED confirm"},
 ]
 
 

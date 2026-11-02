@@ -14,8 +14,9 @@ fallout.nav turns a Raspberry Pi CM4 into an in‑car computer for an old van:
 - **Web UI** (laptop over Wi‑Fi) — dashboard, live camera (WebRTC), recordings with in‑browser playback,
   navigation/compass/GPS/system settings, and a **1:1 physical‑size preview** of the car screen.
 - **Composite video straight from the SoC** — a wire on CM4 pin 111 (`VDAC_COMP`), NTSC 480i/60 Hz with output
-  margins and mirroring tuned for the RV‑50. The button on the GPS module switches the video output off so it
-  does not bleed into the monitor's other camera input.
+  margins and mirroring tuned for the RV‑50. The video output can be switched off (a macro pad key assigned to it)
+  so it does not bleed into the monitor's other camera input; the button on the GPS module switches the car screen
+  between the front and the rear camera.
 - **Remote access over the internet** — the device keeps an outgoing ssh tunnel to a public server (it sits behind
   a phone hotspot), so the same web UI opens at `https://<server>/fnadmin/`; live video there is a low‑bitrate
   H.264 stream that is only encoded while someone watches.
@@ -48,7 +49,7 @@ Project page with a live demo: **https://ptrs.ltd/apps/fallout.nav/**
 | 3 | TX (GPS output) | → | 33 | GPIO13 RXD5 |
 | 4 | SCL | → | 5 | GPIO3 SCL |
 | 5 | SDA | → | 3 | GPIO2 SDA |
-| 6 | SAFETY_SWITCH | → | 16 | GPIO23 — short press: video output on/off, long press: protect recording |
+| 6 | SAFETY_SWITCH | → | 16 | GPIO23 — short press: front/rear camera on the car screen, long press: protect recording |
 | 7 | SAFETY_SWITCH_LED | → | 18 | GPIO24 — blinks while recording |
 | 8 | VDD_3V3 | → | 1 | 3.3V |
 | 10 | GND | → | 6 | GND |

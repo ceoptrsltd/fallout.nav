@@ -18,7 +18,7 @@ import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -37,6 +37,10 @@ RECENT_MAX = 12
 FAVORITES_MAX = 100
 BACKOFF_S = (2.0, 4.0, 8.0, 16.0, 30.0)
 CONNECT_TIMEOUT_S = 25.0  # дольше «connecting» без звука — открыть поток заново
+STEADY_S = 30.0  # столько играет без перерыва — счётчик повторов (пауза 2→4→…→30 с) с нуля
+FLAPS_MAX = 4  # столько раз подряд оборвалась быстрее STEADY_S после начала звука — error, больше не открываем
+REFRESH_AFTER, REFRESH_EVERY = 2, 4  # свежий адрес из каталога — на 2-м, 6-м, 10-м… повторе подряд
+URL_TIMEOUT_S = 8.0  # /json/url/<uuid>
 MPV_SOCKET = "/run/fnav-radio/mpv.sock"
 
 # Плитки музыкальной страницы myAIfriend (MusicGenres.TILES): тег каталога, эмодзи, подпись, вид.
@@ -90,15 +94,21 @@ def parse_stations(data: Any) -> list[RadioStation]:
                 return 0
 
         url = s("url_resolved") or s("url")  # url_resolved — уже раскрытые .pls/.m3u
-        if not re.match(r"^https?://", url, re.IGNORECASE) or len(url) > 2048:
+        if not _stream_url_ok(url):
             continue
+        # исходный адрес (.pls/.m3u, редирект StreamTheWorld и т.п.) живёт дольше раскрытого: в том часто токен
+        orig = s("url") if _stream_url_ok(s("url")) and s("url") != url else ""
         out.append(RadioStation(
-            uuid=s("stationuuid"), name=s("name") or "Radio", url=url, homepage=s("homepage"),
+            uuid=s("stationuuid"), name=s("name") or "Radio", url=url, url_original=orig, homepage=s("homepage"),
             favicon=s("favicon"), tags=s("tags"), country=s("country"), countrycode=s("countrycode"),
             language=s("language"), codec=s("codec"), bitrate=n("bitrate"), votes=n("votes"),
             clickcount=n("clickcount"), hls=n("hls") == 1,
         ))
     return out
+
+
+def _stream_url_ok(url: str) -> bool:
+    return bool(re.match(r"^https?://", url, re.IGNORECASE)) and len(url) <= 2048
 
 
 class RadioDirectory:
@@ -161,12 +171,30 @@ class RadioDirectory:
         c = {"countrycode": cc} if re.fullmatch(r"[A-Z]{2}", cc) else {"is_https": "true"}
         return await self.search(c, LIMIT_TOP)
 
-    async def note_played(self, uuid: str) -> None:
-        """Каталог считает прослушивания (по ним сортирует). Ошибка не мешает музыке."""
+    async def note_played(self, uuid: str) -> str | None:
+        """Каталог считает прослушивания (по ним сортирует) и отвечает свежим адресом потока. Ошибка не мешает
+        музыке. Зеркало ещё не выбрано (каталог не открывали) — не обращаемся."""
         if not uuid or not self.mirror:
-            return
-        with contextlib.suppress(httpx.HTTPError):
-            await self._client.get(f"https://{self.mirror}/json/url/{uuid}")
+            return None
+        return await self.station_url(uuid)
+
+    async def station_url(self, uuid: str) -> str | None:
+        """Свежий адрес потока станции: /json/url/<uuid> (в сохранённом url_resolved токен мог истечь).
+        None — каталог не ответил или адреса нет."""
+        if not uuid:
+            return None
+        host = self.mirror or await self._pick_mirror()
+        self.mirror = host
+        try:
+            r = await self._client.get(f"https://{host}/json/url/{quote(uuid, safe='')}", timeout=URL_TIMEOUT_S)
+            r.raise_for_status()
+            d = r.json()
+        except (httpx.HTTPError, ValueError) as e:
+            log.info("radio: station url on %s failed: %s", host, e)
+            self.mirror = None  # в следующий раз — другое зеркало
+            return None
+        url = str(d.get("url") or "").strip() if isinstance(d, dict) else ""
+        return url if _stream_url_ok(url) else None
 
 
 # ───────────────────────── плеер ─────────────────────────
@@ -175,6 +203,9 @@ PlayerEvent = Callable[[str, Any], None]  # ("ready"|"playing"|"buffering"|"ende
 
 
 class Player(Protocol):
+    """load — всегда открыть заново. Необязательный adopt(url, device) -> bool (MpvPlayer): mpv уже играет это —
+    не перезапускать (первый поток после перезапуска fnav-core)."""
+
     def on_event(self, cb: PlayerEvent) -> None: ...
     async def start(self) -> None: ...
     async def close(self) -> None: ...
@@ -352,8 +383,9 @@ class MpvPlayer:
         finally:
             self._pending.pop(rid, None)
 
-    async def load(self, url: str, device: str) -> None:
-        # fnav-core перезапустился, а mpv продолжает играть ту же станцию на то же устройство — не перезапускаем
+    async def adopt(self, url: str, device: str) -> bool:
+        """fnav-core перезапустился, а mpv продолжает играть ту же станцию на то же устройство — не перезапускаем:
+        только сообщить трек и играет ли. False — открыть заново (load)."""
         try:
             same = (await self.command("get_property", "path") == url
                     and await self.command("get_property", "audio-device") == device
@@ -363,7 +395,10 @@ class MpvPlayer:
         if same:
             self._cb("title", (self._props.get("metadata"), self._props.get("media-title")))
             self._report_activity()
-            return
+        return same
+
+    async def load(self, url: str, device: str) -> None:
+        # всегда loadfile: поток, застрявший в paused-for-cache (HLS после долгого обрыва), сам не оживёт
         await self.command("set_property", "audio-device", device)
         await self.command("set_property", "volume", self.volume)
         await self.command("loadfile", url, "replace")
@@ -475,7 +510,15 @@ class RadioService:
                                            if test_output else None)
         self._test_output = test_output
         self._player_ready = False
-        self._attempt = 0
+        self._adopt_once = True  # первый поток после старта: mpv (отдельная служба) мог продолжать его играть
+        self._game_paused = False  # молчит ради игры — после неё снова играть (хранится в radio_state.json)
+        self._attempt = 0  # неудачных попыток подряд (пауза перед следующей); с нуля — после STEADY_S звука
+        self._flaps = 0  # раз подряд поток оборвался сразу после начала звука
+        self._playing_since: float | None = None
+        self._played: float | None = None  # сколько этот поток играл без перерыва в последний раз (None — не играл)
+        self._session = 0  # +1 на каждую play(): ответы каталога о прежней станции не применять
+        self._url: str | None = None  # адрес, который открыт сейчас (None — station.url)
+        self._fresh: str | None = None  # свежий адрес станции из каталога (/json/url/<uuid>)
         self._retry: asyncio.Task | None = None
         self._watchdog: asyncio.Task | None = None
         self._vol_save: asyncio.Task | None = None
@@ -499,14 +542,14 @@ class RadioService:
         self._load_state()
         if demo is not None and self.station is None:  # --mock без сохранённого состояния: сразу «играет»
             self.station, self.genre, self.want_play = demo, "oldies", True
-        if self.want_play and not self.get_settings().resume_on_boot:
-            self.want_play = False
+        if not self.get_settings().resume_on_boot:  # и на паузе ради игры — тоже не продолжать
+            self.want_play = self._game_paused = False
         if self.want_play:
             log.info("radio: resuming %s", self.station.name if self.station else "?")
         if self.speaker is not None:
             await self.speaker.start()
         await self._out_volume(self.volume)
-        await self._apply()  # фаза; поток откроется по событию ready плеера
+        await self._apply()  # фаза; поток откроется (или mpv замолчит) по событию ready плеера
         await self.player.start()
 
     async def stop(self) -> None:
@@ -528,6 +571,7 @@ class RadioService:
             self.station = RadioStation(**d["station"]) if d.get("station") else None
             self.genre = d.get("genre") or None
             self.want_play = bool(d.get("playing")) and self.station is not None
+            self._game_paused = bool(d.get("paused_for_game")) and self.station is not None
             self.recent = [RadioStation(**x) for x in d.get("recent", [])][:RECENT_MAX]
             self.favorites = [RadioStation(**x) for x in d.get("favorites", [])][:FAVORITES_MAX]
         except (TypeError, ValueError, KeyError) as e:
@@ -535,7 +579,8 @@ class RadioService:
 
     def _save_state(self) -> None:
         d = {"station": self.station.model_dump() if self.station else None, "genre": self.genre,
-             "playing": self.want_play, "recent": [s.model_dump() for s in self.recent],
+             "playing": self.want_play, "paused_for_game": self._game_paused,
+             "recent": [s.model_dump() for s in self.recent],
              "favorites": [s.model_dump() for s in self.favorites]}
         tmp = self.state_path.with_suffix(".tmp")
         try:
@@ -588,14 +633,23 @@ class RadioService:
 
     # ── команды ──
     async def play(self, station: RadioStation, genre: str | None = None) -> RadioState:
-        self.station, self.genre, self.want_play = station, genre, True
+        self.station, self.genre, self.want_play, self._game_paused = station, genre, True, False
         self.recent = [station] + [s for s in self.recent if (s.uuid or s.url) != (station.uuid or station.url)]
         self.recent = self.recent[:RECENT_MAX]
-        self._attempt = 0
+        if station.url_original:  # избранное, сохранённое без исходного адреса, — обновить из каталога
+            self.favorites = [station if _key(s) == _key(station) else s for s in self.favorites]
+        self._attempt = self._flaps = 0
+        self._session += 1
+        self._url = self._fresh = self.error = None
         await asyncio.to_thread(self._save_state)
-        asyncio.create_task(self.directory.note_played(station.uuid), name="radio-click")
+        asyncio.create_task(self._note_played(station.uuid, self._session), name="radio-click")
         await self._apply()
         return self.state()
+
+    async def _note_played(self, uuid: str, session: int) -> None:
+        url = await self.directory.note_played(uuid)
+        if url and session == self._session:
+            self._fresh = url  # пригодится, если сохранённый адрес не откроется
 
     async def resume(self) -> RadioState:
         if self.station is None:
@@ -669,10 +723,35 @@ class RadioService:
         return ring[2]
 
     async def stop_playback(self) -> RadioState:
-        self.want_play = False
+        self.want_play = self._game_paused = False
+        if self.phase == "error":
+            self.phase, self.error = "stopped", None
         await asyncio.to_thread(self._save_state)
         await self._apply()
         return self.state()
+
+    # ── игры (fnav/core/games.py): колонка занята игрой ──
+    async def pause_for_game(self) -> bool:
+        """Игра забирает колонку: радио замолкает, но помнит — и после перезагрузки или перезапуска fnav-core, —
+        что после игры надо играть дальше. False — радио и так не играло."""
+        if not self.want_play:
+            return False
+        self.want_play, self._game_paused = False, True
+        await asyncio.to_thread(self._save_state)
+        await self._apply()
+        return True
+
+    async def resume_after_game(self) -> None:
+        """Игра закончилась: станцию — снова, если радио молчало ради игры (иначе ничего: его выключили сами,
+        включили во время игры или оно и не играло)."""
+        if not self._game_paused:
+            return
+        self._game_paused = False
+        if self.station is None:
+            await asyncio.to_thread(self._save_state)
+            return
+        log.info("radio: resuming after the game")
+        await self.play(self.station, self.genre)
 
     async def set_volume(self, volume: int) -> RadioState:
         self.volume = max(0, min(100, int(volume)))
@@ -704,7 +783,7 @@ class RadioService:
         if self.speaker is not None:
             self.speaker.select(out.address if out else None)
         if before != after:
-            self._attempt = 0
+            self._attempt = self._flaps = 0
             asyncio.get_running_loop().create_task(self._apply(), name="radio-output")
 
     # ── громкость ──
@@ -754,7 +833,7 @@ class RadioService:
         if self._alert is None:
             return
         self._alert = None
-        self._attempt = 0
+        self._attempt = self._flaps = 0
         with contextlib.suppress(ConnectionError, RuntimeError, TimeoutError, OSError):
             await self._out_volume(self.volume)
         await self._apply()
@@ -780,11 +859,16 @@ class RadioService:
         self._retry = self._watchdog = None
 
     async def _apply(self) -> None:
+        """Привести плеер к состоянию: открыть станцию (всегда заново: поток мог застрять), заглушить mpv
+        или ждать колонку. Только первый поток после старта fnav-core: mpv уже играет эту станцию на эту колонку —
+        не перезапускать."""
         async with self._lock:
             self._cancel_timers()
             self.track = None
+            self._playing_since = self._played = None
             if not self.want_play or self.station is None:
-                self.phase, self.error = "stopped", None
+                if self.phase != "error":  # error — до следующей команды: админка покажет, почему замолчало
+                    self.phase, self.error = "stopped", None
                 if self._alert is None:
                     await self.player.halt()
                 return
@@ -797,9 +881,13 @@ class RadioService:
             if not self._player_ready or self._alert is not None:
                 return  # mpv ещё не поднялся / звучит сирена: откроем по событию ready / после end_alert()
             device = "auto" if self._test_output else bluealsa_device(self.output.address)
+            url = self._url or self.station.url
+            adopt, self._adopt_once = self._adopt_once, False
             try:
                 await self._out_volume(self.volume)  # колонка — на громкость радио до первого звука
-                await self.player.load(self.station.url, device)
+                same = getattr(self.player, "adopt", None) if adopt else None
+                if same is None or not await same(url, device):
+                    await self.player.load(url, device)
             except (ConnectionError, RuntimeError, TimeoutError, OSError) as e:
                 self._schedule_retry(f"Player: {e}")
                 return
@@ -810,11 +898,20 @@ class RadioService:
         if self.phase == "connecting" and self.want_play:
             self._schedule_retry("No audio from the station")
 
-    def _schedule_retry(self, why: str) -> None:
+    def _schedule_retry(self, why: str, flap: bool = False) -> None:
+        """Повтор с паузой 2→4→…→30 с. flap — поток оборвался сразу после начала звука (заглушка «недоступно
+        в вашей стране», «offline» и т.п.): FLAPS_MAX раз подряд — error, больше не открываем."""
         if not self.want_play:
             return
+        if flap:
+            self._flaps += 1
+            if self._flaps >= FLAPS_MAX:
+                self._give_up(f"{why}: the station stops every time right after it starts "
+                              "(it may not be available in this country)")
+                return
         delay = BACKOFF_S[min(self._attempt, len(BACKOFF_S) - 1)]
         self._attempt += 1
+        attempt, session = self._attempt, self._session
         self.phase, self.error, self.track = "connecting", why, None
         log.info("radio: %s - retry in %.0f s", why, delay)
         if self._retry and not self._retry.done() and self._retry is not asyncio.current_task():
@@ -822,10 +919,52 @@ class RadioService:
 
         async def later() -> None:
             await asyncio.sleep(delay)
-            if self.want_play:
-                await self._apply()
+            st = self.station
+            if not self.want_play or st is None or session != self._session:
+                return
+            nxt = None
+            if st.uuid and attempt >= REFRESH_AFTER and (attempt - REFRESH_AFTER) % REFRESH_EVERY == 0:
+                fresh = await self.directory.station_url(st.uuid)
+                if fresh and session == self._session:
+                    self._fresh = fresh
+                    nxt = fresh if fresh != (self._url or st.url) else None  # новый адрес — сразу его
+            if not self.want_play or session != self._session or self._retry is not asyncio.current_task():
+                return
+            self._url = nxt or self._next_url(st)
+            self._retry = None  # дальше — уже перезапуск: «playing» прежнего потока его не отменяет
+            await self._apply()
 
         self._retry = asyncio.get_running_loop().create_task(later(), name="radio-retry")
+
+    def _next_url(self, st: RadioStation) -> str:
+        """Адрес для повтора — следующий по кругу: свежий из каталога, исходный url станции (.pls/.m3u или
+        редирект — mpv раскроет сам, токен будет новый), сохранённый url_resolved."""
+        urls = list(dict.fromkeys(u for u in (self._fresh, st.url_original, st.url) if u))
+        cur = self._url or st.url
+        return urls[(urls.index(cur) + 1) % len(urls)] if cur in urls else urls[0]
+
+    def _give_up(self, why: str) -> None:
+        log.warning("radio: %s - stopped %s", why, self.station.name if self.station else "?")
+        self._cancel_timers()
+        self.want_play, self._playing_since = False, None
+        self.phase, self.error, self.track = "error", why, None
+        asyncio.get_running_loop().create_task(self._silence_after_error(), name="radio-error")
+
+    async def _silence_after_error(self) -> None:
+        await asyncio.to_thread(self._save_state)  # после перезагрузки — не продолжать
+        async with self._lock:
+            if self.phase == "error" and self._alert is None:
+                await self.player.halt()
+
+    def _left_playing(self) -> float | None:
+        """Звук прервался: сколько этот поток играл без перерыва в последний раз (None — не играл). Дольше STEADY_S —
+        станция в порядке, счётчики неудач с нуля."""
+        if self._playing_since is not None:
+            self._played = time.monotonic() - self._playing_since
+            self._playing_since = None
+            if self._played >= STEADY_S:
+                self._attempt = self._flaps = 0
+        return self._played
 
     def _on_player(self, kind: str, value: Any) -> None:
         loop = asyncio.get_running_loop()
@@ -842,28 +981,34 @@ class RadioService:
             return
         if kind == "ready":
             self._player_ready = bool(value)
-            if value and self.want_play:
-                loop.create_task(self._apply(), name="radio-ready")  # mpv перезапустился — открыть заново
-            elif not value and self.want_play and self.phase == "playing":
+            if value:  # mpv (пере)запущен: открыть станцию заново — или заглушить, если радио не должно играть
+                loop.create_task(self._apply(), name="radio-ready")
+            elif self.want_play and self.phase == "playing":
+                self._left_playing()
                 self.phase = "connecting"
         elif kind == "playing":
             if self.want_play and self.phase in ("connecting", "playing"):
                 if self.phase != "playing":
                     log.info("radio: playing %s", self.station.name if self.station else "?")
-                self.phase, self.error, self._attempt = "playing", None, 0
-                if self._watchdog:
-                    self._watchdog.cancel()
-                    self._watchdog = None
+                    self._playing_since = time.monotonic()
+                self.phase, self.error = "playing", None
+                # звук пошёл — не нужны ни сторож, ни запланированный повтор (.pls/.m3u: mpv сам перешёл
+                # ко второму адресу списка, а повтор открыл бы список с первого)
+                self._cancel_timers()
         elif kind == "buffering":
             if self.want_play and self.phase == "playing":
+                self._left_playing()
                 self.phase = "connecting"
                 self._watchdog = loop.create_task(self._connect_watchdog(), name="radio-watchdog")
         elif kind == "ended":
             if self.want_play and self.phase in ("connecting", "playing"):
-                self._schedule_retry(f"Stream ended: {value}" if value and value != "eof" else "Stream ended")
+                played = self._left_playing()
+                self._schedule_retry(f"Stream ended: {value}" if value and value != "eof" else "Stream ended",
+                                     flap=played is not None and played < STEADY_S)
         elif kind == "title":
             md, mt = value if isinstance(value, tuple) else (None, None)
-            t = pick_title(md, mt, self.station)
+            st = self.station.model_copy(update={"url": self._url}) if self.station and self._url else self.station
+            t = pick_title(md, mt, st)
             if t != self.track and self.want_play:
                 self.track = t
                 if t:

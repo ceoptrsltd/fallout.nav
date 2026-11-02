@@ -167,7 +167,9 @@ class BluetoothBase:
         await self._close()
 
     def apply_settings(self, s: BluetoothSettings) -> None:
-        if self.available and s.enabled and not self.powered:
+        # зовётся на любое изменение настроек (калибровка компаса, громкость…): выключенный из веб-интерфейса
+        # адаптер не включать
+        if self.available and s.enabled and not self.powered and not self._user_off:
             asyncio.get_running_loop().create_task(self._safe_power(True), name="bt-power")
 
     async def _safe_power(self, on: bool) -> None:
@@ -223,7 +225,7 @@ class BluetoothBase:
     async def _tick(self) -> None:
         if not self.available:
             await self._open()  # адаптер/bluetoothd появились позже (или после перезапуска)
-            if self.available and self.get_settings().enabled and not self.powered:
+            if self.available and self.get_settings().enabled and not self.powered and not self._user_off:
                 await self._safe_power(True)
             self._emit_output()
             return
@@ -464,6 +466,8 @@ class BlueZBluetooth(BluetoothBase):
             return
         self.objects = _unvariant(objs)
         self._rebuild()
+        if self.powered:
+            self._user_off = False  # см. on_signal
 
     def _rebuild(self) -> None:
         adapters = sorted(p for p, ifs in self.objects.items() if ADAPTER_IF in ifs)
@@ -497,9 +501,11 @@ class BlueZBluetooth(BluetoothBase):
         return False  # не «съедаем» сообщение
 
     def on_signal(self, path: str, iface: str, member: str, body: list) -> None:
+        powered_on = False  # BlueZ сообщил: адаптер включился
         if iface == OM_IF and member == "InterfacesAdded":
             p, ifs = body[0], _unvariant(body[1])
             self.objects.setdefault(p, {}).update(ifs)
+            powered_on = (ifs.get(ADAPTER_IF) or {}).get("Powered") is True
         elif iface == OM_IF and member == "InterfacesRemoved":
             p, names = body[0], body[1]
             for n in names:
@@ -512,6 +518,7 @@ class BlueZBluetooth(BluetoothBase):
             props.update(changed)
             for k in invalid:
                 props.pop(k, None)
+            powered_on = name == ADAPTER_IF and changed.get("Powered") is True
         elif member == "NameOwnerChanged" and body and body[0] == BLUEZ:
             if not body[2]:  # bluetoothd остановился
                 self.objects, self.available, self.error = {}, False, "bluetoothd is not running"
@@ -522,6 +529,10 @@ class BlueZBluetooth(BluetoothBase):
             return
         else:
             return
+        if powered_on:
+            # включили (мы, bluetoothd после перезапуска, bluetoothctl): «выключен из веб-интерфейса» в прошлом —
+            # упадёт чип, восстанавливать. Только по самому сигналу: в кэше Powered до сигнала о выключении ещё True
+            self._user_off = False
         was_powered = self.powered
         self._rebuild()
         if self.powered != was_powered:

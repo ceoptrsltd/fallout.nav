@@ -587,6 +587,8 @@ class RadioStation(_Model):
     uuid: str = ""
     name: str = "Radio"
     url: str = Field(..., pattern=r"^https?://", max_length=2048)  # только http(s): mpv не открывает файлы
+    # исходный адрес каталога (до раскрытия .pls/.m3u и редиректов), если он другой; "" — нет
+    url_original: str = Field("", pattern=r"^(https?://|$)", max_length=2048)
     homepage: str = ""
     favicon: str = ""
     tags: str = ""

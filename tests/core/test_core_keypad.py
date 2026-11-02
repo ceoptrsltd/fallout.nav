@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import time
 from typing import get_args
 
 from core_helpers import login, running_app
@@ -10,8 +13,9 @@ from fnav.core import keypad as kp
 from fnav.models import KeypadAction, KeypadSettings, RadioStation
 
 
-def ev(code: int, value: int) -> bytes:
-    return kp.EVENT.pack(0, 0, kp.EV_KEY, code, value)
+def ev(code: int, value: int, t: float = 0.0) -> bytes:
+    """An evdev event; t - its timestamp (0 - none: the time it was read counts)."""
+    return kp.EVENT.pack(int(t), round((t % 1) * 1e6), kp.EV_KEY, code, value)
 
 
 def test_decode_presses_only():
@@ -128,6 +132,8 @@ async def test_controls_api_and_remap(data_dir):
         assert {p["place"]: p["hold"] for p in kpd["places"]}["key6"] == "favorite" == kpd["defaults"]["key6_hold"]
         assert next(p for p in kpd["places"] if p["place"] == "knob_left")["hold"] is None
         assert r["gamepad"]["controls"] and r["button"]["controls"]
+        # the GPS-module button switches the cameras (Core.handle_button), not the video output
+        assert [b["title"] for b in r["button"]["controls"]] == ["Front / rear camera", "Protect recording"]
         # remap one key through the settings: the pad follows at once
         assert (await c.patch("/api/settings", json={"keypad": {"key6": "radio_toggle"}})).status_code == 200
         core = c.app.state.core
@@ -138,3 +144,106 @@ async def test_controls_api_and_remap(data_dir):
         places = (await c.get("/api/controls")).json()["keypad"]["places"]
         assert next(p for p in places if p["place"] == "key6")["action"] == "radio_toggle"
         assert (await c.patch("/api/settings", json={"keypad": {"key1": "self_destruct"}})).status_code == 422
+
+
+# ── B9: время нажатия — по меткам событий, действия — задачами по очередям ──
+
+
+def test_hold_is_measured_by_the_event_timestamps():
+    """After a long action the loop read press + release in one batch: a 1.5 s hold of key 6 used to become a
+    short press (by the read time). The events' own timestamps decide."""
+    k6 = kp.KEY_F13 + 5
+    svc = kp.KeypadService({})
+    assert svc.decode(ev(k6, 1, t=100.0) + ev(k6, 0, t=101.5), now=130.0) == ["favorite"]
+    assert svc.decode(ev(k6, 1, t=200.0) + ev(k6, 0, t=200.2), now=230.0) == ["shuffle"]
+    # pressed long ago by its timestamp, read only now: the hold is due at once
+    assert svc.decode(ev(k6, 1, t=300.0), now=310.0) == [] and svc.held(now=310.0) == ["favorite"]
+    assert svc.decode(ev(k6, 0, t=310.5), now=310.6) == []
+    # pressed just now: the hold waits for its HOLD_S from the press itself
+    assert svc.decode(ev(k6, 1, t=400.0), now=400.1) == [] and svc.held(now=400.5) == []
+    assert svc.held(now=400.0 + kp.HOLD_S + 0.001) == ["favorite"]
+    svc.decode(ev(k6, 0, t=401.0), now=401.0)
+    # wall-clock timestamps (no CLOCK_MONOTONIC on the device): shifted by the offset to time.monotonic()
+    wall = 1_700_000_000.0
+    assert svc.decode(ev(k6, 1, t=wall), now=50.0, offset=50.0 - wall) == []
+    assert svc.held(now=50.0 + kp.HOLD_S + 0.001) == ["favorite"]
+    svc.decode(ev(k6, 0, t=wall + 1), now=51.0, offset=50.0 - wall)
+    # a timestamp from the future (clock trouble): no later than the read time
+    assert svc.decode(ev(k6, 1, t=900.0), now=500.0) == [] and svc.held(now=500.0 + kp.HOLD_S - 0.01) == []
+    assert svc.held(now=500.0 + kp.HOLD_S + 0.001) == ["favorite"]
+
+
+async def test_a_slow_radio_action_does_not_block_the_other_keys():
+    """"Next station" may wait up to a minute for the radio-browser catalogue on a weak signal: meanwhile the knob
+    volume, "protect recording" and the alarm still work; the radio keys wait their turn in the order pressed."""
+    calls: list[str] = []
+    gate = asyncio.Event()
+
+    def h(name, wait=False):
+        async def fn():
+            if wait:
+                await gate.wait()
+            calls.append(name)
+        return fn
+
+    svc = kp.KeypadService({"station_next": h("station_next", wait=True), "radio_toggle": h("radio_toggle"),
+                            "favorite": h("favorite"), "volume_up": h("volume_up"), "protect": h("protect"),
+                            "alarm": h("alarm")})
+    for act in ("station_next", "favorite", "volume_up", "protect", "radio_toggle", "alarm", "volume_up"):
+        svc.submit(act)
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert sorted(calls) == ["alarm", "protect", "volume_up", "volume_up"]
+    gate.set()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert calls[4:] == ["station_next", "favorite", "radio_toggle"]
+    assert svc._workers == {}
+    # presses piling up behind a stuck one: at most QUEUE_MAX wait, the rest are dropped
+    gate.clear()
+    calls.clear()
+    svc.submit("station_next")
+    await asyncio.sleep(0)  # in progress
+    for _ in range(kp.QUEUE_MAX + 5):
+        svc.submit("station_next")
+    gate.set()
+    for _ in range(40):
+        await asyncio.sleep(0)
+    assert calls == ["station_next"] * (kp.QUEUE_MAX + 1)
+    svc.submit("no_such_action")  # no handler: nothing
+    assert "no_such_action" not in svc._queues
+    await svc.stop()
+
+
+async def test_reads_the_device_when_it_is_readable(monkeypatch):
+    """The device is waited on with loop.add_reader (no 33 polls a second); a hold fires on a timer while the key
+    is still down; an unplugged pad is dropped."""
+    monkeypatch.setattr(kp, "HOLD_S", 0.05)
+    calls: list[str] = []
+
+    def h(name):
+        async def fn():
+            calls.append(name)
+        return fn
+
+    svc = kp.KeypadService({"station_prev": h("station_prev"), "favorite": h("favorite"), "shuffle": h("shuffle")})
+    r, w = os.pipe()
+    svc.fds["pad"] = r
+    os.write(w, ev(kp.KEY_F13, 1, t=time.time()) + ev(kp.KEY_F13, 0, t=time.time()))
+    svc._on_readable("pad")
+    await asyncio.sleep(0.01)
+    assert calls == ["station_prev"]
+    os.write(w, ev(kp.KEY_F13 + 5, 1, t=time.time()))  # key 6 held down
+    svc._on_readable("pad")
+    await asyncio.sleep(0.15)
+    assert calls == ["station_prev", "favorite"]
+    os.write(w, ev(kp.KEY_F13 + 5, 0, t=time.time()))
+    svc._on_readable("pad")
+    await asyncio.sleep(0.01)
+    assert calls == ["station_prev", "favorite"]  # the release after a hold does nothing
+    os.write(w, ev(kp.KEY_F13 + 5, 1, t=time.time()))
+    svc._on_readable("pad")
+    os.close(w)  # unplugged with the key down
+    svc._on_readable("pad")
+    assert svc.fds == {} and svc._held == {} and svc._hold_timer is None
+    await svc.stop()

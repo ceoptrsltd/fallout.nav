@@ -24,14 +24,17 @@
   - жанр: `tag=<tag>` (N=60); для речевых тегов (`news`, `talk`, `podcast`, `sport`, `comedy`) — ещё `&language=english`;
   - по имени: `name=<q>` (N=100);
   - популярное: `countrycode=XX` или `is_https=true` для мира (N=30).
-- При запуске станции — `GET /json/url/<stationuuid>` (каталог считает прослушивания), ошибки игнорируются.
+- При запуске станции — `GET /json/url/<stationuuid>` (каталог считает прослушивания и отвечает свежим адресом потока
+  `{"url": …}` — он пригодится для повтора), ошибки игнорируются.
 - Жанровые плитки (tag, emoji, label, kind) — ровно список `MusicGenres.TILES`, английские подписи:
   MOOD: relax 🌊 Calm, sleep 🌙 Sleep, lofi 📚 Study, workout 💪 Workout, party 🎉 Upbeat, romantic 💞 Romantic,
   meditation 🧘 Meditation; GENRE: pop 🎤 Pop, rock 🎸 Rock, jazz 🎷 Jazz, classical 🎻 Classical,
   electronic 🎛️ Electronic, hip hop 🎧 Hip-hop, chanson 🪗 Chanson, lounge 🍸 Lounge, dance 💃 Dance, blues 🎺 Blues,
   folk 🪕 Folk, kids 🧸 Kids; ERA: hits 🔥 Hits, oldies 📻 Oldies, 80s 📼 80s, 90s 💿 90s, news 📰 News.
-- Станция (`Station`): `{"uuid","name","url" (url_resolved, иначе url),"homepage","favicon","tags","country",
-  "countrycode","language","codec","bitrate","votes","clickcount","hls":bool}`.
+- Станция (`Station`): `{"uuid","name","url" (url_resolved, иначе url),"url_original" (url каталога, если он другой,
+  иначе ""),"homepage","favicon","tags","country","countrycode","language","codec","bitrate","votes","clickcount",
+  "hls":bool}`. `url_original` (.pls/.m3u, редирект StreamTheWorld и т.п.) живёт дольше `url_resolved`, в котором
+  часто токен CDN: избранное, недавние и последняя станция хранят оба и uuid.
 
 ## 2. API fnav-core
 
@@ -82,10 +85,26 @@ BtState = {
   observe_property `metadata`/`media-title`/`idle-active`/`core-idle`). Аудиоустройство mpv —
   `alsa/bluealsa:DEV=<mac>,PROFILE=a2dp` подключённой колонки (ставится при подключении).
 - Нет подключённой колонки → `waiting_output` (поток не открываем — не тратим трафик); колонка подключилась → играем.
-- Поток оборвался / нет интернета → `connecting`, повтор с паузой 2→4→…→30 с, пока станция выбрана.
-- Состояние (последняя станция, «играло ли», recent, favorites) — в `data_dir/radio_state.json`; колонка по умолчанию — там же
-  или в `data_dir/bluetooth_state.json`. После перезагрузки: если `radio.resume_on_boot` и радио играло — продолжить.
+- Поток оборвался / нет интернета / 25 с без звука → `connecting`, повтор с паузой 2→4→…→30 с, пока станция выбрана.
+  Счётчик пауз — с нуля только после 30 с звука без перерыва. Повтор всегда открывает поток заново (`loadfile`, даже если
+  у mpv тот же адрес: поток мог застрять в paused-for-cache); звук пошёл сам (mpv перешёл ко второму адресу .pls) —
+  запланированный повтор отменяется. Адрес повтора — по кругу: свежий из каталога (ответ `/json/url/<uuid>` при запуске;
+  на 2-м, 6-м, 10-м… повторе подряд — запрос заново), `url_original`, сохранённый `url`.
+- Станция 4 раза подряд обрывается быстрее 30 с после начала звука (заглушка «недоступно в вашей стране», «offline»)
+  → `error` с объяснением в `error`, mpv замолкает, станция остаётся выбранной, но не играет (как после Stop: `playing`
+  в файле — false); снова — Play / Resume / другая станция.
+- Состояние (последняя станция, «играло ли», «на паузе ради игры», recent, favorites) — в `data_dir/radio_state.json`;
+  колонка по умолчанию — там же или в `data_dir/bluetooth_state.json`. После перезагрузки: если `radio.resume_on_boot`
+  и радио играло — продолжить. mpv — отдельная служба и переживает перезапуск fnav-core: первое открытие станции после
+  старта ядра не перезапускает её, если mpv уже играет её на ту же колонку; радио играть не должно (выключено,
+  `resume_on_boot` выключен) — по ready mpv останавливается (`stop`).
+- Игра на экране (fnav/core/games.py) забирает колонку: радио на паузе («paused_for_game» в radio_state.json), после
+  игры — снова. Ядро перезапустилось посреди игры — радио вернётся, когда игра закончится; игры уже нет (перезагрузка,
+  сбой питания) — сразу при старте (если `resume_on_boot`). Радио включили или выключили во время игры — пауза забыта.
 - Автоподключение: при старте и каждые 30 с, пока колонка по умолчанию не подключена и адаптер включён, — Connect.
+- Адаптер выключили из веб-интерфейса (`POST /api/bluetooth/power {"on":false}`) — fnav-core сам его не включает
+  (ни при сохранении любых настроек, ни при обслуживании) до включения оттуда же или перезапуска fnav-core. Включился
+  иначе (bluetoothd после перезапуска, bluetoothctl) — выключение забыто: упадёт чип — адаптер снова восстанавливается.
 - Трафик: только пока играет станция (128 кбит/с ≈ 60 МБ/ч).
 
 ## 4. Настройки (`fnav/models.py`)

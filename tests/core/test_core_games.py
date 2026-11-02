@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 import httpx
 import pytest
-from core_helpers import login, make_opts
+from core_helpers import login, make_opts, running_app
 
 from fnav.core import games as gm
 from fnav.core.app import create_app
+from fnav.core.radio import RadioDirectory, RadioService
+from fnav.models import RadioOutput, RadioSettings, RadioStation
 
 
 def _setup(tmp_path, monkeypatch):
@@ -149,3 +154,92 @@ async def test_telemetry_gamepad_flag(tmp_path, monkeypatch, data_dir):
         core = app.state.core
         monkeypatch.setattr(core.games, "pad_present", lambda now=None: False)
         assert core.build_telemetry().display.gamepad is False
+
+
+# ── B17: пауза радио ради игры переживает перезапуск ──
+
+
+class _Player:
+    def __init__(self) -> None:
+        self.cb = None
+        self.loads: list[str] = []
+
+    def on_event(self, cb) -> None:
+        self.cb = cb
+
+    async def start(self) -> None:
+        self.cb("ready", True)
+
+    async def close(self) -> None: ...
+
+    async def load(self, url: str, device: str) -> None:
+        self.loads.append(url)
+
+    async def halt(self) -> None: ...
+
+    async def set_volume(self, v: int) -> None: ...
+
+
+async def _radio(tmp_path) -> RadioService:
+    d = RadioDirectory(transport=httpx.MockTransport(lambda r: httpx.Response(404)), retry_pause_s=0)
+    radio = RadioService(d, _Player(), tmp_path / "radio_state.json", RadioSettings)
+    radio.set_output(RadioOutput(address="AA:BB:CC:DD:EE:FF", connected=True))
+    await radio.start()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    return radio
+
+
+def _games(radio: RadioService) -> gm.GamesService:
+    return gm.GamesService(lambda: 0.0, radio.pause_for_game, radio.resume_after_game, lambda *a: None, mock=True)
+
+
+async def test_radio_comes_back_after_a_restart_during_a_game(tmp_path, monkeypatch):
+    """The radio was paused for a game with stop_playback() (playing=false on disk) and an in-memory flag: after a
+    core restart, a reboot or a power cut during the game it never came back."""
+    _setup(tmp_path, monkeypatch)
+    radio = await _radio(tmp_path)
+    await radio.play(RadioStation(uuid="a", name="A", url="http://a/s"))
+    await _games(radio).launch("deadeus")
+    assert radio.want_play is False
+    # fnav-core restarted, the game goes on: the radio waits for it to end
+    radio2 = await _radio(tmp_path)
+    games2 = _games(radio2)
+
+    async def active():
+        return True
+
+    async def inactive():
+        return False
+
+    monkeypatch.setattr(games2, "_is_active", active)
+    await games2._adopt()
+    assert games2.running and radio2.want_play is False
+    monkeypatch.setattr(games2, "_is_active", inactive)
+    await games2._check()  # the game was closed from its own menu
+    assert not games2.running and radio2.want_play and radio2.station.uuid == "a"
+    # a power cut during a game: no game after the reboot - the radio comes back at once
+    await radio2.pause_for_game()
+    radio3 = await _radio(tmp_path)
+    assert radio3.want_play is False
+    await _games(radio3)._adopt()  # --mock: no game is running
+    assert radio3.want_play is True and radio3.player.loads[-1] == "http://a/s"
+    # the radio was off: a restart without a game changes nothing
+    await radio3.stop_playback()
+    radio4 = await _radio(tmp_path)
+    await _games(radio4)._adopt()
+    assert radio4.want_play is False
+
+
+async def test_core_pauses_the_radio_for_a_game(data_dir):
+    async with running_app() as c:
+        core = c.app.state.core
+        await core.radio.play(RadioStation(uuid="a", name="A", url="http://x/a"))
+        assert await core._pause_radio_for_game() is True
+        assert json.loads((data_dir / "radio_state.json").read_text())["paused_for_game"] is True
+        assert core.radio.state().state == "stopped"
+        await core._resume_radio_after_game()
+        assert core.radio.want_play and core.radio.station.uuid == "a"
+        await core.radio.stop_playback()
+        await core._resume_radio_after_game()  # not paused for a game: nothing
+        assert core.radio.want_play is False

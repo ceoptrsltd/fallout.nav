@@ -144,7 +144,7 @@ class GamesService:
         self.audio_ok = audio_ok  # колонка подключена → в игре будет звук
         self.get_speed = get_speed
         self.pause_radio = pause_radio  # → True, если радио играло и его поставили на паузу
-        self.resume_radio = resume_radio
+        self.resume_radio = resume_radio  # вернуть радио, если оно на паузе ради игры (иначе — ничего)
         self.notify = notify  # (уровень, текст) — тост в админке
         self.mock = mock
         self.running = False
@@ -250,8 +250,10 @@ class GamesService:
     async def _watch(self) -> None:
         last_check = 0.0
         pads = PadWatcher()
-        if await self._is_active():  # fnav-core перезапустили посреди игры — игра идёт дальше
-            self.running = True
+        try:
+            await self._adopt()
+        except Exception:
+            log.exception("games: state after a restart")
         try:
             while True:
                 await asyncio.sleep(0.25)
@@ -267,6 +269,15 @@ class GamesService:
                     last_check = await self._check()
         finally:
             pads.close()
+
+    async def _adopt(self) -> None:
+        """Старт fnav-core. Игра идёт (ядро перезапустили посреди неё) — дальше, радио вернётся после неё;
+        игры нет, а радио молчит ради неё (перезагрузка, сбой питания посреди игры) — вернуть сейчас.
+        Пауза ради игры хранится у радио (radio_state.json): resume_radio без неё ничего не делает."""
+        if await self._is_active():
+            self.running, self._radio_paused = True, True
+        else:
+            await self.resume_radio()
 
     async def _check(self) -> float:
         """Раз в секунду: машина поехала — закрыть игру; игра закрылась сама — вернуть радио."""
