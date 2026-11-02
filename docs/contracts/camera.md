@@ -206,6 +206,8 @@ IP-камера ─RTSP/TCP→ процесс fnav.camera.rtsp_pull (PyAV) ─ H
   Восстановление после обрыва питания — каждая свои (передняя не трогает `rear/`). `CameraStatus.current_segment` и `/protect-current` задней — `rear/…`.
 - **Экран в машине**: клавиша 4 / кнопка GPS-модуля (`camera_switch`) — задний вид поверх авто-логики карта/камера
   (`display.camera = "rear"`, `reason = "rear"`), повторное нажатие — обратно; зеркально — `rear_camera.mirror`.
+  Задний ход дольше 1 с включает его сам (`display.auto_rear_on_reverse`), ручной выбор главнее — display.md «Задний
+  вид».
 - **Звук** (`rear_camera.audio`, микрофон камеры; Connect C150 — G.711 µ-law 8 кГц в обоих потоках): забирает помощник
   второго потока (`rtsp_pull --audio`; нет второго — основного), запись видео он не трогает. PCM s16 моно 8 кГц —
   в `fnav/camera/sound.py` (громкие звуки на охране, [vision.md](vision.md) «Громкие звуки»). Помощник кодирует ещё

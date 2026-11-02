@@ -21,9 +21,19 @@ from typing import Any, Protocol
 from fnav.sensors import ubx
 
 MAJOR_GNSS = ("gps", "glonass", "galileo", "beidou")
-BAUD_CANDIDATES = (38400, 9600, 115200, 57600, 230400, 19200, 4800)
+# Все скорости, которые можно выбрать (GpsSettings.baud, tools/ubx_config.py), и 921600 (u-center): модуль, сохранённый
+# во flash на скорости вне списка, «Reconfigure» больше не нашёл бы. Сначала наша 115200 — она всегда среди первых
+# двух попыток: на ней от модуля на любой другой скорости приходит хоть «мусор» (см. detect_baud), затем заводские.
+BAUD_CANDIDATES = (115200, 38400, 9600, 460800, 230400, 57600, 921600, 19200, 4800)
 RATE_STEPS = (18, 15, 10, 8, 5, 4, 2, 1)
-DETECT_BUDGET_S = 15.0  # не держать gpsd остановленным дольше, если модуль не отвечает
+DETECT_BUDGET_S = 15.0  # не держать gpsd остановленным дольше, если модуль не отвечает (весь перебор ~11 с)
+# Загрузка порта, байт: GGA + RMC + VTG за эпоху, GSA + GSV раз в секунду (3 системы), NAV-PVT (92 + 8) за эпоху
+NMEA_EPOCH_B, NMEA_SECOND_B, PVT_B = 200, 1200, 100
+
+
+def pvt_fits(baud: int, rate_hz: int) -> bool:
+    """Хватит ли порта на NMEA и NAV-PVT каждую эпоху (с запасом 25 %): 57600 и выше при 10 Гц — да, 38400 — нет."""
+    return rate_hz * (NMEA_EPOCH_B + PVT_B) + NMEA_SECOND_B <= 0.75 * baud / 10
 
 
 class SerialLike(Protocol):
@@ -177,7 +187,8 @@ class M8NConfigurator:
 
     def detect_baud(self, first: int | None = None, budget_s: float = DETECT_BUDGET_S) -> int | None:
         """Перебор скоростей. Быстрый выход: если за первые две попытки на RX не пришло ни одного байта —
-        модуль не подключён (подключённый M8N шлёт NMEA постоянно, на чужой скорости — хотя бы «мусор»).
+        модуль не подключён (подключённый M8N шлёт NMEA постоянно, на чужой скорости — хотя бы «мусор»;
+        среди первых двух всегда 115200: от модуля на 4800…921600 на ней байты есть — ошибки кадра, обрывки).
         Общий лимит времени — budget_s."""
         cands = ([first] if first else []) + [b for b in BAUD_CANDIDATES if b != first]
         start = self.clock()
@@ -235,7 +246,7 @@ class M8NConfigurator:
         constellations: list[str] | None = None,
         dyn_model: str = "automotive",
         save: bool = True,
-        enable_pvt: bool | None = None,
+        enable_pvt: bool | None = True,
         measure_s: float = 3.0,
         static_hold_cm_s: int = 50,
         static_hold_max_dist_m: int = 20,
@@ -283,6 +294,13 @@ class M8NConfigurator:
                if not self.send_and_ack(ubx.cfg_msg(ubx.CLS_NMEA_STD, ubx.NMEA_IDS[n], r))]
         step("NMEA messages", not bad, ("no ACK: " + ",".join(bad)) if bad else "")
         self._configure_nmea_version(step)
+        # NAV-PVT каждую эпоху: из него gpsd берёт оценки точности приёмника — TPV.eps (sAcc, ошибка скорости:
+        # насколько верить GPS-курсу) и eph/epv; без него gpsd выдумывает их сам. gpsd -b модуль не перенастраивает
+        # и сам NAV-PVT не включит. Медленный порт не вытянет NMEA + NAV-PVT — тогда выключен (честно «неизвестно»).
+        if enable_pvt and not pvt_fits(baud, rate_hz):
+            enable_pvt = False
+            warns.append(f"NAV-PVT off: {baud} baud is too slow for NMEA + NAV-PVT at {rate_hz} Hz "
+                         "(speed accuracy unknown); use 57600 or faster")
         if enable_pvt is not None:
             step("NAV-PVT", self.send_and_ack(ubx.cfg_msg(ubx.CLS_NAV, ubx.ID_NAV_PVT, 1 if enable_pvt else 0)),
                  "on" if enable_pvt else "off")
@@ -382,7 +400,7 @@ def configure_receiver(
     dyn_model: str = "automotive",
     *,
     save: bool = True,
-    enable_pvt: bool | None = None,
+    enable_pvt: bool | None = True,  # None — не трогать
     manage_gpsd: bool = True,
     static_hold_cm_s: int = 50,
     static_hold_max_dist_m: int = 20,

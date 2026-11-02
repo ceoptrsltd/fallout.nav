@@ -39,6 +39,49 @@ def test_parse_tpv_3d() -> None:
     assert f.hdop == 0.9 and f.sats_used == 7  # из SKY, сохраняются
 
 
+def test_parse_tpv_speed_error_from_nav_pvt() -> None:
+    """TPV.eps (gpsd: sAcc из UBX NAV-PVT) → eps_mps — по нему слияние курса решает, насколько верить GPS-курсу."""
+    tpv = next(m for m in msgs() if m["class"] == "TPV" and m["mode"] == 3)
+    assert parse_tpv(tpv).eps_mps == 0.32
+    base = {"class": "TPV", "mode": 3, "lat": 52.2, "lon": 21.0, "speed": 8.0, "track": 10.0}
+    assert parse_tpv(base).eps_mps is None  # NAV-PVT выключен, своей оценки gpsd нет
+    assert parse_tpv({**base, "eps": 0}).eps_mps == 0.0
+    # без NAV-PVT gpsd считает eps сам по ошибкам двух позиций / 0.1 с — это не оценка приёмника
+    assert parse_tpv({**base, "eps": 271.5}).eps_mps is None
+    assert parse_tpv({**base, "eps": -1}).eps_mps is None
+    assert parse_tpv({**base, "eps": "0.3"}).eps_mps is None
+    assert parse_tpv({**base, "mode": 1, "eps": 0.3}).eps_mps is None  # без фикса — неизвестна
+
+
+def test_speed_error_held_across_nmea_tpv_and_dropped_when_stale() -> None:
+    """NMEA и NAV-PVT в одном потоке: TPV той же эпохи без eps не стирает оценку (≤ EPS_HOLD_S); пропал NAV-PVT
+    или фикс — None."""
+    clk = Clock()
+    st = GpsState(clock=clk)
+    base = {"class": "TPV", "mode": 3, "lat": 52.2, "lon": 21.0, "speed": 8.0, "track": 10.0}
+    st.handle({**base, "eps": 0.25})
+    assert st.current().eps_mps == 0.25
+    clk.t += 0.05
+    st.handle(base)  # TPV по NMEA, без eps
+    assert st.current().eps_mps == 0.25
+    clk.t += 0.05
+    st.handle({**base, "eps": 180.0})  # оценка самого gpsd — отброшена, держим приёмника
+    assert st.current().eps_mps == 0.25
+    clk.t += 0.5
+    st.handle({**base, "eps": 0.4})
+    assert st.current().eps_mps == 0.4
+    clk.t += GpsState.EPS_HOLD_S + 0.1
+    st.handle(base)  # NAV-PVT больше нет (модуль перенастроили без него)
+    assert st.current().eps_mps is None
+    st.handle({**base, "eps": 0.3})
+    st.handle({**base, "mode": 1})
+    assert st.current().eps_mps is None  # нет фикса — нет и оценки
+    st.handle({**base, "eps": 0.3})
+    clk.t += GpsState.STALE_S + 1
+    f = st.current()
+    assert f.fix == "none" and f.eps_mps is None  # TPV давно не было — как скорость
+
+
 def test_parse_tpv_no_fix() -> None:
     f = parse_tpv({"class": "TPV", "mode": 1, "time": "2026-10-20T16:40:01.000Z", "speed": 0.0, "track": 10})
     assert f.fix == "none" and f.lat is None and f.speed_mps is None and f.course_deg is None

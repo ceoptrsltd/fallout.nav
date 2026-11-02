@@ -17,6 +17,7 @@ from fnav import paths
 from fnav.core import secretsfile as sf
 from fnav.core.alarm import DETECTED, AlarmService
 from fnav.core.auth import AuthManager
+from fnav.core.autorear import AutoRear
 from fnav.core.bluetooth import create_bluetooth
 from fnav.core.camera import (
     CAMERA_URL,
@@ -152,6 +153,7 @@ class Core:
                                          get_enabled=lambda: self.store.get().rear_camera.enabled,
                                          get_sound_armed=self._sound_wanted, on_sound=self._on_sound)
         self.view_camera = "front"  # что показывает экран в режиме камеры (кнопка «камеры»: передняя ↔ задняя)
+        self.auto_rear = AutoRear()  # задний вид при заднем ходе (fnav/core/autorear.py)
         self.system = SystemService(mock=opts.mock)
         self.video = VideoOutput(mock=opts.mock)
         relay = opts.relay or RelayConfig.from_env()
@@ -356,7 +358,9 @@ class Core:
     # ── телеметрия ──
     def build_telemetry(self, now_mono: float | None = None) -> Telemetry:
         snap = self.hub.snapshot()
-        self.display_state = self.nav.update(now_mono if now_mono is not None else time.monotonic(), snap.gps)
+        now = now_mono if now_mono is not None else time.monotonic()
+        self.display_state = self.nav.update(now, snap.gps)
+        self._auto_rear_tick(now, snap)
         errors = list(snap.errors)
         cam = self.camera.status
         if cam.state == "error" and cam.error:
@@ -559,6 +563,7 @@ class Core:
         Задний вид на экране — просто выйти из него."""
         if self.view_camera == "rear":
             self.view_camera = "front"
+            self.auto_rear.manual()
             self.ws.event("camera_view", camera="front")
             return
         ds = self.store.get().display
@@ -638,8 +643,9 @@ class Core:
         return disp.model_copy(update={"camera": "front", "rear_mirror": mirror})
 
     async def switch_camera(self) -> dict | None:
-        """Кнопка «камеры» (клавиша 4, кнопка GPS-модуля): задний вид на экране ↔ обратно. Задняя камера выключена
-        в настройках — длинный сигнал и подсказка, экран не меняется."""
+        """Кнопка «камеры» (клавиша 4, кнопка GPS-модуля, админка): задний вид на экране ↔ обратно. Задняя камера
+        выключена в настройках — длинный сигнал и подсказка, экран не меняется. Ручной выбор главнее заднего вида по
+        заднему ходу — до следующего заднего хода."""
         if self.view_camera == "rear":
             self.view_camera = "front"
         elif not self.store.get().rear_camera.enabled:
@@ -648,9 +654,22 @@ class Core:
             return {"ok": False, "camera": "front", "error": "Rear camera is off"}
         else:
             self.view_camera = "rear"
+        self.auto_rear.manual()
         self._beep("short")
         self.ws.event("camera_view", camera=self.view_camera)
         return {"ok": True, "camera": self.view_camera}
+
+    def _auto_rear_tick(self, now: float, snap: SensorSnapshot) -> None:
+        """Задний ход дольше 1 с — задний вид, вперёд > 5 км/ч или стоим 10 с — обратно (fnav/core/autorear.py)."""
+        s = self.store.get()
+        want = self.auto_rear.update(
+            now, reversing=bool(getattr(snap, "reversing", False)),  # поле хаба — SensorSnapshot.reversing
+            speed_mps=snap.gps.speed_mps if snap.gps.fix != "none" else None,
+            enabled=s.display.auto_rear_on_reverse and s.rear_camera.enabled, view=self.view_camera)
+        if want is not None and want != self.view_camera:
+            self.view_camera = want
+            log.info("rear view %s (reversing)", "on" if want == "rear" else "off")
+            self.ws.event("camera_view", camera=want, auto=True)
 
     def _on_mark(self, data: dict, ts: float) -> None:
         """Отметка движения от fnav-watch (без тревоги) — в журнал отметок, если они включены."""

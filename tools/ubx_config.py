@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Configure the Holybro M8N (u-blox NEO-M8N) over UBX: baud rate, nav rate, constellations, dynamic model, save.
+"""Configure the Holybro M8N (u-blox NEO-M8N) over UBX: baud rate, nav rate, constellations, dynamic model,
+Static Hold, NAV-PVT output, save. Defaults come from settings.json - the same as "Reconfigure module" in the web UI.
 
 gpsd owns the serial port, so by default it is stopped for the duration (sudo systemctl stop gpsd.socket
 gpsd.service) and started again afterwards; gpsd then auto-detects the new baud rate.
@@ -82,11 +83,17 @@ def main(argv: list[str] | None = None) -> int:
     s = load_settings().gps
     ap = argparse.ArgumentParser(description="Configure u-blox NEO-M8N via UBX")
     ap.add_argument("--device", default=s.device)
-    ap.add_argument("--baud", type=int, default=s.baud, help="target baud rate (default from settings)")
+    ap.add_argument("--baud", type=int, default=s.baud, choices=sorted(m8n.BAUD_CANDIDATES),
+                    help="target baud rate (default from settings)")
     ap.add_argument("--rate", type=int, default=s.rate_hz, help="navigation rate, Hz")
     ap.add_argument("--gnss", default=",".join(s.constellations), help="e.g. gps,glonass,galileo")
     ap.add_argument("--dyn", default=s.dyn_model, choices=sorted(ubx.DYN_MODELS))
-    ap.add_argument("--pvt", choices=["on", "off"], help="enable/disable UBX NAV-PVT output (default: untouched)")
+    ap.add_argument("--static-hold", type=int, default=s.static_hold_cm_s, metavar="CM_S",
+                    help="Static Hold speed threshold, cm/s, 0 = off (default from settings)")
+    ap.add_argument("--static-hold-dist", type=int, default=s.static_hold_max_dist_m, metavar="M",
+                    help="Static Hold exit distance, m (default from settings)")
+    ap.add_argument("--pvt", choices=["on", "off", "keep"], default="on",
+                    help="UBX NAV-PVT output: gpsd takes the speed accuracy (TPV eps) from it (default: on)")
     ap.add_argument("--no-save", action="store_true", help="do not save to flash (CFG-CFG)")
     ap.add_argument("--no-gpsd", action="store_true", help="do not stop/start gpsd")
     ap.add_argument("--probe", action="store_true", help="only detect baud rate, firmware, constellations, rate")
@@ -97,8 +104,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         res = m8n.configure_receiver(
             a.device, a.baud, a.rate, [x.strip() for x in a.gnss.split(",") if x.strip()], a.dyn,
-            save=not a.no_save, enable_pvt=None if a.pvt is None else a.pvt == "on",
-            manage_gpsd=not a.no_gpsd, log=print,
+            save=not a.no_save, enable_pvt=None if a.pvt == "keep" else a.pvt == "on",
+            manage_gpsd=not a.no_gpsd, static_hold_cm_s=a.static_hold, static_hold_max_dist_m=a.static_hold_dist,
+            log=print,
         )
     print(json.dumps(res, indent=2, ensure_ascii=False, default=str))
     for w in res.get("warnings", []):

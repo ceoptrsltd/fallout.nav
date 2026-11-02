@@ -110,6 +110,7 @@
 - `GET /api/camera/view` → `{"camera":"front"|"rear","rear_enabled":bool}` — что показывает экран в режиме камеры;
   `POST /api/camera/view` `{"camera"?: "front"|"rear"}` (без поля — переключить; задняя выключена — `409`).
   Телеметрия: `display.camera`, `display.reason = "rear"`, `display.rear_mirror`; `camera_rear` — статус задней или `null`.
+  Задний ход включает задний вид и сам (`settings.display.auto_rear_on_reverse`; ручной выбор главнее — display.md).
 - `GET /api/camera/status` → `CameraStatus`; лимит записей — `protected_gb`, `loop_minutes`, `over_limit` (camera.md
   «Минимум петли»; админка предупреждает на «Camera» и «Recordings»).
 - `GET /api/camera/mjpeg` → поток `multipart/x-mixed-replace` 768×576 (для экрана и превью).
@@ -123,7 +124,11 @@
 
 ## Датчики
 
-- `GET /api/gps/satellites` → `[Satellite]`. `POST /api/gps/configure` → результат `hub.gps_configure()`.
+- `GET /api/gps/satellites` → `[Satellite]`. `POST /api/gps/configure` → результат `hub.gps_configure()` (UBX:
+  скорость порта, частота, созвездия, модель, Static Hold, NAV-PVT каждую эпоху — `fnav/sensors/m8n.py`).
+- `Telemetry.gps.eps_mps` — ошибка скорости по оценке приёмника, м/с (TPV `eps` gpsd ← `sAcc` из UBX NAV-PVT): по ней
+  слияние курса решает, насколько верить GPS-курсу. `null` — неизвестна: нет фикса, модуль не шлёт NAV-PVT (до
+  «Reconfigure module»; порт медленнее 57600 при 10 Гц), значение > 10 м/с (без NAV-PVT gpsd выдумывает eps сам).
 - `Telemetry.gps`: без фикса (`fix: "none"`) **`speed_mps` и `course_deg` — `null`**, в том числе когда TPV от gpsd
   не приходят дольше 3 с (gpsd перезапущен «Reconfigure module», упал, отошёл провод UART). `lat`/`lon` при этом
   могут остаться — это последняя известная позиция, не текущая. Потребители понимают `null` как «скорость неизвестна»:

@@ -4,6 +4,7 @@ import { api, errText } from "../api.js";
 import { SettingsForm, section } from "../form.js";
 import { store, on, subscribeTopic } from "../store.js";
 import { toast, confirmDialog, poll, banner, switchEl } from "../ui.js";
+import { GPSD_DEVICE, fixLine, needsPvt, deviceMismatch } from "../gps-fmt.js";
 
 const GN = {
   gps: { name: "GPS", color: "#5dff8a" },
@@ -78,12 +79,15 @@ export function mount(root) {
   }
   const stopSats = poll(loadSats, 1000);
 
-  const fixInfo = h("span.mono");
+  const fixInfo = h("span.mono", { title: "Speed ± its error estimate from the receiver (u-blox NAV-PVT sAcc): how far the GPS course can be trusted" });
+  const pvtHint = h("div.dim", { hidden: true, style: { marginTop: "8px" } },
+    "Speed accuracy unknown: the module does not send UBX NAV-PVT yet. \"Reconfigure module\" turns it on (57600 baud or faster).");
   function renderFix() {
     const g = store.telemetry?.gps;
     if (!g) return;
-    fixInfo.textContent = `fix ${g.fix === "none" ? "none" : g.fix.toUpperCase()} · HDOP ${fmt(g.hdop, 2)} · ${fmt(g.speed_mps, 1)} m/s`;
+    fixInfo.textContent = fixLine(g);
     fixInfo.className = "mono " + (g.fix === "3d" ? "green" : g.fix === "2d" ? "amber" : "red");
+    pvtHint.hidden = !needsPvt(g);
   }
 
   // ── NMEA ──
@@ -124,9 +128,27 @@ export function mount(root) {
   // ── settings ──
   const form = new SettingsForm();
   const f = (s) => form.add(s);
+  // gpsd reads its own fixed port (DEVICES="/dev/gps0", pi/gpsd/gpsd.default): an editable field here only moved the
+  // UBX configurator to another port. Shown read-only; a value changed earlier can be put back.
+  const deviceField = (fld) => {
+    const val = h("span.mono");
+    const note = h("span.amber");
+    const reset = h("button.btn.sm", { type: "button", onclick: () => form.set(fld.path, GPSD_DEVICE) }, `Use ${GPSD_DEVICE}`);
+    return {
+      el: h("span", { style: { display: "inline-flex", gap: "10px", alignItems: "center", flexWrap: "wrap" } }, val, note, reset),
+      update: (v) => {
+        val.textContent = v || "—";
+        const odd = deviceMismatch(v);
+        note.textContent = odd ? `gpsd reads ${GPSD_DEVICE}` : "";
+        reset.hidden = !odd;
+      },
+    };
+  };
   const setCard = section("GPS settings",
-    f({ path: "gps.device", label: "Device", type: "text" }),
-    f({ path: "gps.baud", label: "Port speed", type: "select", options: [9600, 38400, 57600, 115200, 230400, 460800].map((b) => ({ value: b, label: String(b) })), unit: "baud" }),
+    f({ path: "gps.device", label: "Device", type: "custom", build: deviceField,
+      help: `Fixed: gpsd always reads ${GPSD_DEVICE} (UART5 on GPIO12/13, a udev link; DEVICES in /etc/default/gpsd). "Reconfigure module" talks to the same port.` }),
+    f({ path: "gps.baud", label: "Port speed", type: "select", options: [9600, 38400, 57600, 115200, 230400, 460800].map((b) => ({ value: b, label: String(b) })), unit: "baud",
+      help: "Saved in the module's flash by \"Reconfigure module\"; it finds the module at any of these speeds again. At 10 Hz the speed accuracy (UBX NAV-PVT next to NMEA) needs 57600 or faster." }),
     f({ path: "gps.rate_hz", label: "Update rate", type: "number", min: 1, max: 18, step: 1, unit: "Hz" }),
     f({ path: "gps.constellations", label: "Constellations", type: "multi", options: [{ value: "gps", label: "GPS" }, { value: "glonass", label: "GLONASS" }, { value: "galileo", label: "Galileo" }, { value: "beidou", label: "BeiDou" }], help: "NEO-M8N tracks at most 3 systems at once, and GLONASS and BeiDou exclude each other (one RF channel). The Holybro M8N antenna does not receive BeiDou: keep GPS + GLONASS + Galileo." }),
     f({ path: "gps.dyn_model", label: "Dynamic model", type: "select", options: [{ value: "automotive", label: "Automotive" }, { value: "portable", label: "Portable" }, { value: "airborne1g", label: "Airborne (1g)" }] }),
@@ -143,7 +165,7 @@ export function mount(root) {
     h(".card", null,
       h(".card-head", null, h("h2", null, "Raw NMEA"), flt, pause, h("button.btn.sm", { type: "button", onclick: () => { lines = []; drawLog(); } }, "Clear")),
       log),
-    h(".card", null, h("h2", null, "Module"), h("div.btnrow", null, cfgBtn, h("span.dim", null, "Applies the parameters below to the u-blox chip.")), cfgRes),
+    h(".card", null, h("h2", null, "Module"), h("div.btnrow", null, cfgBtn, h("span.dim", null, "Applies the parameters below to the u-blox chip.")), pvtHint, cfgRes),
     setCard,
   );
   renderFix();

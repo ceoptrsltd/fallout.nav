@@ -212,6 +212,7 @@ class MockSensorHub:
                 alt_m=165.0 + r.gauss(0, 0.5),
                 speed_mps=round(speed_meas, 2),
                 course_deg=None if gps_course is None else round(gps_course, 1),
+                eps_mps=round(0.15 + r.random() * 0.2, 2),
                 hdop=round(0.8 + r.random() * 0.3, 2),
                 sats_used=used,
                 sats_visible=len(self._sats),

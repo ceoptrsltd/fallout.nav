@@ -64,6 +64,9 @@ class DisplaySettings(_Model):
     speed_limit: bool = True  # знак разрешённой скорости у спидометра (OSM, data_dir/speedlimits.sqlite)
     # На охране (alarm armed) вместо карты и HUD — чёрный экран с ALARM ON и часами, перерисовка раз в секунду
     armed_standby: bool = True
+    # Задний ход (SensorSnapshot.reversing) дольше 1 с — задний вид на экране, вперёд > 5 км/ч или стоим 10 с — обратно
+    # (fnav/core/autorear.py; ручной выбор камеры главнее до следующего заднего хода)
+    auto_rear_on_reverse: bool = True
 
 
 class ZoomStep(_Model):
@@ -173,8 +176,10 @@ class TileSettings(_Model):
 
 
 class GpsSettings(_Model):
+    # порт для UBX-настройки; gpsd читает свой DEVICES="/dev/gps0" (pi/gpsd/gpsd.default), в админке не правится
     device: str = "/dev/gps0"  # PL011 UART5 на GPIO12/13 (pi/udev/90-fnav.rules)
-    baud: int = 115200
+    # только скорости, на которых m8n.py ищет модуль (BAUD_CANDIDATES): сохранённый во flash на другой не нашёлся бы
+    baud: Literal[4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800] = 115200
     rate_hz: int = Field(10, ge=1, le=18)
     constellations: list[Literal["gps", "glonass", "galileo", "beidou"]] = ["gps", "glonass", "galileo"]
     dyn_model: Literal["portable", "automotive", "airborne1g"] = "automotive"
@@ -441,6 +446,8 @@ class GpsFix(_Model):
     alt_m: float | None = None
     speed_mps: float | None = None
     course_deg: float | None = None  # курс над землёй (COG), 0..360, от истинного севера
+    # оценка ошибки скорости, м/с: TPV.eps gpsd ← sAcc из UBX NAV-PVT (m8n.py включает его); None — неизвестна
+    eps_mps: float | None = None
     hdop: float | None = None
     sats_used: int = 0
     sats_visible: int = 0

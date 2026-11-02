@@ -18,6 +18,9 @@ from typing import Any
 from fnav.models import GpsFix, Satellite
 
 GNSSID = {0: "gps", 1: "sbas", 2: "galileo", 3: "beidou", 5: "qzss", 6: "glonass"}
+# TPV.eps больше этого — не оценка приёмника: без NAV-PVT gpsd считает eps сам (ошибки двух позиций / интервал между
+# ними — при 10 Гц сотни м/с). sAcc u-blox на ходу — десятые доли м/с, при плохом приёме — единицы
+EPS_MAX_MPS = 10.0
 
 
 def gnss_from_prn(prn: int) -> str:
@@ -67,6 +70,7 @@ def parse_tpv(msg: dict, prev: GpsFix | None = None) -> GpsFix:
         alt_m=alt if fix == "3d" else None,
         speed_mps=_num(msg.get("speed"), 0) if has else None,
         course_deg=(track % 360.0) if (has and track is not None) else None,
+        eps_mps=_num(msg.get("eps"), 0, EPS_MAX_MPS) if has else None,
         hdop=prev.hdop,
         sats_used=prev.sats_used,
         sats_visible=prev.sats_visible,
@@ -122,6 +126,9 @@ class GpsState:
     # SKY со списком gpsd шлёт после каждого созвездия (25 спутников, через 20 мс — все 38), и перед каждым
     # повторяет TPV той же эпохи: применяем последний список, когда пришёл TPV новой эпохи (или через 0.5 с)
     SKY_CYCLE_S = 0.5
+    # NMEA и NAV-PVT в одном потоке: за эпоху gpsd может прислать и TPV без eps (по NMEA, или со своей оценкой,
+    # отброшенной по EPS_MAX_MPS) — последняя оценка приёмника держится столько, иначе eps_mps мигал бы null
+    EPS_HOLD_S = 1.0
 
     def __init__(self, clock: Callable[[], float] = time.monotonic):
         self.clock = clock
@@ -137,6 +144,7 @@ class GpsState:
         self._sky_epoch: str | None = None  # время эпохи (TPV.time), к которой он относится
         self._sky_list_at: float | None = None
         self._tpv_time: str | None = None
+        self._eps_at: float | None = None  # когда пришла последняя оценка ошибки скорости
 
     def on_connect(self) -> None:
         self.since = self.clock()
@@ -162,8 +170,14 @@ class GpsState:
             t = msg.get("time") if isinstance(msg.get("time"), str) else None
             self._commit_sky(new_epoch=t, tpv=True)
             self._tpv_time = t
-            self.fix = parse_tpv(msg, self.fix)
-            self.last_tpv = self.clock()
+            fix = parse_tpv(msg, self.fix)
+            now = self.clock()
+            if fix.eps_mps is not None:
+                self._eps_at = now
+            elif fix.fix != "none" and self._eps_at is not None and now - self._eps_at <= self.EPS_HOLD_S:
+                fix = fix.model_copy(update={"eps_mps": self.fix.eps_mps})
+            self.fix = fix
+            self.last_tpv = now
             self.tpv_count += 1
         elif cls == "SKY":
             sky = parse_sky(msg)
@@ -207,7 +221,7 @@ class GpsState:
         age = self.clock() - self.last_tpv
         upd: dict[str, Any] = {"age_s": round(age, 2)}
         if age > self.STALE_S:
-            upd.update(fix="none", speed_mps=None, course_deg=None)
+            upd.update(fix="none", speed_mps=None, course_deg=None, eps_mps=None)
         return self.fix.model_copy(update=upd)
 
     def problem(self) -> str | None:

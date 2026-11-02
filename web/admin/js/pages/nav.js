@@ -218,6 +218,9 @@ export async function mount(root) {
     store.settings?.display?.armed_standby !== undefined
       ? f({ path: "display.armed_standby", label: "Standby screen while armed", hint: "While the alarm is armed the car screen shows only ALARM ON and the clock: no map, camera or animation, so the display uses almost no CPU. Any other alarm state brings the normal screen back at once", type: "switch" })
       : null,
+    store.settings?.display?.auto_rear_on_reverse !== undefined
+      ? f({ path: "display.auto_rear_on_reverse", label: "Rear view when reversing", hint: "Reversing for over 1 s shows the rear camera; driving forward faster than 5 km/h or standing still for 10 s brings the previous view back. Key 4, the GPS-module button or \"Car screen shows\" on the Camera page win until the next time you reverse. Needs the rear camera on", type: "switch" })
+      : null,
     f({ path: "display.mirror_x", label: "Mirror screen left-right", hint: "For monitors that mirror the picture themselves (rear-view CRTs like the WAECO RV-50). Affects only the physical screen, not this preview", type: "switch" }),
     f({ path: "display.trail_seconds", label: "Trail length", type: "number", min: 0, max: 600, step: 10, unit: "s" }),
     // until the device software has the radio (docs/contracts/radio.md) the setting does not exist: no switch

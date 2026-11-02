@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import typing
+
+import pytest
+from pydantic import ValidationError
 from sensors_fakes import FakeM8N
 
+from fnav.models import GpsSettings
 from fnav.sensors import m8n, ubx
+
+GNSS3 = ["gps", "glonass", "galileo"]
+SELECTABLE_BAUDS = typing.get_args(GpsSettings.model_fields["baud"].annotation)
 
 
 def make(dev: FakeM8N) -> m8n.M8NConfigurator:
@@ -107,3 +115,56 @@ def test_detect_time_budget() -> None:
     t0 = dev.clock()
     c.detect_baud(first=115200, budget_s=3.0)
     assert dev.clock() - t0 < 6.0
+
+
+@pytest.mark.parametrize("baud", [*SELECTABLE_BAUDS, 921600])
+def test_every_selectable_baud_is_found_again(baud: int) -> None:
+    """B21: модуль, сохранённый во flash на любой скорости из настроек (460800 — в админке, 921600 — u-center), снова
+    находится — в пределах бюджета, пока gpsd остановлен."""
+    assert baud in m8n.BAUD_CANDIDATES
+    dev = FakeM8N(baud=baud)
+    c = make(dev)
+    t0 = dev.clock()
+    assert c.detect_baud(first=115200) == baud
+    assert dev.clock() - t0 < m8n.DETECT_BUDGET_S
+
+
+def test_settings_accept_only_searchable_bauds() -> None:
+    assert set(SELECTABLE_BAUDS) <= set(m8n.BAUD_CANDIDATES)
+    assert m8n.BAUD_CANDIDATES[0] == 115200  # всегда среди первых двух попыток (быстрый выход по тишине на RX)
+    assert GpsSettings(baud=460800).baud == 460800
+    with pytest.raises(ValidationError):
+        GpsSettings(baud=100000)  # во flash ушла бы скорость, на которой модуль потом не найти
+
+
+def test_back_from_460800_reconfigure_finds_the_module() -> None:
+    """B21: выбрали 460800 → Reconfigure (во flash модуля), вернули 115200 → Reconfigure находит модуль на 460800."""
+    dev = FakeM8N(baud=115200)
+    res = make(dev).configure(baud=460800, rate_hz=10, constellations=GNSS3)
+    assert res["ok"], res
+    assert dev.device_baud == 460800 and dev.saved
+    res = make(dev).configure(baud=115200, rate_hz=10, constellations=GNSS3)
+    assert res["ok"], res
+    assert res["baud_found"] == 460800 and res["baud"] == 115200 and dev.device_baud == 115200
+
+
+def test_nav_pvt_enabled_by_default() -> None:
+    """NAV-PVT каждую эпоху: из него gpsd берёт TPV.eps (sAcc) — точность скорости для доверия GPS-курсу."""
+    dev = FakeM8N(baud=115200)
+    res = make(dev).configure(baud=115200, rate_hz=10, constellations=GNSS3)
+    assert res["ok"] and not res["warnings"]
+    assert dev.msg_rates[(ubx.CLS_NAV, ubx.ID_NAV_PVT)] == 1
+    assert {"step": "NAV-PVT", "ok": True, "info": "on"} in res["steps"]
+    dev = FakeM8N(baud=115200)
+    make(dev).configure(baud=115200, rate_hz=10, constellations=GNSS3, enable_pvt=None)  # None — не трогать
+    assert (ubx.CLS_NAV, ubx.ID_NAV_PVT) not in dev.msg_rates
+
+
+def test_nav_pvt_off_when_the_port_is_too_slow() -> None:
+    assert m8n.pvt_fits(115200, 10) and m8n.pvt_fits(57600, 10) and m8n.pvt_fits(38400, 5)
+    assert not m8n.pvt_fits(38400, 10) and not m8n.pvt_fits(9600, 1)
+    dev = FakeM8N(baud=38400)
+    res = make(dev).configure(baud=38400, rate_hz=10, constellations=GNSS3)
+    assert res["ok"], res
+    assert dev.msg_rates[(ubx.CLS_NAV, ubx.ID_NAV_PVT)] == 0  # был включён раньше — выключается
+    assert any(w.startswith("NAV-PVT off: 38400 baud") for w in res["warnings"])

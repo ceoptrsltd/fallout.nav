@@ -28,6 +28,7 @@ class Report:
     def __init__(self) -> None:
         self.failed = False
         self.suggest: dict[str, Any] = {}
+        self.position: tuple[float, float] | None = None  # фикс из проверки GPS (для склонения компаса)
 
     def line(self, status: str, text: str) -> None:
         if status == FAIL:
@@ -49,6 +50,20 @@ def load_settings() -> Settings:
     except Exception as e:  # noqa: BLE001
         print(f"(settings.json unreadable, using defaults: {e})")
     return Settings()
+
+
+def last_known_position() -> tuple[float, float] | None:
+    """Последняя позиция из sensors_state.json хаба (по ней хаб считает склонение до первого фикса); None — нет."""
+    try:
+        from fnav.paths import data_dir
+
+        d = json.loads((data_dir() / "sensors_state.json").read_text(encoding="utf-8"))
+        lat, lon = float(d["lat"]), float(d["lon"])
+    except Exception:  # noqa: BLE001 — нет файла, битый, без позиции
+        return None
+    if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return lat, lon
 
 
 # ───────────────────────────── GPS ─────────────────────────────
@@ -133,7 +148,9 @@ def check_gps(rep: Report, s: Settings, host: str, port: int, timeout: float) ->
              f"{mode}; satellites used {used} / visible {len(sats)} ({sys_str or 'none'}); hdop {sky.get('hdop')}")
     if last.get("mode", 0) >= 2:
         rep.info(f"lat {last.get('lat')} lon {last.get('lon')} speed {last.get('speed')} m/s "
-                 f"track {last.get('track')} time {last.get('time')}")
+                 f"(error {last.get('eps', '?')} m/s) track {last.get('track')} time {last.get('time')}")
+        with contextlib.suppress(TypeError, ValueError):
+            rep.position = (float(last["lat"]), float(last["lon"]))
     else:
         rep.info("no fix yet: put the antenna under open sky; cold start may take 30-60 s")
 
@@ -204,12 +221,19 @@ def check_compass(rep: Report, s: Settings, n: int = 50) -> None:
         cx, cy, _ = apply_calibration(mean, c.calibration)
         cal_h = mag_heading_deg(cx, cy)
         dev = deviation_deg(cal_h, c.calibration.deviation) if cal_h is not None else 0.0
-        decl = c.declination if not isinstance(c.declination, str) else declination_deg(55.75, 37.62)
+        if isinstance(c.declination, str):  # auto: по фиксу из проверки GPS, иначе по последней позиции хаба
+            pos = rep.position or last_known_position()
+            decl = declination_deg(*pos) if pos else None
+        else:
+            decl = float(c.declination)
         if cal_h is not None and raw_h is not None:
-            true_h = norm360(cal_h + decl + dev + c.mount_offset_deg)
             cal_src = c.calibration.source or ("none" if c.calibration.fitted_at is None else "manual")
+            if decl is None:
+                true_s = "true unknown (declination auto: no GPS fix and no last known position"
+            else:
+                true_s = f"true ~{norm360(cal_h + decl + dev + c.mount_offset_deg):.1f} (decl {decl:.1f}"
             rep.info(f"heading: raw magnetic {raw_h:.1f} deg, calibrated {cal_h:.1f}, deviation {dev:+.1f}, "
-                     f"true ~{true_h:.1f} (decl {decl:.1f}, mount offset {c.mount_offset_deg}, "
+                     f"{true_s}, mount offset {c.mount_offset_deg}, "
                      f"calibration: {cal_src}, rms {c.calibration.rms_deg})")
         rep.info("check: turn the module clockwise (seen from above) -> heading must INCREASE; "
                  "if it decreases set compass.axes (mirror)")
