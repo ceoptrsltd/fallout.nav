@@ -147,9 +147,10 @@ export function takePassword(patch) {
 
 /**
  * Confirmation before saving rear camera settings ({title, text, okText}) or null. rc: the rear_camera part of the
- * patch; cur: settings.rear_camera now; pwChanged: the password changes too. Everything but the mirror reconnects
- * the camera (camera.md): only worth asking while it records.
+ * patch; cur: settings.rear_camera now; pwChanged: the password changes too. Everything but the mirror and the
+ * fps/bitrate estimates reconnects the camera (camera.md): only worth asking while it records.
  */
+const REAR_ON_THE_FLY = new Set(["mirror", "enabled", "fps", "bitrate_kbps"]);
 export function rearConfirm(rc, cur, pwChanged = false) {
   const c = cur || {};
   const p = rc || {};
@@ -158,7 +159,7 @@ export function rearConfirm(rc, cur, pwChanged = false) {
     return { title: "Turn the rear camera off?", okText: "Turn off",
       text: "Its recording and live view stop until you turn it on again. Recordings already made stay." };
   }
-  const reconnect = pwChanged || Object.keys(p).some((k) => k !== "mirror" && k !== "enabled");
+  const reconnect = pwChanged || Object.keys(p).some((k) => !REAR_ON_THE_FLY.has(k));
   if (!reconnect || c.record === false) return null;
   return { title: "Rear camera restart", okText: "Apply and reconnect",
     text: "Applying these settings reconnects the rear camera: its current segment is closed and there will be a gap of a few seconds in its footage. Continue?" };

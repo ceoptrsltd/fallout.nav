@@ -133,6 +133,7 @@ test("rear save confirmation: only when a recording camera reconnects or goes of
   assert.equal(rearConfirm({ url: "rtsp://a/b" }, { enabled: false }), null); // off: nothing to interrupt
   assert.equal(rearConfirm({ enabled: true, url: "rtsp://a/b" }, { enabled: false }), null); // turning it on
   assert.equal(rearConfirm({ mirror: false }, on), null); // the mirror is applied on the fly
+  assert.equal(rearConfirm({ fps: 15, bitrate_kbps: 2048 }, on), null); // estimates only: no reconnect
   assert.equal(rearConfirm({}, on), null); // nothing changes
   assert.equal(rearConfirm({}, on, true).title, "Rear camera restart"); // only the password: it reconnects too
   assert.equal(rearConfirm({ url: "rtsp://a/c" }, on).okText, "Apply and reconnect");
