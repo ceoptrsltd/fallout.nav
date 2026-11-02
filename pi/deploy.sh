@@ -56,12 +56,14 @@ fi
 TARGET="${DEV_USER}@${HOST}"
 
 # Pack the working tree (uncommitted changes included). Order matters: --anchored/--no-anchored apply to
-# the --exclude options that follow them.
+# the --exclude options that follow them. This PC's server details (tools/.remote.env, tools/.publish.env) and
+# scratch directories (.tmp_*) never go to the device.
 pack() {
     tar -C "$ROOT" -czf - --owner=0 --group=0 --numeric-owner \
         --no-anchored --exclude='__pycache__' --exclude='*.pyc' --exclude='.pytest_cache' --exclude='.ruff_cache' \
         --anchored --exclude='./.git' --exclude='./.devdata' --exclude='./tests' --exclude='./.venv' \
         --exclude='./venv' --exclude='./node_modules' --exclude='./.claude' --exclude='./secrets.env' \
+        --exclude='./tools/.remote.env' --exclude='./tools/.publish.env' --exclude='./.tmp_*' \
         .
 }
 
