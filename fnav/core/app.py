@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -83,11 +84,15 @@ class CameraViewBody(BaseModel):
 
 
 class NoCacheStatic(StaticFiles):
-    """Статика других агентов меняется часто — браузер всегда перепроверяет (ETag/Last-Modified)."""
+    """Статика других агентов меняется часто — браузер всегда перепроверяет (ETag/Last-Modified).
+    Метка версии админки (version.json, пишет деплой: tools/web-version.sh) не кэшируется вовсе."""
 
-    def file_response(self, *args, **kwargs) -> Response:  # type: ignore[override]
-        resp = super().file_response(*args, **kwargs)
-        resp.headers["Cache-Control"] = "no-cache"
+    NO_STORE = frozenset({"version.json"})
+
+    def file_response(self, full_path, *args, **kwargs) -> Response:  # type: ignore[override]
+        resp = super().file_response(full_path, *args, **kwargs)
+        no_store = os.path.basename(full_path) in self.NO_STORE
+        resp.headers["Cache-Control"] = "no-store" if no_store else "no-cache"
         return resp
 
 

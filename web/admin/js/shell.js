@@ -1,14 +1,16 @@
 // Shell: menu, status bar, routing, notifications from WS events. Phones (<= 760 px, css "phone shell"): a bottom
 // tab bar with the most used pages and a More sheet with the rest, a one-line status bar; "Install app" in the
-// More sheet and the sidebar (install.js).
+// More sheet and the sidebar (install.js). After a deploy: "A new version is available" with Reload (version-fmt.js);
+// the installed app has no browser Reload, so it is also in the More sheet and in the page error banner.
 import { h, icon, clear, fmt, kmh, isNum, compassWord } from "./dom.js";
-import { api, goLogin, errText, ROOT } from "./api.js";
+import { api, goLogin, errText, ROOT, appUrl } from "./api.js";
 import { registerSw } from "./push.js";
 import { store, start, on } from "./store.js";
 import { toast, banner, modal } from "./ui.js";
 import { openPreview } from "./preview.js";
 import { installEntry } from "./install.js";
 import { needsAppLogin, clearAppLogin } from "./app-login.js";
+import { versionOf, versionStep, versionDue, VERSION_CHECK_MS } from "./version-fmt.js";
 
 const PAGES = [
   { id: "dashboard", title: "Dashboard", icon: "dash", load: () => import("./pages/dashboard.js") },
@@ -72,6 +74,7 @@ function openMore() {
     h(".more-rows", null,
       install,
       h("button.more-row", { type: "button", onclick: () => { moreSheet.close(); openPreview(); } }, icon("screen"), h("span", null, "Device screen")),
+      h("button.more-row", { type: "button", onclick: reloadApp }, icon("refresh"), h("span", null, "Reload app")),
       h("button.more-row", { type: "button", onclick: () => logout() }, icon("out"), h("span", null, "Log out"))),
   ];
   moreSheet = modal({ title: "More", body, onClose: () => { install.dispose(); moreSheet = null; } });
@@ -116,7 +119,8 @@ async function route() {
     cleanup = typeof res === "function" ? res : null;
   } catch (e) {
     console.error("page", page.id, e);
-    view.append(h(".page", null, banner("bad", "Page error: " + errText(e))));
+    view.append(h(".page", null, reloadBanner("bad", "Page error: " + errText(e))));
+    checkVersion(true); // usually a deploy: the modules of this page are older than the page just loaded
   }
 }
 
@@ -213,6 +217,52 @@ function setOffline(v) {
 }
 // the device came back (WS delivers telemetry again) — hide the banner
 on("conn", (o) => { if (o && store.offline) setOffline(false); });
+
+// ───── new version after a deploy (web/admin/version.json, version-fmt.js) ─────
+// the modules loaded at startup stay old until the page reloads: the installed app has no browser Reload button
+function reloadApp() {
+  location.reload();
+}
+
+/** Banner with a Reload button (page error, new version). */
+function reloadBanner(kind, text, iconName) {
+  const b = banner(kind, [h("span", null, text),
+    h("button.btn.sm", { type: "button", onclick: reloadApp }, icon("refresh"), "Reload")], iconName);
+  b.classList.add("banner-act");
+  return b;
+}
+
+const updateBanner = reloadBanner("ok", "A new version is available", "refresh");
+updateBanner.classList.add("update-banner");
+updateBanner.hidden = true;
+view.before(updateBanner);
+
+const VERSION_URL = appUrl("admin/version.json");
+let verBase; // undefined: not known yet; null: no marker here (dev, mock) — off; a string: what this page started with
+let verAt = NaN;
+let verBusy = false;
+
+async function checkVersion(force) {
+  if (verBase === null || verBusy || !updateBanner.hidden) return;
+  if (!versionDue(verAt, Date.now(), { hidden: document.hidden, force })) return;
+  verBusy = true;
+  verAt = Date.now();
+  let res;
+  try {
+    const r = await fetch(VERSION_URL, { cache: "no-store", credentials: "same-origin" });
+    res = { status: r.status, version: r.ok ? versionOf(await r.json().catch(() => null)) : null };
+  } catch {
+    res = { status: 0, version: null }; // no connection: the next check decides
+  } finally {
+    verBusy = false;
+  }
+  const s = versionStep(verBase, res);
+  verBase = s.base;
+  if (s.changed) updateBanner.hidden = false;
+}
+checkVersion(true); // as early as possible: the version of the modules this page has just loaded
+setInterval(() => checkVersion(false), VERSION_CHECK_MS);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkVersion(false); });
 
 // ───── service worker: push notifications (docs/contracts/alarm.md §7), only in a secure context ─────
 registerSw();

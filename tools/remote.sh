@@ -5,13 +5,14 @@
 #   tools/remote.sh setup    everything, idempotent: fnav-relay on the server, nginx, the tunnel user and key,
 #                            the device side (/etc/fnav/remote.env, tunnel key, known_hosts), web copy, start.
 #                            The device must already have the current code (pi/deploy.sh).
-#   tools/remote.sh web      copy web/admin and web/display to the server (after UI changes)
+#   tools/remote.sh web      copy web/admin and web/display to the server (after UI changes; pi/deploy.sh does it
+#                            itself when this file's settings exist), with a fresh web/admin/version.json
 #   tools/remote.sh relay    reinstall the fnav-relay code on the server
 #   tools/remote.sh nginx    reinstall the nginx snippet
 #   tools/remote.sh status   tunnel and relay state
 #   tools/remote.sh ssh [cmd]      ssh to the device through the server (its tunnel forwards the device's sshd
 #                                  to 127.0.0.1:18022 on the server): works wherever the van is online
-#   tools/remote.sh deploy [args]  pi/deploy.sh through the same way (args as for pi/deploy.sh)
+#   tools/remote.sh deploy [args]  pi/deploy.sh through the same way (args as for pi/deploy.sh), then "web"
 #   tools/remote.sh ssh-server     allow that forward for the tunnel user on the server (setup does it too)
 #
 # Server and device details live in tools/.remote.env (not in git), see tools/remote.env.example.
@@ -45,6 +46,8 @@ do_relay() {
 
 do_web() {
     say "web UI copy -> server:/var/www/fnadmin"
+    # the admin's version marker: an admin open through the server sees the change and offers a reload
+    bash "$ROOT/tools/web-version.sh" | sed 's/^/  /' || return
     tar -C "$ROOT/web" -czf - --exclude='dev' --exclude='__pycache__' admin display \
         | srv 'set -e; t=/var/www/fnadmin; rm -rf "$t.new" "$t.old"; install -d -m 0755 "$t.new"
                tar -C "$t.new" -xzf - --no-same-owner; chmod -R u=rwX,go=rX "$t.new"
@@ -180,8 +183,14 @@ do_ssh() {
 
 do_deploy() {
     ssh_conf
-    FNAV_HOST=fnav-remote FNAV_SSH_OPTS="-F $SSH_CONF -o BatchMode=yes -o ServerAliveInterval=15" \
+    local web=1 a
+    for a in "$@"; do case "$a" in --dry-run|--stage|--install|-h|--help) web=0 ;; esac; done
+    FNAV_WEB_COPY=no FNAV_HOST=fnav-remote FNAV_SSH_OPTS="-F $SSH_CONF -o BatchMode=yes -o ServerAliveInterval=15" \
         bash "$ROOT/pi/deploy.sh" "$@"
+    # the server's copy of web/ does not come from the device: without it the remote admin keeps the old UI
+    if [ "$web" = 1 ]; then
+        do_web || { echo "WARNING: the device is updated, the server's copy of the web UI is not: $0 web" >&2; exit 1; }
+    fi
 }
 
 do_status() {

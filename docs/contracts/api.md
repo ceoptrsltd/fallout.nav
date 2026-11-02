@@ -22,7 +22,11 @@
 |---|---|
 | `/` | редирект на `/admin/` |
 | `/admin/**` | `web/admin/` |
+| `/admin/version.json` | метка версии админки (не в git; пишет деплой — `tools/web-version.sh`), без входа; нет файла → 404 |
 | `/display/**` | `web/display/` |
+
+Статика отдаётся с `Cache-Control: no-cache` (браузер перепроверяет по ETag), `version.json` — с `no-store`.
+Как админка по метке предлагает перезагрузиться после деплоя — `docs/contracts/remote.md`, раздел 6.
 
 ## WebSocket `/ws`
 

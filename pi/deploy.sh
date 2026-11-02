@@ -17,6 +17,11 @@
 #   FNAV_SSH_KEY    path to the private key (optional; ssh-agent / ~/.ssh/config work as usual)
 #   FNAV_SSH_OPTS   extra ssh options (default: -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15)
 #   FNAV_HOSTNAME, FNAV_TIMEZONE, MEDIAMTX_VERSION   passed on to install.sh with --install
+#   FNAV_WEB_COPY   "no": do not update the server's copy of web/ after the deploy (tools/remote.sh deploy does it itself)
+#
+# The pack carries web/admin/version.json (tools/web-version.sh): an open admin sees the new version and offers a
+# reload. After a regular deploy the remote admin's copy of web/ on the server is updated too (tools/remote.sh web)
+# when tools/.remote.env exists on this PC; otherwise a reminder is printed.
 #
 # Key-based ssh authentication is assumed. For --install use a real terminal (Windows Terminal, or
 # "winpty" in mintty) so that ssh can allocate a TTY for the password prompt.
@@ -62,12 +67,34 @@ pack() {
 
 [ -f "$ROOT/pyproject.toml" ] && [ -d "$ROOT/pi" ] || { echo "Cannot find the repository root (looked in $ROOT)" >&2; exit 1; }
 
+# the admin's version marker goes into the pack (web/admin/version.json, not in git)
+bash "$ROOT/tools/web-version.sh"
+
+# The server's copy of web/ (remote admin <server>/fnadmin/, docs/contracts/remote.md) does not come from the device:
+# without an update it keeps serving the old UI.
+web_copy() {
+    [ "${FNAV_WEB_COPY:-}" = no ] && return 0
+    if [ -f "$ROOT/tools/.remote.env" ]; then
+        bash "$ROOT/tools/remote.sh" web || {
+            echo "WARNING: the device is updated, the server's copy of the web UI is not: run tools/remote.sh web" >&2
+            return 1
+        }
+    else
+        echo "Note: the remote admin (<server>/fnadmin/) still serves the old web UI: there is no tools/.remote.env"
+        echo "on this PC — run tools/remote.sh web where it is set up."
+    fi
+}
+
 if [ "$MODE" = dry ]; then
     tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
     pack > "$tmp"
     echo "Archive: $(wc -c < "$tmp") bytes, $(tar -tzf "$tmp" | grep -vc '/$') files"
     echo "Top level:"; tar -tzf "$tmp" | awk -F/ 'NF>=2 && $2!="" {print "  " $2}' | sort -u
     echo "Target: $TARGET (mode: $MODE, restart: ${RESTART:-nothing})"
+    if [ "${FNAV_WEB_COPY:-}" = no ]; then w="no"
+    elif [ -f "$ROOT/tools/.remote.env" ]; then w="after the deploy (tools/remote.sh web)"
+    else w="no (no tools/.remote.env)"; fi
+    echo "Server web copy: $w"
     exit 0
 fi
 
@@ -95,3 +122,4 @@ REMOTE="FNAV_RESTART_ARG=$(printf '%q' "$RESTART"); $REMOTE"
 
 pack | ssh "${SSH_ARGS[@]}" "$TARGET" "bash -c $(printf '%q' "$REMOTE")"
 echo "Deploy finished."
+web_copy

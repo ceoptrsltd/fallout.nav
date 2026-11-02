@@ -18,6 +18,10 @@ Alarm, level and push (docs/contracts/alarm.md, level.md) are fake state machine
     POST /api/_mock/push {"status": 503|404|null}  api/push/* answer like a server without push support
 Push subscriptions are kept in memory; nothing is really sent (test → "sent").
 
+Static files go out with Cache-Control: no-store. "A new version is available" (web/admin/js/version-fmt.js) needs
+web/admin/version.json, which only the deploy writes: `bash tools/web-version.sh`, then edit "version" by hand while
+the admin is open (no file — no check).
+
 Telemetry comes from fnav.mock.sensors.MockSensorHub; settings live in memory (fnav.models.Settings).
 """
 

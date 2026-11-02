@@ -111,7 +111,7 @@ the device (the server checks the same session cookie). One-time setup from a PC
 ```bash
 cp tools/remote.env.example tools/.remote.env   # server login, site name, nginx site file
 tools/remote.sh setup                           # relay, nginx, tunnel user/key, device config, web copy
-tools/remote.sh web                             # after UI changes
+tools/remote.sh web                             # after UI changes (pi/deploy.sh and tools/remote.sh deploy do it too)
 ```
 
 Details: `docs/contracts/remote.md`.

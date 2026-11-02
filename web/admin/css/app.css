@@ -227,6 +227,12 @@ input[type=checkbox] { accent-color: var(--amber); width: 16px; height: 16px; }
 .banner.ok { border-color: var(--green-d); background: #0f2316; color: #a8ffc2; }
 .banner svg { width: 18px; height: 18px; flex: none; margin-top: 2px; }
 .banner ul { margin: 4px 0 0; padding-left: 18px; }
+/* a banner with a button on the right (Reload: page error, new version) */
+.banner-act { align-items: center; }
+.banner-act > svg { margin-top: 0; }
+.banner-act > div { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.banner-act > div > span { flex: 1 1 12em; }
+.banner-act .btn svg { margin-top: 0; }
 
 /* ───── tables ───── */
 table { border-collapse: collapse; width: 100%; }
@@ -315,7 +321,7 @@ tbody tr:hover { background: var(--panel2); }
 .pv-info { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin-top: 10px; display: flex; gap: 6px 20px; flex-wrap: wrap; }
 
 /* ───── tracking ───── */
-.offline-banner { margin: 10px 22px 0; flex: none; }
+.offline-banner, .update-banner { margin: 10px 22px 0; flex: none; }
 .trk-card { padding: 10px 12px 10px; }
 .trk-mapwrap { position: relative; }
 .trk-tools { display: none; } /* phones: round buttons over the map instead of the header controls */
@@ -817,7 +823,7 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
   .page { gap: 12px; }
   .page-head { gap: 10px; }
   .page-head h1 { font-size: 21px; }
-  .offline-banner { margin: 8px 10px 0; }
+  .offline-banner, .update-banner { margin: 8px 10px 0; }
   #toasts { left: 10px; right: 10px; bottom: calc(72px + env(safe-area-inset-bottom)); max-width: none; }
   .tabbar {
     display: flex; flex: none; align-items: stretch; position: relative; z-index: 20;

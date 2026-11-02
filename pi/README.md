@@ -144,6 +144,12 @@ export FNAV_HOST=172.23.204.16 FNAV_USER=falloutnav
 Restarting `fnav-camera` closes the current recording segment cleanly and starts a new one.
 A unit added after the first install (`fnav-watch`) is enabled by the deploy itself; `install.sh` enables all of them.
 
+The pack carries `web/admin/version.json` (written by `tools/web-version.sh`, not in git): an admin already open on a
+phone notices the new version and shows "A new version is available" with a Reload button (docs/contracts/remote.md,
+section 6). The remote admin (`<server>/fnadmin/`) is served from a separate copy of `web/` on the server: after a
+regular deploy `deploy.sh` updates it too (`tools/remote.sh web`) when `tools/.remote.env` exists on this PC, and only
+prints a reminder otherwise; `FNAV_WEB_COPY=no` skips it. `tools/remote.sh deploy` (through the server) uploads it itself.
+
 ## Rollback
 
 ```bash
