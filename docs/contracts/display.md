@@ -58,7 +58,8 @@
   Нет картинки — по центру `REAR CAMERA / NO SIGNAL` вместо стоп-кадра; первые 1,5 с подключения — чёрный экран,
   дольше — `CONNECTING`. «Нет сигнала»: статус null / disabled / stopped / error без кадров, `recording` без кадров
   дольше 1,5 с, ошибка `<img>`. Статус снова «есть видео» — поток переподключается (оборванный MJPEG ни `load`, ни
-  `error` не шлёт).
+  `error` не шлёт). error / starting со свежим `video_age_s` (≤ 3 с) — картинка есть: камера не отдаёт основной поток
+  (запись стоит), а экран живёт на втором ([camera.md](camera.md) «Задняя камера»).
 - В `state.view`: `camera: "front" | "rear"`, `rearSignal: "ok" | "wait" | "connecting" | "no_signal" | null`.
 - Стоп-кадры для обзора — `ui/alarm-level-preview.html`: `rear`, `rear-169`, `rear-v2`, `rear-nosignal`, `rear-connecting`.
 

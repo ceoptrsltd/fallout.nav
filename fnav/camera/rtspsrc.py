@@ -10,6 +10,12 @@
 Звук (``rear_camera.audio``, микрофон камеры): забирает помощник второго потока (нет второго — основного), PCM —
 в ``sink.on_audio`` (громкие звуки на охране), AAC (``start_aac``) — в записи и в живое видео.
 
+Потоки независимы: экран, снимки и fnav-watch живут на втором потоке, запись — на основном. Основной отвалился (камера
+его не отдаёт, обрыв), а второй есть — источник сам переподключает основной (пауза 5 → 30 с), ``sink.on_main_lost``
+закрывает сегмент записи, ``main_error`` — причина для статуса; ``sink.on_error`` (перезапуск всего) — только без
+второго потока. Второй отвалился — переподключение с паузой 1 → 30 с. ``picture_mono`` — когда пришёл последний кадр с
+любого потока (есть ли картинка).
+
 Метки времени: часы камеры привязываются к монотонным часам при подключении; уход больше чем на 2 с (или скачок
 меток) — привязка заново; метки только растут. Камеру нельзя попросить о ключевом кадре — ``request_keyframe`` пуст.
 """
@@ -53,6 +59,12 @@ log = logging.getLogger("fnav.camera.rear")
 RESYNC_US = 2_000_000  # часы камеры ушли от наших дальше — привязать заново
 DEMAND_POLL_S = 0.1  # как быстро частота малых кадров догоняет спрос (задний вид на экране — сразу 15 к/с)
 SUB_IDLE_S = 10.0
+MAIN_RETRY_S, MAIN_RETRY_MAX_S = 5.0, 30.0  # основной поток отвалился при живом втором: пауза перед повтором растёт
+SUB_RETRY_S, SUB_RETRY_MAX_S = 1.0, 30.0  # второй поток отвалился
+
+
+def retry_delay(fails: int, first: float, cap: float) -> float:
+    return min(cap, first * 2 ** max(0, min(fails - 1, 6)))
 
 
 def with_credentials(url: str, username: str, password: str) -> str:
@@ -250,6 +262,12 @@ class RtspCameraSource:
         self._main: _Helper | None = None
         self._sub: _Helper | None = None
         self._sub_used = 0.0
+        self.main_error: str | None = None  # основной поток отвалился (второй живёт) — почему; None — идёт
+        self.picture_mono = 0.0  # последний кадр с любого потока (монотонные часы); 0 — ещё не было
+        self._main_fails = 0
+        self._main_retry_at = 0.0
+        self._sub_fails = 0
+        self._sub_retry_at = 0.0
         self._live: Callable[[bytes, bool, int], None] | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -262,7 +280,18 @@ class RtspCameraSource:
         if not self.rear.url.lower().startswith(("rtsp://", "rtsps://")) and not os.path.exists(self.rear.url):
             raise RuntimeError("the camera address must start with rtsp://")
         self._stop.clear()
-        lores_main = not self.lores_url
+        self.main_error, self.picture_mono = None, 0.0
+        self._main_fails = self._sub_fails = 0
+        self._main_retry_at = self._sub_retry_at = 0.0
+        with self._lock:
+            self._start_main()
+        log.info("rear camera: connecting to %s%s", redact(self.url),
+                 f" (small frames from {redact(self.lores_url)})" if self.lores_url else "")
+        self._demand_thr = threading.Thread(target=self._demand_loop, name="rear-demand", daemon=True)
+        self._demand_thr.start()
+
+    def _start_main(self) -> None:
+        """Процесс основного потока (под self._lock)."""
         self._main = _Helper("main", self.url, self.cmd_factory(video=True, transport=self.rear.transport,
                                                                  lores_w=self.rear.lores.w,
                                                                  **({"audio": True} if self._audio_main else {})),
@@ -270,12 +299,18 @@ class RtspCameraSource:
         self._main.start()
         if self._audio_main and self._aac_cb is not None:
             self._main.set_aac(True)
-        if lores_main:
+        if not self.lores_url:
             self._main.set_lores(1)
-        log.info("rear camera: connecting to %s%s", redact(self.url),
-                 f" (small frames from {redact(self.lores_url)})" if self.lores_url else "")
-        self._demand_thr = threading.Thread(target=self._demand_loop, name="rear-demand", daemon=True)
-        self._demand_thr.start()
+
+    def _start_sub(self) -> None:
+        """Процесс второго потока (под self._lock)."""
+        self._sub = _Helper("sub", self.lores_url,
+                            self.cmd_factory(video=False, transport=self.rear.transport, lores_w=self.rear.lores.w,
+                                             **({"audio": True} if self._audio_sub else {})),
+                            self._on_sub_msg, self._on_exit)
+        self._sub.start()
+        if self._audio_sub and self._aac_cb is not None:
+            self._sub.set_aac(True)
 
     def stop(self) -> None:
         self._stop.set()
@@ -318,6 +353,9 @@ class RtspCameraSource:
     # ── сообщения помощников ──
     def _on_main_msg(self, typ: int, flags: int, ts: int, payload: bytes) -> None:
         if typ == T_VIDEO:
+            self.picture_mono = self.mono()
+            if self._main_fails:
+                self._main_back()
             key = bool(flags & F_KEY)
             t = self._clock.map(ts)
             self.sink.on_video(payload, key, t)
@@ -331,8 +369,14 @@ class RtspCameraSource:
         elif typ in (T_AUDIO, T_AAC):
             self._on_audio_msg(typ, flags, ts, payload)
 
+    def _main_back(self) -> None:
+        if self.main_error:
+            log.info("rear camera: the main stream is back, recording resumes")
+        self._main_fails, self.main_error = 0, None
+
     def _on_sub_msg(self, typ: int, flags: int, ts: int, payload: bytes) -> None:
         if typ == T_LORES:
+            self._sub_fails = 0
             self._on_lores(payload, ts, self._lores_clock)
         elif typ in (T_AUDIO, T_AAC):
             self._on_audio_msg(typ, flags, ts, payload)
@@ -383,6 +427,7 @@ class RtspCameraSource:
     def _on_lores(self, payload: bytes, ts: int, clock: Clock) -> None:
         if len(payload) < LORES_HEAD.size:
             return
+        self.picture_mono = self.mono()
         t = clock.map(ts)  # по меткам камеры: по Wi-Fi кадры приходят пачками, по приходу прореживание теряло кадры
         if not self.sink.wants_lores(t):
             return
@@ -396,12 +441,32 @@ class RtspCameraSource:
     def _on_exit(self, name: str, error: str | None) -> None:
         if self._stop.is_set():
             return
-        if name == "sub":  # второй поток — не повод рвать запись: переподключится по требованию
-            log.warning("rear camera: second stream stopped: %s", error or "process exited")
+        msg = error or "the connection was closed"
+        if name == "sub":  # второй поток — не повод рвать запись: переподключится сам, с паузой
             with self._lock:
                 self._sub = None
+                self._sub_fails += 1
+                delay = retry_delay(self._sub_fails, SUB_RETRY_S, SUB_RETRY_MAX_S)
+                self._sub_retry_at = self.mono() + delay
+            if self._sub_fails <= 3:
+                log.warning("rear camera: second stream stopped: %s (again in %.0f s)", error or "process exited", delay)
             return
-        self.sink.on_error(f"Rear camera: {error or 'the connection was closed'}")
+        if not self.lores_url:  # картинка — только с основного: перезапуск всего конвейера
+            self.sink.on_error(f"Rear camera: {msg}")
+            return
+        # экран, снимки и fnav-watch живут на втором потоке; основной переподключаем сами, запись ждёт
+        with self._lock:
+            self._main = None
+            self._main_fails += 1
+            delay = retry_delay(self._main_fails, MAIN_RETRY_S, MAIN_RETRY_MAX_S)
+            self._main_retry_at = self.mono() + delay
+        if msg != self.main_error:
+            log.warning("rear camera: main stream: %s — not recording, the second stream keeps the picture "
+                        "(again in %.0f s)", msg, delay)
+        self.main_error = msg
+        lost = getattr(self.sink, "on_main_lost", None)
+        if lost is not None:
+            lost(msg)
 
     # ── сколько малых кадров нужно ──
     def _wanted_fps(self) -> float:
@@ -414,25 +479,24 @@ class RtspCameraSource:
     def _demand_loop(self) -> None:
         while not self._stop.wait(DEMAND_POLL_S):
             fps = self._wanted_fps()
+            now = self.mono()
             if not self.lores_url:
                 main = self._main
                 if main is not None:
                     main.set_lores(fps)
                 continue
-            now = self.mono()
             with self._lock:
+                if self._stop.is_set():
+                    break
+                if self._main is None and now >= self._main_retry_at:
+                    log.debug("rear camera: main stream, attempt %d", self._main_fails + 1)
+                    self._start_main()
                 if fps > 0:
                     self._sub_used = now
-                    if self._sub is None:
-                        self._sub = _Helper("sub", self.lores_url,
-                                            self.cmd_factory(video=False, transport=self.rear.transport,
-                                                             lores_w=self.rear.lores.w,
-                                                             **({"audio": True} if self._audio_sub else {})),
-                                            self._on_sub_msg, self._on_exit)
-                        self._sub.start()
-                        if self._audio_sub and self._aac_cb is not None:
-                            self._sub.set_aac(True)
-                    self._sub.set_lores(fps)
+                    if self._sub is None and now >= self._sub_retry_at:
+                        self._start_sub()
+                    if self._sub is not None:
+                        self._sub.set_lores(fps)
                 elif self._sub is not None and now - self._sub_used > SUB_IDLE_S:
                     sub, self._sub = self._sub, None
                     threading.Thread(target=sub.stop, name="rear-sub-stop", daemon=True).start()

@@ -162,6 +162,36 @@ def test_second_stream_decodes_every_frame_and_thins_by_camera_time(tmp_path: Pa
     assert [t for t, _ in pull_messages(video, emit_video=False, fps=15)].count(rp.T_LORES) == 45
 
 
+def test_main_stream_lost_the_second_keeps_the_picture(tmp_path: Path, monkeypatch):
+    """Камера не отдаёт основной поток, второй работает: перезапуска всего нет (on_error), картинка идёт со второго,
+    основной переподключается сам с паузой; main_error — причина для статуса."""
+    import fnav.camera.rtspsrc as rs
+
+    monkeypatch.setattr(rs, "MAIN_RETRY_S", 0.3)
+    bad = tmp_path / "main.ts"
+    bad.write_bytes(b"not a video stream " * 200)  # как камера, закрывшая основной поток: Invalid data
+    good = make_video(tmp_path / "sub.ts", n=45)
+    starts = {"main": 0, "sub": 0}
+
+    def cmd(**kw):
+        starts["main" if kw["video"] else "sub"] += 1
+        return [*rs.default_cmd(**kw), "--realtime", "--lores-fps", "15"]
+
+    sink = Sink(lores_fps=15)
+    lost: list[str] = []
+    sink.on_main_lost = lost.append
+    rear = RearCameraSettings(enabled=True, url=str(bad), lores_url=str(good), lores=LoresSettings(w=160, h=90, fps=15))
+    src = RtspCameraSource(rear, sink, cmd_factory=cmd)
+    src.start()
+    try:
+        assert _wait(lambda: len(sink.lores) >= 5 and starts["main"] >= 2, 30), (starts, len(sink.lores))
+    finally:
+        src.stop()
+    assert not sink.errors, "the whole pipeline must not restart while the second stream shows the picture"
+    assert not sink.video and lost and src.main_error == lost[-1]
+    assert src.picture_mono > 0 and sink.lores[-1].w == 160
+
+
 def test_source_reports_unreachable_camera(tmp_path: Path):
     sink = Sink()
     src = RtspCameraSource(RearCameraSettings(enabled=True, url=str(tmp_path / "missing.ts")), sink)
@@ -295,5 +325,90 @@ def test_lost_camera_reports_video_age_and_protects_the_last_segment(tmp_path: P
         path, rel0, _t = svc._last_segment
         svc._last_segment = (path, rel0, time.monotonic() - 601)  # старше 10 мин — не то, что было перед пропажей
         assert svc.protect_current(recent=True) is None
+    finally:
+        svc.stop()
+
+
+class _MainDropSource:
+    """Задняя с двумя потоками: основной (FakeSource) можно «уронить», второй дальше даёт картинку (picture_mono)."""
+
+    def __init__(self, cam, sink) -> None:
+        self.sink = sink
+        self.main_error: str | None = None
+        self.picture_mono = 0.0
+        self.main_down = threading.Event()
+        self._fake = FakeSource(cam, self)
+        self.sensor_mode, self.output_size = self._fake.sensor_mode, self._fake.output_size
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        self._fake.start()
+        threading.Thread(target=self._second_stream, daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._fake.stop()
+
+    def request_keyframe(self) -> None:
+        self._fake.request_keyframe()
+
+    def drop_main(self) -> None:
+        self.main_down.set()
+        self.main_error = "Invalid data found when processing input"
+        self.sink.on_main_lost(self.main_error)
+
+    def main_back(self) -> None:
+        self.main_error = None
+        self.main_down.clear()
+
+    def _second_stream(self) -> None:
+        while not self._stop.wait(0.1):
+            if self.main_down.is_set():
+                self.picture_mono = time.monotonic()
+
+    # кадры FakeSource → сервис (основной поток «упал» — видео не идёт)
+    def on_video(self, au, key, ts) -> None:
+        if not self.main_down.is_set():
+            self.sink.on_video(au, key, ts)
+
+    def on_lores(self, frame) -> None:
+        self.sink.on_lores(frame)
+
+    def wants_lores(self, ts_us=None) -> bool:
+        return self.sink.wants_lores(ts_us)
+
+    def on_error(self, msg) -> None:
+        self.sink.on_error(msg)
+
+
+def test_main_stream_lost_pauses_recording_but_keeps_the_picture(tmp_path: Path):
+    """Основной поток пропал, второй живёт: конвейер не перезапускается (экран, снимки, fnav-watch), сегмент закрыт
+    (не «идёт запись» без кадров), статус — ошибка с причиной, video_age_s свежий; защита охраны recent — закрытый
+    сегмент; основной вернулся — снова запись."""
+    svc = _rear_service(tmp_path, enabled=True)
+    svc.frame_timeout_s = 1.0  # без картинки перезапуск был бы через 1 с
+    made: list[_MainDropSource] = []
+
+    def factory(_s, sink):
+        made.append(_MainDropSource(small_cam(), sink))
+        return made[-1]
+
+    svc.source_factory = factory
+    svc.start()
+    try:
+        assert _wait(lambda: svc.status().state == "recording")
+        src = made[-1]
+        src.drop_main()
+        assert _wait(lambda: svc.status().current_segment is None)
+        time.sleep(2.0)
+        st = svc.status()
+        assert svc._p is not None and svc._p.source is src and len(made) == 1, "the pipeline must stay up"
+        assert st.state == "error" and not st.recording and "no main stream" in (st.error or "")
+        assert st.video_age_s is not None and st.video_age_s < 1.0
+        rel = svc.protect_current(recent=True)
+        assert rel is not None and rel.startswith("rear/")
+        src.main_back()
+        assert _wait(lambda: svc.status().state == "recording")
+        assert svc.status().error is None and svc.status().current_segment != rel
     finally:
         svc.stop()

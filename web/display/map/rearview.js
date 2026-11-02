@@ -25,21 +25,26 @@ export function rearMirror(telemetry) {
   return telemetry?.display?.rear_mirror !== false;
 }
 
+/** video_age_s не старше этого — кадры с камеры идут (у задней — хотя бы со второго потока). */
+export const PICTURE_FRESH_S = 3;
+
 /**
  * Что статус задней камеры говорит о видео: "ok" | "starting" | "down" | "stall" (recording без кадров — решает
  * RearSignal по времени). error с fps_actual — ошибка записи (нет места, сбой диска), а кадры идут: картинка есть.
+ * error / starting со свежим video_age_s — основного потока нет (запись стоит), а второй даёт картинку: она есть.
  */
 export function rearStatusKind(st) {
   if (!st || typeof st !== "object") return "down";
+  const picture = typeof st.video_age_s === "number" && st.video_age_s <= PICTURE_FRESH_S;
   switch (st.state) {
     case "live":
       return "ok";
     case "recording":
       return st.fps_actual == null ? "stall" : "ok";
     case "starting":
-      return "starting";
+      return picture ? "ok" : "starting";
     case "error":
-      return st.fps_actual != null ? "ok" : "down";
+      return st.fps_actual != null || picture ? "ok" : "down";
     default:
       return "down"; // stopped, disabled, неизвестное
   }

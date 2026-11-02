@@ -398,14 +398,18 @@ class CameraService(FrameSink):
         seg = rec.segment_rel if rec else None
         if seg:
             seg = self.rel_prefix + seg
-        live = p is not None and time.monotonic() - self._last_video_mono < 3.0
+        picture = self._picture_mono(p)
+        live = p is not None and time.monotonic() - picture < 3.0
         fps = kbps = None
         if rec is not None and time.monotonic() - rec.last_frame_mono < 3.0:
             fps, kbps = rec.rates()
         elif rec is None and live:
             fps, kbps = self._live_rates()
         exp = dict(getattr(src, "exposure", None) or {})
-        error = self._error or (rec.write_error if rec else None)
+        main_error = getattr(src, "main_error", None)
+        error = self._error or (rec.write_error if rec else None) or (
+            f"Rear camera: no main stream ({main_error}): not recording, the picture comes from the second stream"
+            if main_error else None)
         if self._no_space and not (self.rear and not self.settings.rear_camera.record):  # без записи место не важно
             error = NO_SPACE
         if not self.enabled:
@@ -444,7 +448,7 @@ class CameraService(FrameSink):
             codec=getattr(src, "codec", None),
             stream_fps=getattr(src, "stream_fps", None),
             password_set=bool(self._password) if self.rear else None,
-            video_age_s=round(time.monotonic() - self._last_video_mono, 1) if self._last_video_mono else None,
+            video_age_s=round(time.monotonic() - picture, 1) if picture else None,
             **self._sound_status(src),
         )
 
@@ -489,6 +493,24 @@ class CameraService(FrameSink):
     def on_error(self, msg: str) -> None:
         self._source_error = msg
         self._wake.set()
+
+    def on_main_lost(self, msg: str) -> None:
+        """Задняя: основной поток отвалился, второй даёт картинку (экран, снимки, fnav-watch) — конвейер не
+        перезапускаем, источник сам переподключает основной. Сегмент закрыть (не «идёт запись» без кадров); что было
+        перед пропажей — в последнем закрытом (защита охраны recent)."""
+        p = self._p
+        rec = p.recorder if p else None
+        if rec is None:
+            return
+        path, rel = rec.current_path, rec.segment_rel
+        if path is not None and rel:
+            self._last_segment = (path, rel, time.monotonic())
+        rec.close_segment()
+
+    def _picture_mono(self, p: _Pipeline | None) -> float:
+        """Когда пришёл последний кадр с камеры — с любого потока (у задней экран живёт на втором); 0 — не было."""
+        src_t = getattr(p.source, "picture_mono", 0.0) if p is not None and p.source is not None else 0.0
+        return max(self._last_video_mono, src_t or 0.0)
 
     def _live_rates(self) -> tuple[float | None, float | None]:
         """(к/с, кбит/с) по последним ~3 с входящего видео (когда регистратора нет)."""
@@ -630,9 +652,12 @@ class CameraService(FrameSink):
             rec = p.recorder
             problem = self._source_error
             now = time.monotonic()
-            last = max(rec.last_frame_mono if rec else 0.0, self._last_video_mono)
+            picture = self._picture_mono(p)
+            last = max(rec.last_frame_mono if rec else 0.0, picture)
             if problem is None and now - max(last, p.started_mono) > self.frame_timeout_s:
-                problem = f"{label}: no video for {self.frame_timeout_s:.0f} s"
+                main_error = getattr(p.source, "main_error", None)
+                problem = f"{label}: {main_error}" if main_error else \
+                    f"{label}: no video for {self.frame_timeout_s:.0f} s"
             if problem:
                 self._fails += 1
                 delay = self._retry_delay()
@@ -643,10 +668,10 @@ class CameraService(FrameSink):
                 if self._stop.wait(delay):
                     break
                 continue
-            if self._last_video_mono:
+            if picture:
                 self._fails = 0
-            if self._error and ((rec and rec.segment_rel) or (rec is None and self._last_video_mono)):
-                self._error = None  # снова пишем (или показываем)
+            if self._error and ((rec and rec.segment_rel) or now - picture < 3.0):
+                self._error = None  # снова пишем или показываем (у задней — хотя бы со второго потока)
             self._wake.wait(0.5)
             self._wake.clear()
         self._stop_pipeline()

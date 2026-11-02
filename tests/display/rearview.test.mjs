@@ -73,6 +73,12 @@ test("rear status: what it says about the video", () => {
   assert.equal(rearStatusKind({ state: "recording", fps_actual: 25 }), "ok");
   assert.equal(rearStatusKind({ state: "recording", fps_actual: null }), "stall");
   assert.equal(rearStatusKind({ state: "recording" }), "stall");
+  // основного потока нет (запись стоит), а второй даёт картинку: экран её показывает
+  const noMain = "Rear camera: no main stream (Invalid data): not recording, the picture comes from the second stream";
+  assert.equal(rearStatusKind({ state: "error", error: noMain, video_age_s: 0.2 }), "ok");
+  assert.equal(rearStatusKind({ state: "starting", video_age_s: 0.1 }), "ok", "main still connecting, second already shows");
+  assert.equal(rearStatusKind({ state: "error", error: noMain, video_age_s: 4.5 }), "down", "second stream stopped too");
+  assert.equal(rearStatusKind({ state: "error", video_age_s: null }), "down");
 });
 
 // ── есть ли картинка ────────────────────────────────────────────────────

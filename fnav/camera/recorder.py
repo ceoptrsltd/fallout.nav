@@ -197,6 +197,13 @@ class _Aac:
     ts_us: int
 
 
+class _Close:
+    """Закрыть сегмент (видео пропало, конвейер живёт): следующий начнётся с ключевого кадра."""
+
+
+_CLOSE = _Close()
+
+
 AUDIO_QUEUE = 100  # кадров AAC сверх очереди видео (16 к/с)
 
 
@@ -241,7 +248,7 @@ class Recorder:
         self.on_segment_start = on_segment_start
         self.on_sync = on_sync  # (path, synced_bytes, frames_in_segment) — для тестов/диагностики
 
-        self._q: queue.Queue[_AU | _Aac | None] = queue.Queue(maxsize=queue_frames)
+        self._q: queue.Queue[_AU | _Aac | _Close | None] = queue.Queue(maxsize=queue_frames)
         self.audio = False  # пришёл звук — сегменты со второй дорожкой AAC
         self._a_last: int | None = None  # PTS последнего кадра звука в сегменте (поток писателя)
         self._fixer = AccessUnitFixer()
@@ -332,6 +339,14 @@ class Recorder:
         except queue.Full:
             pass
 
+    def close_segment(self) -> None:
+        """Видео пропало, а конвейер работает дальше (задняя: основной поток отвалился, второй даёт картинку): текущий
+        сегмент закрыть, а не держать открытым без кадров; запись продолжится новым сегментом с ключевого кадра."""
+        try:
+            self._q.put(_CLOSE, timeout=1.0)
+        except queue.Full:
+            pass
+
     def _account_rate(self, ts_us: int, n: int) -> None:
         t = ts_us / 1e6
         self._rate.append((t, n))
@@ -372,7 +387,10 @@ class Recorder:
             try:
                 if item is None:
                     return
-                if isinstance(item, _Aac):
+                if isinstance(item, _Close):
+                    self._close_segment()
+                    self._need_key = True
+                elif isinstance(item, _Aac):
                     self._handle_audio(item)
                 else:
                     self._handle(item)
