@@ -164,8 +164,11 @@ def ts_duration(path: Path) -> float | None:
 
 
 class Recordings:
-    def __init__(self, root: Path | None = None):
+    def __init__(self, root: Path | None = None, current_fn: Callable[[], Iterable[str]] | None = None):
         self._root = root
+        # пишущиеся сейчас сегменты обеих камер (по статусам их сервисов): задняя по Wi-Fi молчит и 3–15 с, а её файл
+        # открыт — «идёт запись» не только по mtime (удалять нельзя, HLS без ENDLIST)
+        self.current_fn = current_fn
         self._dur_cache: dict[str, tuple[int, float, float | None]] = {}
         self._audio_cache: dict[str, bool] = {}  # запись → есть ли звук (PMT не меняется)
         self._start_cache: dict[str, float | None] = {}  # запись → истинное начало из .ts.idx (не меняется)
@@ -175,6 +178,13 @@ class Recordings:
     @property
     def root(self) -> Path:
         return self._root or paths.recordings_dir()
+
+    def _current(self, current: str | Iterable[str] | None) -> set[str]:
+        """Текущие сегменты: переданный (или переданные) и известные по статусам камер (current_fn)."""
+        out = {current} if isinstance(current, str) else set(current or ())
+        if self.current_fn is not None:
+            out.update(x for x in self.current_fn() if x)
+        return out
 
     def _date_dirs(self) -> list[tuple[str, str]]:
         """(префикс пути записи, каталог дня): передняя — ДАТА/, задняя — rear/ДАТА/."""
@@ -196,6 +206,7 @@ class Recordings:
             return []
         now = time.time()
         seen: set[str] = set()
+        cur = self._current(current)
         for dir_rel, dir_path in self._date_dirs():
             dname = dir_rel.rsplit("/", 1)[-1]
             for f in os.scandir(dir_path):
@@ -207,7 +218,7 @@ class Recordings:
                     continue
                 rel = f"{dir_rel}/{f.name}"
                 seen.add(rel)
-                it = self._item(rel, f.path, st, dname, current, now)
+                it = self._item(rel, f.path, st, dname, cur, now)
                 items.append(((_span(it, now) or (st.st_mtime, 0.0))[0], it))
         for k in list(self._dur_cache):
             if k not in seen:
@@ -221,10 +232,10 @@ class Recordings:
         items.sort(key=lambda t: t[0], reverse=True)
         return [x for _, x in items]
 
-    def _item(self, rel: str, path: str, st: os.stat_result, dname: str, current: str | None, now: float) -> dict:
+    def _item(self, rel: str, path: str, st: os.stat_result, dname: str, current: set[str], now: float) -> dict:
         name = rel.rsplit("/", 1)[-1]
         start_dt = _parse_start(name)
-        in_prog = rel == current or (now - st.st_mtime) < IN_PROGRESS_MTIME_S
+        in_prog = rel in current or (now - st.st_mtime) < IN_PROGRESS_MTIME_S
         # длительность: кэш по (размер, mtime)
         c = self._dur_cache.get(rel)
         if c and c[0] == st.st_size and c[1] == st.st_mtime:
@@ -275,7 +286,7 @@ class Recordings:
             raise RecordingError(404, "No such recording") from None
         if not f.is_file():
             raise RecordingError(404, "No such recording")
-        return self._item(rel, str(f), st, f.parent.name, current, time.time())
+        return self._item(rel, str(f), st, f.parent.name, self._current(current), time.time())
 
     async def item(self, rel: str, current: str | None = None) -> dict:
         """Одна запись (как в списке) — плееру со страницы охраны, без обхода всех каталогов."""
@@ -316,7 +327,7 @@ class Recordings:
 
     def _hls(self, rel: str, current: str | None) -> str:
         idx = self.index(rel)
-        live = rel == current or (time.time() - idx.mtime_ns / 1e9) < IN_PROGRESS_MTIME_S
+        live = rel in self._current(current) or (time.time() - idx.mtime_ns / 1e9) < IN_PROGRESS_MTIME_S
         # относительно плейлиста …/hls/ДАТА/ИМЯ.ts.m3u8 → …/file/ДАТА/ИМЯ.ts (и через префикс /fnadmin/);
         # задняя: …/hls/rear/ДАТА/ИМЯ.ts.m3u8 → …/file/rear/ДАТА/ИМЯ.ts — на уровень выше
         parts = PurePosixPath(rel).parts
@@ -346,7 +357,7 @@ class Recordings:
     async def delete(self, rel: str, *, current: str | None, force: bool) -> None:
         p = self.file(rel)
         st = p.stat()
-        if rel == current or (time.time() - st.st_mtime) < IN_PROGRESS_MTIME_S:
+        if rel in self._current(current) or (time.time() - st.st_mtime) < IN_PROGRESS_MTIME_S:
             raise RecordingError(409, "Cannot delete: this file is being recorded")
         lk = lock_path(p)
         if lk.exists() and not force:

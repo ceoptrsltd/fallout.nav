@@ -281,6 +281,9 @@ class Recorder:
         self._seg_last_ts: int | None = None  # метка последнего записанного кадра (поток писателя)
         self._prev_seg: tuple[Path, str, int | None] | None = None  # закрытый перед текущим: (путь, rel, метка конца)
         self._protect_next_until: int | None = None  # следующий сегмент защитить, если начнётся не позже метки
+        # то же, перенесённое с прошлого регистратора (конвейер перезапущен до смены сегмента): срок — по
+        # монотонным часам (метки нового источника могут начаться заново)
+        self.protect_next_mono: float | None = None
 
         self.paused = False  # нет места → не пишем
         self.write_error: str | None = None
@@ -292,6 +295,7 @@ class Recorder:
         self.segment_time_synced = False
         self.last_frame_mono = 0.0
         self._rate: deque[tuple[float, int]] = deque()  # (ts_s, bytes) входных AU
+        self.bytes_in = 0  # байт видео на входе с запуска (средний битрейт за минуты — у сервиса)
 
     # ── жизненный цикл ──
     def start(self) -> None:
@@ -362,7 +366,13 @@ class Recorder:
         except queue.Full:
             pass
 
+    @property
+    def last_ts_us(self) -> int | None:
+        """Метка последнего кадра на входе."""
+        return self._last_ts
+
     def _account_rate(self, ts_us: int, n: int) -> None:
+        self.bytes_in += n
         t = ts_us / 1e6
         self._rate.append((t, n))
         while self._rate and t - self._rate[0][0] > 3.0:
@@ -385,18 +395,13 @@ class Recorder:
         """Защитить текущий сегмент → его rel. Событие у границы — и соседей: в прошлом есть кадры моложе
         protect_edge_s (текущий начался недавно: там подход и кадр «за 5 с») — и его; до плановой смены меньше
         protect_edge_s — следующий, как только откроется (продолжение)."""
-        edge_us = int(self.protect_edge_s * 1e6)
         with self._seg_lock:
             seg, rel = self._seg, self.segment_rel
             if seg is None or rel is None:
                 return None
-            first, last = self._seg_first_ts, self._seg_last_ts
-            # «сейчас» — последний записанный кадр сегмента (только что открыт — его начало)
-            now = last if last is not None and (first is None or last >= first) else first
+            first, now = self._seg_first_ts, self._now_locked()
             pos = (now - first) / 1e6 if now is not None and first is not None else 0.0
-            prev = self._prev_seg
-            if prev is None or prev[2] is None or now is None or now - prev[2] >= edge_us:
-                prev = None
+            prev = self._recent_prev_locked()
             base = first if first is not None else now
             nxt = base is not None and self.segment_s - pos < self.protect_edge_s
             if nxt:  # смена — не позже начала + segment_s (+ ожидание ключевого кадра)
@@ -408,12 +413,52 @@ class Recorder:
             log.info("%s ends in %.0f s: the next segment will be protected too", rel, max(0.0, self.segment_s - pos))
         return rel
 
+    def _now_locked(self) -> int | None:
+        """«Сейчас» по меткам — последний записанный кадр сегмента (только что открыт — его начало); под _seg_lock."""
+        first, last = self._seg_first_ts, self._seg_last_ts
+        return last if last is not None and (first is None or last >= first) else first
+
+    def _recent_prev_locked(self) -> tuple[Path, str, int | None] | None:
+        """Прошлый сегмент, если в нём есть кадры моложе protect_edge_s (текущий начался недавно); под _seg_lock."""
+        now, prev = self._now_locked(), self._prev_seg
+        if prev is None or prev[2] is None or now is None or now - prev[2] >= int(self.protect_edge_s * 1e6):
+            return None
+        return prev
+
+    @property
+    def knows_previous(self) -> bool:
+        """Этот регистратор уже закрыл хоть один сегмент (иначе прошлый — у регистратора до перезапуска)."""
+        return self._prev_seg is not None
+
+    def recent_previous(self) -> tuple[Path, str] | None:
+        """Сегмент перед текущим, если текущий начался меньше protect_edge_s назад (подход — там). Сервис запоминает
+        его вместе с текущим, когда закрывает тот при пропаже видео: защита охраны «камера пропала» берёт оба."""
+        with self._seg_lock:
+            prev = self._recent_prev_locked() if self._seg is not None else None
+        return (prev[0], prev[1]) if prev is not None else None
+
+    def pending_next_mono(self) -> float | None:
+        """Ждёт ли защита следующего сегмента (событие у конца текущего) → срок по монотонным часам или None: сервис
+        переносит её на регистратор после перезапуска конвейера (метки нового источника могут начаться заново)."""
+        with self._seg_lock:
+            until, last = self._protect_next_until, self._seg_last_ts
+        if until is None:
+            mono = self.protect_next_mono
+            return mono if mono is not None and time.monotonic() <= mono else None
+        if last is None:
+            last = self._last_ts
+        left = (until - last) / 1e6 if last is not None else self.protect_edge_s
+        return time.monotonic() + left if left >= 0 else None
+
     def _protect_opened(self, first_ts: int) -> None:
         """Открылся сегмент: защитить, если его ждёт защита события в конце прошлого (поток писателя)."""
         with self._seg_lock:
             until, self._protect_next_until = self._protect_next_until, None
+            mono, self.protect_next_mono = self.protect_next_mono, None
             seg, rel = self._seg, self.segment_rel
-        if until is not None and seg is not None and first_ts <= until:
+        if seg is None:
+            return
+        if (until is not None and first_ts <= until) or (mono is not None and time.monotonic() <= mono):
             self._lock_more(seg.path, rel, "next")
 
     @staticmethod

@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 
 from fnav import paths
+from fnav.camera.discover import replace_host, url_host
 from fnav.core import secretsfile as sf
 from fnav.core.alarm import DETECTED, AlarmService
 from fnav.core.auth import AuthManager
@@ -140,7 +141,7 @@ class Core:
         self.ws = WsManager()
         s = self.store.get()
         self.nav = NavLogic(s.nav, s.display, start_time=time.monotonic())
-        self.recordings = Recordings()
+        self.recordings = Recordings(current_fn=self.current_segments)  # «идёт запись» — и по задней
         self.tiles = TileService(s, transport=opts.tile_transport)
         self.camera = CameraService(mock=opts.mock, recordings_root=paths.recordings_dir(),
                                     base_url=opts.camera_url, whep_url=opts.whep_url,
@@ -220,6 +221,8 @@ class Core:
 
         self.store.on_change(self._on_settings)
         self.camera.on_status(self._on_camera_status)
+        self.camera_rear.on_status(self._on_rear_status)
+        self._rear_host_saving: str | None = None
 
     def _make_hub(self, s: Settings) -> SensorHub:
         try:
@@ -465,6 +468,39 @@ class Core:
     def current_segment(self) -> str | None:
         st = self.camera.status
         return st.current_segment if st.recording or st.state == "recording" else None
+
+    def current_segments(self) -> list[str]:
+        """Пишущиеся сейчас сегменты обеих камер — по статусам их сервисов (задняя по Wi-Fi молчит и 3–15 с, а файл
+        открыт: по mtime его не отличить от законченного)."""
+        out = []
+        for cam in (self.camera, self.camera_rear):
+            st = cam.status
+            if st.current_segment and (st.recording or st.state == "recording"):
+                out.append(st.current_segment)
+        return out
+
+    def _on_rear_status(self, st: CameraStatus) -> None:
+        """Сервис задней нашёл камеру по MAC на новом адресе (DHCP точки доступа) и уже подключается туда — адрес в
+        настройки (сервис камеры settings.json не пишет): хост в rear_camera.url и lores_url (если там тот же)."""
+        host, rc = st.discovered_host, self.store.get().rear_camera
+        old = url_host(rc.url)
+        if not host or host == old or host == self._rear_host_saving or not rc.enabled:
+            return
+        patch = {"url": replace_host(rc.url, host)}
+        if rc.lores_url and url_host(rc.lores_url) == old:
+            patch["lores_url"] = replace_host(rc.lores_url, host)
+        log.warning("rear camera: moved from %s to %s (found by its MAC) - saving the new address", old, host)
+        self._rear_host_saving = host
+
+        async def save() -> None:
+            try:
+                await self.store.patch({"rear_camera": patch})
+            except Exception:
+                log.exception("rear camera: cannot save the new address")
+            finally:
+                self._rear_host_saving = None
+
+        spawn(save(), name="rear-host")
 
     # LED на кнопке GPS-модуля: запись идёт — мигает, ошибка — часто мигает, нет записи — погашен.
     # После нажатия кнопки — короткое подтверждение (горит ровно / часто мигает при ошибке).

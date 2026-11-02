@@ -71,7 +71,7 @@ def stats(root: Path, exclude: tuple[str, ...] = ()) -> tuple[int, int]:
     return n, total
 
 
-def segment_reserve_bytes(bitrate_kbps: int, segment_minutes: float) -> int:
+def segment_reserve_bytes(bitrate_kbps: float, segment_minutes: float) -> int:
     return int(bitrate_kbps * 1000 / 8 * segment_minutes * 60)
 
 

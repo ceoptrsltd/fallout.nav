@@ -16,8 +16,10 @@
 второго потока. Второй отвалился — переподключение с паузой 1 → 30 с. ``picture_mono`` — когда пришёл последний кадр с
 любого потока (есть ли картинка).
 
-Метки времени: часы камеры привязываются к монотонным часам при подключении; уход больше чем на 2 с (или скачок
-меток) — привязка заново; метки только растут. Камеру нельзя попросить о ключевом кадре — ``request_keyframe`` пуст.
+Метки времени (``Clock``): шкала камеры переносится на наши монотонные часы со сдвигом ≈ наименьшая замеченная задержка
+доставки; пачка опоздавших кадров после пропуска Wi-Fi сдвиг не двигает (кадры сохраняют шаг камеры), привязка заново —
+только при новой шкале меток (переподключение помощника, скачок меток). Метки только растут. Камеру нельзя попросить о
+ключевом кадре — ``request_keyframe`` пуст.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ import numpy as np
 
 from fnav.models import RearCameraSettings
 
+from .discover import url_host
 from .jpeg import LoresFrame
 from .rtsp_pull import (
     F_KEY,
@@ -56,7 +59,13 @@ from .sources import FrameSink
 
 log = logging.getLogger("fnav.camera.rear")
 
-RESYNC_US = 2_000_000  # часы камеры ушли от наших дальше — привязать заново
+# часы камеры → наши (Clock): что считать новой шкалой меток и как быстро двигать сдвиг
+JUMP_BACK_US = 500_000  # метки пошли назад больше чем на 0,5 с — новая шкала (без B-кадров назад они не ходят)
+JUMP_US = 2_000_000  # метки ушли вперёд больше, чем прошло у нас, + 2 с — скачок меток
+AHEAD_MAX_US = 5_000_000  # кадр «из будущего» дальше 5 с — привязка неверна: заново по приходу
+LATE_MAX_US = 30_000_000  # опоздание дольше 30 с — уже не пачка после пропуска Wi-Fi (RTSP рвётся за 10 с)
+SLEW = 0.05  # сдвиг вниз — не быстрее 5 % шага камеры: запись на это время на 5 % «быстрее», без склейки кадров
+DRIFT = 0.001  # вверх — не быстрее 1 мс на секунду камеры: кварцы камеры и Pi расходятся, а пачки сдвиг не трогают
 DEMAND_POLL_S = 0.1  # как быстро частота малых кадров догоняет спрос (задний вид на экране — сразу 15 к/с)
 SUB_IDLE_S = 10.0
 MAIN_RETRY_S, MAIN_RETRY_MAX_S = 5.0, 30.0  # основной поток отвалился при живом втором: пауза перед повтором растёт
@@ -80,33 +89,69 @@ def with_credentials(url: str, username: str, password: str) -> str:
     return urlunsplit(parts._replace(netloc=f"{auth}@{parts.netloc}"))
 
 
-def url_host(url: str) -> str:
-    try:
-        return urlsplit(url).hostname or ""
-    except ValueError:
-        return ""
-
-
 class Clock:
-    """Метки камеры (мкс, свои часы; -1 — нет) → монотонные мкс нашего процесса, только возрастающие."""
+    """Метки камеры (мкс, свои часы; -1 — нет) → монотонные мкс нашего процесса, только возрастающие.
+
+    Сдвиг (``offset``) держится около наименьшего «приход − метка» — шкала камеры плюс самая короткая доставка этого
+    потока. По Wi-Fi кадры приходят пачками: после пропуска на 3 с они опаздывают на 3 с, а потом догоняют. Раньше
+    опоздание больше 2 с перепривязывало часы — пачка уезжала на 3 с позже (ложная пауза), а после догона привязка
+    возвращалась, и ~2 с видео получали шаг в 1 мкс (пропадали при просмотре). Теперь опоздание сдвиг не двигает:
+    кадры сохраняют шаг камеры. Кадр пришёл «раньше, чем мог» (привязка была по опоздавшему кадру, например по пачке
+    при подключении) — сдвиг уменьшается, но не быстрее SLEW от шага камеры; не раньше — растёт не быстрее DRIFT
+    (уход кварцев). Заново — только новая шкала: ``reset`` (помощник переподключился), скачок меток назад/вперёд, или
+    привязка явно неверна (кадр «из будущего» > AHEAD_MAX_US, опоздание > LATE_MAX_US).
+    """
 
     def __init__(self, mono: Callable[[], float] = time.monotonic) -> None:
         self.mono = mono
         self.offset: int | None = None
         self.last = -1
+        self.anchors = 0  # сколько раз привязывались (для тестов и диагностики)
+        self._prev: tuple[int, int] | None = None  # (метка камеры, приход) прошлого кадра
+
+    def reset(self) -> None:
+        """Новая шкала меток (помощник переподключился): следующий кадр привязывается заново, метки дальше растут."""
+        self.offset = None
+        self._prev = None
 
     def map(self, cam_us: int) -> int:
         now = int(self.mono() * 1e6)
         if cam_us < 0:
             ts = now
         else:
-            if self.offset is None or abs(cam_us + self.offset - now) > RESYNC_US:
-                self.offset = now - cam_us
+            prev, self._prev = self._prev, (cam_us, now)
+            if self.offset is None or prev is None:
+                self._anchor(cam_us, now)
+            else:
+                dc, da = cam_us - prev[0], now - prev[1]
+                ahead = cam_us + self.offset - now  # > 0 — кадр пришёл раньше, чем «мог»; < 0 — опоздал
+                if dc < -JUMP_BACK_US or dc > max(da, 0) + JUMP_US:
+                    self._anchor(cam_us, now)  # скачок меток: камера начала новую шкалу
+                elif ahead > AHEAD_MAX_US or -ahead > LATE_MAX_US:
+                    self._anchor(cam_us, now, keep_order=False)
+                elif ahead > 0:
+                    self.offset -= min(ahead, int(max(dc, 0) * SLEW))
+                else:
+                    self.offset += min(-ahead, int(max(dc, 0) * DRIFT))
             ts = cam_us + self.offset
         if ts <= self.last:
             ts = self.last + 1
         self.last = ts
         return ts
+
+    def map_with(self, base: Clock, cam_us: int) -> int:
+        """Метка той же шкалы камеры, что у base (AAC — на часах PCM того же помощника, без задержки кодера): сдвиг
+        base, монотонность — своя."""
+        if base.offset is None or cam_us < 0:
+            return self.map(cam_us)
+        ts = max(cam_us + base.offset, self.last + 1)
+        self.last = ts
+        return ts
+
+    def _anchor(self, cam_us: int, now: int, keep_order: bool = True) -> None:
+        """Привязать метку к «сейчас»; keep_order — не раньше уже выданных (иначе склейка в 1 мкс)."""
+        self.offset = (max(now, self.last + 1) if keep_order else now) - cam_us
+        self.anchors += 1
 
 
 def default_cmd(*, video: bool, transport: str, lores_w: int, audio: bool = False) -> list[str]:
@@ -291,7 +336,10 @@ class RtspCameraSource:
         self._demand_thr.start()
 
     def _start_main(self) -> None:
-        """Процесс основного потока (под self._lock)."""
+        """Процесс основного потока (под self._lock). Новый RTSP-сеанс — новая шкала меток камеры."""
+        self._clock.reset()
+        if self._audio_main:
+            self._audio_clock.reset()
         self._main = _Helper("main", self.url, self.cmd_factory(video=True, transport=self.rear.transport,
                                                                  lores_w=self.rear.lores.w,
                                                                  **({"audio": True} if self._audio_main else {})),
@@ -303,7 +351,10 @@ class RtspCameraSource:
             self._main.set_lores(1)
 
     def _start_sub(self) -> None:
-        """Процесс второго потока (под self._lock)."""
+        """Процесс второго потока (под self._lock). Новый RTSP-сеанс — новая шкала меток камеры."""
+        self._lores_clock.reset()
+        if self._audio_sub:
+            self._audio_clock.reset()
         self._sub = _Helper("sub", self.lores_url,
                             self.cmd_factory(video=False, transport=self.rear.transport, lores_w=self.rear.lores.w,
                                              **({"audio": True} if self._audio_sub else {})),
@@ -404,10 +455,9 @@ class RtspCameraSource:
             if cb is not None:
                 cb(payload, -1, True)
         elif cb is not None:
-            if self._aac_clock.offset is None and self._audio_clock.offset is not None:
-                # те же часы камеры, что у PCM: иначе в метках AAC оказалась бы задержка кодера
-                self._aac_clock.offset = self._audio_clock.offset
-            cb(payload, self._aac_clock.map(ts), False)
+            # те же часы камеры, что у PCM (и тот же сдвиг, как бы он ни менялся): иначе в метках AAC оказалась бы
+            # задержка кодера, а после переподключения звук разошёлся бы с PCM
+            cb(payload, self._aac_clock.map_with(self._audio_clock, ts), False)
 
     def _on_info(self, payload: bytes) -> None:
         try:
@@ -442,6 +492,9 @@ class RtspCameraSource:
         if self._stop.is_set():
             return
         msg = error or "the connection was closed"
+        failed = getattr(self.sink, "on_connect_failed", None)  # сервис: камера недоступна подряд — искать по MAC
+        if failed is not None:
+            failed(msg)
         if name == "sub":  # второй поток — не повод рвать запись: переподключится сам, с паузой
             with self._lock:
                 self._sub = None

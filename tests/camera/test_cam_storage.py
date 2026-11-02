@@ -132,7 +132,7 @@ def test_cleanup_without_a_minimum_loop_deletes_every_unprotected(tmp_path: Path
 
 def test_loop_minimum_is_an_hour_but_at_most_half_the_limit():
     gb = 1024**3
-    hour = 4_500_000_000  # передняя 6000 + задняя 4000 кбит/с
+    hour = 4_500_000_000  # передняя 6000 + задняя 4000 кбит/с (2048 по умолчанию сейчас — 3,6 ГБ)
     assert loop_minimum(hour, int(9.55 * gb)) == hour
     assert loop_minimum(hour, 2 * gb) == gb  # маленький лимит: без защищённых он работает как раньше
     assert loop_minimum(hour, 0) == 0
@@ -159,7 +159,7 @@ def test_service_protected_over_the_limit_keep_the_minimum_loop_and_report_it(tm
     now = time.time()
     os.utime(loop[-1], (now, now))  # текущий сегмент задней (пишет другой процесс)
     svc = CameraService(root=root, settings_path=settings, free_fn=FakeDisk(root, 1000 * MB), rtsp_url=None,
-                        ring_path=tmp_path / "ring")
+                        ring_path=tmp_path / "ring", rear_state_path=tmp_path / "camera_rear.json")
     reserve = segment_reserve_bytes(500, 1)  # 3,75 МБ
     max_total = 10 * MB - reserve  # ≈ 6,4 МБ
     min_loop = max_total // 2  # час (1500 кбит/с = 675 МБ) больше половины лимита
@@ -211,3 +211,60 @@ def test_repair_latest_removes_empty(tmp_path: Path):
     p.write_bytes(b"")
     repair_latest(tmp_path)
     assert not p.exists()
+
+
+def _sparse(p: Path, size: int) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "wb") as f:
+        f.truncate(size)
+
+
+def test_rear_estimates_use_the_measured_bitrate(tmp_path: Path, monkeypatch):
+    """Задняя шлёт VBR (≤ 2048 кбит/с, часто много меньше), а в настройках бывает больше (на устройстве — 2560):
+    резерв под сегмент, минимум петли и loop_minutes — по измеренному среднему (резерв — с запасом 25 %), пока его нет —
+    по настройкам. Передняя берёт измеренный битрейт задней из camera_rear.json, если он свежий."""
+    from types import SimpleNamespace
+
+    root = tmp_path / "rec"
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({
+        "camera": {"bitrate_kbps": 500, "segment_minutes": 1},
+        "rear_camera": {"enabled": True, "url": "rtsp://cam/s", "record": True, "bitrate_kbps": 2560, "fps": 25},
+    }), encoding="utf-8")
+    for rel in ("rear/2026-10-21/r1.ts", "rear/2026-10-21/r2.ts", "2026-10-21/f1.ts"):
+        _sparse(root / rel, 15 * MB)
+    state = tmp_path / "camera_rear.json"
+    disk = FakeDisk(root, 1000 * 1024 * MB)
+    reserves: list[float] = []
+
+    def spy(kbps, minutes):
+        reserves.append(kbps)
+        return segment_reserve_bytes(kbps, minutes)
+
+    monkeypatch.setattr(service_mod, "segment_reserve_bytes", spy)
+    rear = CameraService(root=root / "rear", settings_path=settings, camera_id="rear", rtsp_url=None, free_fn=disk,
+                         ring_path=tmp_path / "ring", rear_state_path=state, sound_dir=tmp_path / "clips")
+    rec = SimpleNamespace(last_ts_us=10_000_000, bytes_in=0, current_path=None, paused=False)
+    rear._p = SimpleNamespace(recorder=rec)
+    rear.housekeeping_once()  # измерять ещё нечего — по настройкам
+    assert reserves[-1] == 2560 and rear.loop_minutes == round(30 * MB / (2560 * 125) / 60)
+    rec.last_ts_us, rec.bytes_in = 40_000_000, 3_000_000
+    rear.housekeeping_once()  # 30 с данных — мало
+    assert rear.kbps_measured is None and reserves[-1] == 2560
+    rec.last_ts_us, rec.bytes_in = 130_000_000, 12_000_000  # 120 с по 100 000 байт/с = 800 кбит/с
+    rear.housekeeping_once()
+    assert rear.kbps_measured == 800.0 and reserves[-1] == 1000.0
+    assert rear.loop_minutes == round(30 * MB / (800 * 125) / 60) == 5
+    assert json.loads(state.read_text())["bitrate_kbps"] == 800.0
+    rear._p = SimpleNamespace(recorder=SimpleNamespace(last_ts_us=5, bytes_in=0, current_path=None, paused=False))
+    rear.housekeeping_once()  # конвейер перезапущен: измеренное не забыто
+    assert reserves[-1] == 1000.0
+
+    front = CameraService(root=root, settings_path=settings, rtsp_url=None, free_fn=disk, ring_path=tmp_path / "ring2",
+                          rear_state_path=state)
+    front.housekeeping_once()  # петля обеих: 45 МБ на 500 + 800 кбит/с
+    assert front.loop_minutes == round(45 * MB / (1300 * 125) / 60) == 5
+    old = json.loads(state.read_text())
+    state.write_text(json.dumps({**old, "bitrate_at": old["bitrate_at"] - 7200}), encoding="utf-8")
+    front.housekeeping_once()  # задняя давно не писала — её битрейт из настроек
+    assert front.loop_minutes == round(45 * MB / (3060 * 125) / 60) == 2

@@ -18,7 +18,7 @@ from camhelpers import small_cam
 
 from fnav.camera import rtsp_pull as rp
 from fnav.camera.h264 import nal_types
-from fnav.camera.rtspsrc import Clock, RtspCameraSource, url_host, with_credentials
+from fnav.camera.rtspsrc import RtspCameraSource, url_host, with_credentials
 from fnav.camera.service import REAR_DIR, CameraService, rear_camera_settings
 from fnav.camera.sources import FakeSource
 from fnav.models import LoresSettings, RearCameraSettings, Settings
@@ -67,18 +67,6 @@ def test_params_from_avcc_and_annexb():
     assert rp.has_sps(annexb) and not rp.has_sps(rp.START_CODE + b"\x65\x88")
     framed = len(sps).to_bytes(4, "big") + sps + len(pps).to_bytes(4, "big") + pps
     assert rp.avcc_to_annexb(framed, 4) == annexb
-
-
-def test_clock_follows_the_camera_and_only_grows():
-    now = [100.0]
-    c = Clock(lambda: now[0])
-    assert c.map(5_000_000) == 100_000_000
-    now[0] = 100.04
-    assert c.map(5_040_000) == 100_040_000  # шаг камеры, не момент прихода
-    assert c.map(5_040_000) == 100_040_001  # та же метка — всё равно растёт
-    now[0] = 103.0
-    assert c.map(5_080_000) == 103_000_000  # ушли больше чем на 2 с (обрыв, скачок) — привязка заново
-    assert c.map(-1) == 103_000_001  # без метки — по нашим часам
 
 
 class Sink:
@@ -208,6 +196,11 @@ def test_rear_settings_for_the_pipeline():
     cam = rear_camera_settings(s)
     assert (cam.fps, cam.gop, cam.bitrate_kbps) == (20, 80, 3000)
     assert cam.segment_minutes == s.camera.segment_minutes and cam.lores == s.rear_camera.lores
+    # экспозиция, размеры кадра, поворот, живой битрейт передней — не задней
+    front = s.camera.model_copy(update={"ev": 1.5, "exposure_mode": "long", "out_w": 1920, "out_h": 1080,
+                                        "hflip": True, "live_bitrate_kbps": 1500, "max_exposure_ms_parked": 500})
+    assert rear_camera_settings(s.model_copy(update={"camera": front})) == cam
+    assert RearCameraSettings().fps == 15 and RearCameraSettings().bitrate_kbps == 2048  # как настроена C150
 
 
 def _rear_service(tmp_path: Path, enabled: bool, record: bool = True) -> CameraService:
@@ -219,7 +212,46 @@ def _rear_service(tmp_path: Path, enabled: bool, record: bool = True) -> CameraS
         return FakeSource(small_cam(), sink)
 
     return CameraService(root=tmp_path / "rec" / REAR_DIR, settings_path=settings, source_factory=factory,
-                         rtsp_url=None, camera_id="rear", segment_s_override=2.0, ring_path=tmp_path / "ring")
+                         rtsp_url=None, camera_id="rear", segment_s_override=2.0, ring_path=tmp_path / "ring",
+                         rear_state_path=tmp_path / "camera_rear.json", sound_dir=tmp_path / "clips")
+
+
+def test_front_camera_changes_do_not_reconnect_the_rear(tmp_path: Path):
+    """Правка передней (EV, экспозиция, размеры кадра, живой битрейт) не переподключает заднюю (раньше — да: дыра и
+    новый файл в её записи); у задней — зеркало и оценки fps/битрейта тоже на ходу, длина сегмента и fsync (общие) —
+    регистратору без переподключения; адрес, запись, малые кадры — переподключение."""
+    svc = _rear_service(tmp_path, enabled=True)
+    base = Settings.model_validate_json(svc.settings_path.read_text(encoding="utf-8"))
+
+    def reload_with(**upd) -> bool:
+        s = base.model_copy(update=upd)
+        svc.settings_path.write_text(s.model_dump_json(), encoding="utf-8")
+        return svc.reload()
+
+    front = base.camera.model_copy(update={"ev": -1.0, "exposure_mode": "short", "out_w": 1280, "out_h": 960,
+                                           "bitrate_kbps": 9000, "fps": 20, "live_bitrate_kbps": 1200})
+    assert reload_with(camera=front) is False
+    rc = base.rear_camera
+    assert reload_with(rear_camera=rc.model_copy(update={"mirror": False, "fps": 25, "bitrate_kbps": 2560})) is False
+    assert reload_with(camera=base.camera.model_copy(update={"segment_minutes": 5, "fsync_interval_s": 2.0})) is False
+    rc = rc.model_copy(update={"url": "rtsp://10.0.0.7/s"})
+    assert reload_with(rear_camera=rc) is True
+    assert reload_with(rear_camera=rc.model_copy(update={"lores": LoresSettings(w=640, h=360, fps=15)})) is True
+
+    (tmp_path / "live").mkdir()
+    svc = _rear_service(tmp_path / "live", enabled=True)
+    svc.start()
+    try:
+        assert _wait(lambda: svc.status().state == "recording")
+        rec = svc._p.recorder
+        svc.segment_s_override = None
+        s = Settings.model_validate_json(svc.settings_path.read_text(encoding="utf-8"))
+        s = s.model_copy(update={"camera": s.camera.model_copy(update={"segment_minutes": 3, "fsync_interval_s": 2.5})})
+        svc.settings_path.write_text(s.model_dump_json(), encoding="utf-8")
+        assert svc.reload() is False
+        assert svc._p.recorder is rec and (rec.segment_s, rec.fsync_interval_s) == (180.0, 2.5)
+    finally:
+        svc.stop()
 
 
 def _wait(pred, timeout=15.0) -> bool:
@@ -462,3 +494,130 @@ def test_main_stream_lost_pauses_recording_but_keeps_the_picture(tmp_path: Path)
         assert svc.status().error is None and svc.status().current_segment != rel
     finally:
         svc.stop()
+
+
+def test_camera_lost_right_after_a_segment_change_protects_the_segment_before_too(tmp_path: Path):
+    """Охрана «камера пропала» (recent): пропала через секунды после смены сегмента — подход в сегменте перед
+    последним, защищаются оба; пропала в середине сегмента — только он (сегменты по 3 с, «недавно» — 1 с)."""
+    svc = _rear_service(tmp_path, enabled=True)
+    svc.segment_s_override = 3.0
+    svc.frame_timeout_s = 1.0
+    root = tmp_path / "rec"
+    made: list[_MainDropSource] = []
+
+    def factory(_s, sink):
+        made.append(_MainDropSource(small_cam(), sink))
+        return made[-1]
+
+    def seg() -> str | None:
+        return svc.status().current_segment
+
+    def locked(rel: str) -> bool:
+        return (root / (rel + ".lock")).is_file()
+
+    svc.source_factory = factory
+    svc.start()
+    try:
+        assert _wait(lambda: seg() is not None)
+        rec = svc._p.recorder
+        rec.protect_edge_s = 1.0
+        first = seg()
+        assert _wait(lambda: seg() not in (None, first), timeout=10)
+        second = seg()
+        made[-1].drop_main()  # сразу после смены
+        assert _wait(lambda: seg() is None)
+        assert svc.protect_current(recent=True) == second
+        assert locked(second) and locked(first)
+
+        made[-1].main_back()
+        assert _wait(lambda: seg() not in (None, second))
+        third = seg()
+        assert _wait(lambda: rec._seg_first_ts is not None)
+        first_ts = rec._seg_first_ts
+        assert _wait(lambda: rec._seg_first_ts == first_ts and rec._seg_last_ts - first_ts >= 1.6e6)
+        (root / (second + ".lock")).unlink()
+        made[-1].drop_main()  # в середине сегмента: перед ним — давно
+        assert _wait(lambda: seg() is None)
+        assert svc.protect_current(recent=True) == third
+        assert locked(third) and not locked(second)
+    finally:
+        svc.stop()
+
+
+def test_camera_lost_right_after_a_pipeline_restart_protects_the_segment_before_too(tmp_path: Path):
+    """То же через перезапуск конвейера: прошлый сегмент закрыл старый регистратор (новый о нём не знает), камера
+    пропала через секунды — защищаются оба."""
+    svc = _rear_service(tmp_path, enabled=True)
+    svc.segment_s_override = 30.0
+    svc.frame_timeout_s = 1.0
+    root = tmp_path / "rec"
+    made: list[_MainDropSource] = []
+
+    def factory(_s, sink):
+        made.append(_MainDropSource(small_cam(), sink))
+        return made[-1]
+
+    def seg() -> str | None:
+        return svc.status().current_segment
+
+    svc.source_factory = factory
+    svc.start()
+    try:
+        assert _wait(lambda: seg() is not None)
+        first = seg()
+        time.sleep(1.1)  # имя следующего — на секунду позже
+        svc.restart()
+        assert _wait(lambda: len(made) == 2 and seg() not in (None, first))
+        second = seg()
+        made[-1].drop_main()
+        assert _wait(lambda: seg() is None)
+        assert svc.protect_current(recent=True) == second
+        assert (root / (second + ".lock")).is_file() and (root / (first + ".lock")).is_file()
+    finally:
+        svc.stop()
+
+
+def test_protect_next_survives_a_pipeline_restart(tmp_path: Path):
+    """Событие у конца сегмента: «защитить и следующий» ждало его открытия, а конвейер перезапустился раньше
+    (смена настроек, сбой) — первый сегмент нового регистратора всё равно защищается."""
+    svc = _rear_service(tmp_path, enabled=True)
+    svc.segment_s_override = 6.0
+    root = tmp_path / "rec"
+
+    def seg() -> str | None:
+        return svc.status().current_segment
+
+    svc.start()
+    try:
+        assert _wait(lambda: seg() is not None)
+        rec = svc._p.recorder
+        rec.protect_edge_s = 3.0
+        cur = seg()
+        assert _wait(lambda: rec._seg_first_ts is not None)
+        first_ts = rec._seg_first_ts  # 0 у самого первого сегмента (метки FakeSource — с нуля)
+        assert _wait(lambda: rec._seg_first_ts == first_ts and rec._seg_last_ts - first_ts >= 3.3e6)
+        assert svc.protect_current() == cur and rec._protect_next_until is not None
+        svc.restart()
+        assert _wait(lambda: svc._p is not None and svc._p.recorder is not rec and seg() not in (None, cur))
+        nxt = seg()
+        assert _wait(lambda: (root / (nxt + ".lock")).is_file())
+        assert svc._carry_next is None and svc._p.recorder.protect_next_mono is None  # один раз
+    finally:
+        svc.stop()
+
+
+def test_pending_next_deadline_is_kept_on_the_monotonic_clock(tmp_path: Path):
+    from fnav.camera.recorder import Recorder
+
+    rec = Recorder(tmp_path, segment_s=600, fsync_interval_s=1, gop=15, fps=15)
+    assert rec.pending_next_mono() is None
+    rec._protect_next_until, rec._seg_last_ts = 50_000_000, 30_000_000  # ждём ещё 20 с по меткам
+    t = time.monotonic()
+    assert 19.5 < rec.pending_next_mono() - t < 20.5
+    rec._seg_last_ts = 51_000_000  # срок прошёл
+    assert rec.pending_next_mono() is None
+    rec._protect_next_until = None
+    rec.protect_next_mono = time.monotonic() + 5  # перенесённый с прошлого регистратора — дальше как есть
+    assert rec.pending_next_mono() == rec.protect_next_mono
+    rec.protect_next_mono = time.monotonic() - 1
+    assert rec.pending_next_mono() is None

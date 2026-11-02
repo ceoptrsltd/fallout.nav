@@ -101,6 +101,8 @@
   Ключевые кадры — из `.ts.idx` регистратора или поиском по файлу (camera.md). Не MPEG-TS — плейлист без кусков.
   Админка: Safari и iPhone — `video.src = m3u8` (свой HLS), остальные — hls.js (`web/admin/vendor/`).
 - `POST /api/recordings/protect` `{"path":"...","protected":true}`; `POST /api/recordings/protect-current`.
+- `in_progress` (и «идёт запись» у HLS и `DELETE`) — `current_segment` передней **или задней** из статусов их сервисов,
+  либо файл менялся меньше 3 с назад (camera.md «Хранилище» у задней).
 - `DELETE /api/recordings/file/{path}` — запрещено для `in_progress` (`409`) и защищённых без `?force=1`;
   вместе с записью удаляются `.lock` и индекс `.ts.idx`.
 - Защита от выхода за каталог (`..`, абсолютные пути) обязательна.
@@ -110,6 +112,8 @@
 Задняя камера — те же маршруты под `/api/camera/rear/…` (`status`, `mjpeg`, `snapshot.jpg`, `live.ts`, `restart`,
 `whep` → MediaMTX `…/rear/whep`). Выключена (`rear_camera.enabled = false`) — `status` = `{"state":"disabled"}`,
 остальное `503 "Rear camera is off…"`. В `status` обеих — `"camera":"front"|"rear"`, `"enabled"`, `"mock"`.
+`discovered_host` в статусе задней (камера нашлась по MAC на новом адресе) — ядро записывает хост в
+`rear_camera.url`/`lores_url` (camera.md «Поиск по MAC»).
 
 - `POST /api/camera/rear/credentials` `{"username"?: str, "password"?: str}` — логин в `settings.rear_camera.username`,
   пароль в `secrets.env` (`FNAV_REAR_CAMERA_PASSWORD`; `""` — удалить, нет поля — не менять), камере — `/reload`.

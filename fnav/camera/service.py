@@ -13,8 +13,20 @@ from pathlib import Path
 
 from fnav import paths
 from fnav.core.secretsfile import KEY_REAR_CAMERA_PASSWORD, read_secrets
-from fnav.models import CameraId, CameraSettings, CameraStatus, Settings
+from fnav.models import CameraId, CameraSettings, CameraStatus, RearCameraSettings, Settings
 
+from .discover import (
+    LEARN_EVERY_S,
+    STATE_FILE,
+    UNREACHABLE_FAILS,
+    CameraFinder,
+    RearState,
+    is_ipv4,
+    is_unreachable,
+    read_bitrate,
+    replace_host,
+    url_host,
+)
 from .jpeg import LoresFrame
 from .live import LiveHub, LiveMux
 from .mjpeg import JpegWorker, MjpegHub
@@ -37,6 +49,9 @@ REAR_PORT = 8083
 BUSY_S = 120.0  # чужой файл моложе — текущий сегмент другой камеры: очистка его не трогает
 LAST_SEGMENT_S = 600.0  # сегмента сейчас нет (камера пропала, конвейер перезапущен) — защищаем прошлый, если он моложе
 LOOP_MIN_S = 3600.0  # петлю (незащищённые записи) лимит объёма не сокращает меньше часа записи (camera.md)
+# измеренный средний битрейт записи (задняя — VBR, часто много меньше потолка из настроек): окно и минимум данных
+KBPS_WINDOW_S, KBPS_MIN_S = 600.0, 60.0
+RESERVE_HEADROOM = 1.25  # резерв под сегмент по измеренному — с запасом на всплески VBR (ночь, движение)
 
 SourceFactory = Callable[[Settings, FrameSink], Source]
 
@@ -59,12 +74,14 @@ def max_frame_us(cam: CameraSettings, moving: bool | None) -> int:
 
 
 def rear_camera_settings(s: Settings) -> CameraSettings:
-    """Параметры конвейера для задней камеры: частота/битрейт — оценки (поток задаёт камера), lores — свои,
-    длина сегмента и fsync — общие с передней. GOP у IP-камер длинный — ждём ключевой кадр терпеливее."""
+    """Параметры конвейера для задней камеры — только то, что ей важно: частота/битрейт — оценки (поток задаёт
+    камера), lores — свои, длина сегмента и fsync — общие с передней. Остальное (экспозиция, размеры кадра, поворот,
+    живой битрейт передней) — по умолчанию, а не копия передней: правка передней не трогает заднюю. GOP у IP-камер
+    длинный — ждём ключевой кадр терпеливее."""
     r = s.rear_camera
-    return s.camera.model_copy(update={
+    return CameraSettings().model_copy(update={
         "fps": r.fps, "gop": r.fps * 4, "bitrate_kbps": r.bitrate_kbps, "lores": r.lores,
-        "hflip": False, "vflip": False, "overlay_timestamp": False,
+        "segment_minutes": s.camera.segment_minutes, "fsync_interval_s": s.camera.fsync_interval_s,
     })
 
 
@@ -120,6 +137,7 @@ class CameraService(FrameSink):
         ring_path: Path | None = None,
         camera_id: CameraId = "front",
         sound_dir: Path | None = None,
+        rear_state_path: Path | None = None,
     ) -> None:
         self.fake = fake
         self.camera_id: CameraId = camera_id
@@ -178,6 +196,21 @@ class CameraService(FrameSink):
         # AAC — в записи (rear_camera.record_audio) и в живое видео, пока его смотрят
         self.sound = SoundMonitor(sound_dir or paths.data_dir() / "sound_clips") if self.rear else None
         self._aac_on = False
+        # задняя: состояние между запусками (MAC камеры, измеренный битрейт) — camera_rear.json в каталоге данных;
+        # передняя берёт оттуда битрейт задней (её записи она тоже чистит)
+        self.rear_state_path = Path(rear_state_path) if rear_state_path else paths.data_dir() / STATE_FILE
+        self.rear_state = RearState(self.rear_state_path) if self.rear else None
+        self.finder = CameraFinder(self.rear_state) if self.rear_state is not None else None
+        self._unreachable = 0  # неудач подключения «недоступна» подряд (нет маршрута, таймаут, отказ)
+        self._discovering = False
+        self._discover_lock = threading.Lock()
+        self._found: tuple[str, str] | None = None  # (адрес в настройках, где камера нашлась по MAC)
+        self._learned: tuple[str, float] | None = None  # (адрес, monotonic) — MAC для него уже смотрели
+        self.kbps_measured: float | None = None  # средний битрейт записи за минуты (задняя), между перезапусками
+        self._kbps_rec: Recorder | None = None
+        self._kbps_win: deque[tuple[float, int]] = deque()  # (метка кадра, с; байт на входе) текущего регистратора
+        self._last_before: tuple[Path, str] | None = None  # сегмент перед _last_segment, если тот начался недавно
+        self._carry_next: float | None = None  # защита следующего сегмента пережила перезапуск конвейера: срок
 
     @property
     def cam(self) -> CameraSettings:
@@ -218,16 +251,22 @@ class CameraService(FrameSink):
         Пределы выдержки применяются на ходу."""
         new = load_settings(self.settings_path, fallback=self.settings)
         old_cam = self.cam
-        old_rear = self.settings.rear_camera
+        old_rear = self._rear_effective(self.settings.rear_camera)
         self.settings = new
         new_cam = self.cam
-        changed = _rec_params(new_cam) != _rec_params(old_cam)
         if self.rear:
             pw = read_rear_password()
-            # зеркало — только экран в машине; остальное (адрес, логин, пароль, запись…) — перезапуск
-            changed = changed or pw != self._password or (
-                old_rear.model_copy(update={"mirror": False}) != new.rear_camera.model_copy(update={"mirror": False}))
+            found = self._found
+            if found is not None and url_host(new.rear_camera.url) != found[0]:
+                self._found = None  # адрес в настройках сменился: ядро записало найденный (или пользователь — свой)
+            # переподключение — только от того, что важно задней: адрес (с найденным по MAC), логин, пароль, поток,
+            # запись, звук, малые кадры. Зеркало (экран), fps/битрейт (оценки) и общие с передней длина сегмента и
+            # fsync — на ходу; экспозиция и размеры кадра передней задней не касаются
+            changed = pw != self._password or (
+                _rear_params(old_rear) != _rear_params(self._rear_effective(new.rear_camera)))
             self._password = pw
+        else:
+            changed = _rec_params(new_cam) != _rec_params(old_cam)
         self._hk_wake.set()
         if changed:
             log.info("camera settings changed -> restart")
@@ -240,7 +279,28 @@ class CameraService(FrameSink):
                 log.info("live bitrate changed -> restart live encoder")
                 self._live_stop()
                 self._sync_live()
+            if self.rear and self._p is not None and self._p.recorder is not None:
+                self._apply_rear_recorder(self._p.recorder)
         return False
+
+    def _apply_rear_recorder(self, rec: Recorder) -> None:
+        """Задняя: длина сегмента, fsync (общие с передней) и ожидание ключевого кадра — регистратору на ходу (со
+        следующей смены сегмента), без переподключения камеры."""
+        cam = self.cam
+        seg_s, fsync_s = self._segment_s(), float(cam.fsync_interval_s)
+        if rec.segment_s != seg_s or rec.fsync_interval_s != fsync_s:
+            log.info("segment length %.0f s, fsync %.1f s: applied without reconnecting", seg_s, fsync_s)
+        rec.segment_s, rec.fsync_interval_s, rec.gop = seg_s, fsync_s, max(1, int(cam.gop))
+
+    def _rear_effective(self, rc: RearCameraSettings) -> RearCameraSettings:
+        """Настройки задней с адресом, найденным по MAC (пока ядро не записало его в настройки): url и lores_url."""
+        found = self._found
+        if found is None or url_host(rc.url) != found[0]:
+            return rc
+        upd = {"url": replace_host(rc.url, found[1])}
+        if rc.lores_url and url_host(rc.lores_url) == found[0]:
+            upd["lores_url"] = replace_host(rc.lores_url, found[1])
+        return rc.model_copy(update=upd)
 
     # ───────────── живое видео ─────────────
     @property
@@ -382,7 +442,8 @@ class CameraService(FrameSink):
     def protect_current(self, recent: bool = False) -> str | None:
         """Защитить текущий сегмент (у границы — и соседей, см. Recorder.protect_current). recent (охрана: камера
         пропала) — его нет, потому что конвейер перезапущен без кадров: последний закрытый, если он моложе
-        LAST_SEGMENT_S (в нём то, что было перед пропажей). Закрытый при остановке конвейера меньше PROTECT_EDGE_S
+        LAST_SEGMENT_S (в нём то, что было перед пропажей), а если тот начался меньше PROTECT_EDGE_S до пропажи — и
+        сегмент перед ним (подход там). Закрытый при остановке конвейера меньше PROTECT_EDGE_S
         назад защищается и вместе с текущим: регистратор после перезапуска о нём не знает."""
         p = self._p
         rel = p.recorder.protect_current() if p is not None and p.recorder is not None else None
@@ -392,6 +453,9 @@ class CameraService(FrameSink):
             if rel is None and recent and age <= LAST_SEGMENT_S:
                 lock_segment(last[0])
                 rel = last[1]
+                before = self._last_before  # пропажа вскоре после смены сегмента: подход — в сегменте перед ним
+                if before is not None and before[0].is_file() and lock_segment(before[0]):
+                    log.info("protected the segment before it too: %s", self.rel_prefix + before[1])
             elif rel is not None and age < PROTECT_EDGE_S and lock_segment(last[0]):
                 log.info("protected the previous segment too: %s", self.rel_prefix + last[1])
         if rel:
@@ -460,6 +524,7 @@ class CameraService(FrameSink):
             stream_fps=getattr(src, "stream_fps", None),
             password_set=bool(self._password) if self.rear else None,
             video_age_s=round(time.monotonic() - picture, 1) if picture else None,
+            discovered_host=found[1] if (found := self._found) else None,
             **self._sound_status(src),
         )
 
@@ -513,10 +578,72 @@ class CameraService(FrameSink):
         rec = p.recorder if p else None
         if rec is None:
             return
-        path, rel = rec.current_path, rec.segment_rel
-        if path is not None and rel:
-            self._last_segment = (path, rel, time.monotonic())
+        self._remember_last(rec)
         rec.close_segment()
+
+    def _remember_last(self, rec: Recorder) -> None:
+        """Сегмент закрывается без следующего (конвейер остановлен, основной поток пропал): запомнить его для защиты
+        охраны «камера пропала», а если он начался меньше PROTECT_EDGE_S назад — и сегмент перед ним (подход там)."""
+        path, rel = rec.current_path, rec.segment_rel
+        if path is None or not rel:
+            return
+        before = rec.recent_previous()
+        last = self._last_segment
+        if before is None and not rec.knows_previous and last is not None and last[1] != rel and \
+                time.monotonic() - last[2] < rec.protect_edge_s:
+            before = (last[0], last[1])  # регистратор новый (перезапуск конвейера): прошлый закрыл старый, недавно
+        self._last_before = before
+        self._last_segment = (path, rel, time.monotonic())
+
+    # ───────────── поиск задней камеры по MAC ─────────────
+    def on_connect_failed(self, msg: str) -> None:
+        """Источник RTSP: помощник не подключился или отвалился (поток помощника — не ждать). «Недоступна» (нет
+        маршрута, таймаут, отказ) UNREACHABLE_FAILS раз подряд — искать камеру по MAC в нынешней подсети (адрес у
+        точки доступа мог смениться); логин, кодек и прочее — камера отвечает, счёт заново."""
+        if self.finder is None:
+            return
+        if not is_unreachable(msg):
+            self._unreachable = 0
+            return
+        self._unreachable += 1
+        if self._unreachable < UNREACHABLE_FAILS or not self.finder.may_sweep():
+            return
+        host = url_host(self._rear_effective(self.settings.rear_camera).url)
+        if not is_ipv4(host):
+            return  # имя (cam.local) — адрес найдёт резолвер
+        with self._discover_lock:  # оба помощника сообщают из своих потоков: поиск — один
+            if self._discovering:
+                return
+            self._discovering = True
+        threading.Thread(target=self._discover, args=(host,), name="rear-discover", daemon=True).start()
+
+    def _discover(self, host: str) -> None:
+        try:
+            new = self.finder.find(host) if self.finder is not None else None
+            if new and new != host:
+                cfg = url_host(self.settings.rear_camera.url)
+                self._found = (cfg, new) if cfg != new else None  # в настройках уже он (ядро успело) — как есть
+                self._unreachable = 0
+                self.restart()  # переподключиться по новому адресу; в настройки его запишет ядро (discovered_host)
+        except Exception:
+            log.exception("rear camera: search by MAC failed")
+        finally:
+            self._discovering = False
+
+    def _learn_camera(self) -> None:
+        """Камера работает — запомнить её MAC по таблице соседей (для того же адреса — не чаще LEARN_EVERY_S)."""
+        f, p = self.finder, self._p
+        if f is None or p is None or time.monotonic() - self._picture_mono(p) > 3.0:
+            return
+        host = url_host(self._rear_effective(self.settings.rear_camera).url)
+        now = time.monotonic()
+        if self._learned is not None and self._learned[0] == host and now - self._learned[1] < LEARN_EVERY_S:
+            return
+        self._learned = (host, now)
+        try:
+            f.learn(host)
+        except Exception:
+            log.exception("rear camera: MAC lookup failed")
 
     def _picture_mono(self, p: _Pipeline | None) -> float:
         """Когда пришёл последний кадр с камеры — с любого потока (у задней экран живёт на втором); 0 — не было."""
@@ -563,6 +690,9 @@ class CameraService(FrameSink):
             p.recorder.paused = self._no_space
             if self.rear:  # частоту задаёт камера (бывает переменной): пропуски по интервалам не считаем
                 p.recorder.fps = 0.0
+            carry, self._carry_next = self._carry_next, None
+            if carry is not None and time.monotonic() <= carry:  # событие у конца сегмента до перезапуска
+                p.recorder.protect_next_mono = carry
         p.jpeg = JpegWorker(self.hub, cam.lores.fps, cam.lores.jpeg_quality)
         if self.rtsp_url:
             p.rtsp = RtspPublisher(self.rtsp_url, fps=cam.fps, width=cam.out_w, height=cam.out_h)
@@ -574,6 +704,8 @@ class CameraService(FrameSink):
         self._source_error = None
         self._last_video_mono = 0.0
         self._p = p  # sink начинает принимать кадры
+        if self.rear:  # адрес, найденный по MAC, — сразу (в настройки его запишет ядро)
+            s = s.model_copy(update={"rear_camera": self._rear_effective(s.rear_camera)})
         p.source = self.source_factory(s, self)
         self._apply_exposure_limit(p)  # до start(): предел попадёт в начальные controls
         self._aac_on = False  # новый источник: AAC у него ещё не просили
@@ -604,8 +736,8 @@ class CameraService(FrameSink):
                     log.exception("source stop failed")
             self._p = None
             rec = p.recorder
-            if rec is not None and rec.current_path is not None and rec.segment_rel:
-                self._last_segment = (rec.current_path, rec.segment_rel, time.monotonic())
+            if rec is not None:
+                self._remember_last(rec)
             if p.rtsp is not None:  # не задерживаем перезапуск записи ожиданием ffmpeg
                 threading.Thread(target=p.rtsp.stop, name="rtsp-stop", daemon=True).start()
             for part in (p.recorder, p.jpeg):
@@ -615,6 +747,10 @@ class CameraService(FrameSink):
                     part.stop()
                 except Exception:
                     log.exception("stop %s failed", type(part).__name__)
+            if rec is not None:  # «защитить и следующий» ждал смены сегмента — перенести на новый регистратор
+                self._carry_next = rec.pending_next_mono()
+                if self._carry_next is not None:
+                    log.info("the next segment will still be protected after the restart")
 
     def _retry_delay(self) -> float:
         if not self.rear:
@@ -676,11 +812,16 @@ class CameraService(FrameSink):
                     log.error("%s — restarting in %.0f s", problem, delay)
                 self._error = problem
                 self._stop_pipeline()
-                if self._stop.wait(delay):
+                # пауза; restart() (задняя нашлась по MAC на новом адресе, новые настройки) — сразу
+                self._wake.clear()
+                self._wake.wait(delay)
+                if self._stop.is_set():
                     break
                 continue
             if picture:
                 self._fails = 0
+                if now - picture < 3.0:
+                    self._unreachable = 0  # кадры идут: неудачи подключения больше не «подряд»
             if self._error and ((rec and rec.segment_rel) or now - picture < 3.0):
                 self._error = None  # снова пишем или показываем (у задней — хотя бы со второго потока)
             self._wake.wait(0.5)
@@ -691,18 +832,18 @@ class CameraService(FrameSink):
     def housekeeping_once(self) -> None:
         s = self.settings
         cam = self.cam
-        reserve = segment_reserve_bytes(cam.bitrate_kbps, cam.segment_minutes)
-        min_free = int(s.storage.min_free_gb * GB)
         p = self._p
         rec = p.recorder if p else None
+        kbps, reserve_kbps = self._own_kbps(cam, rec)
+        reserve = segment_reserve_bytes(reserve_kbps, cam.segment_minutes)
+        min_free = int(s.storage.min_free_gb * GB)
         # лимит объёма — с местом под следующий сегмент: после очистки записи + сегмент ≤ лимита
         max_total = max(0, int(s.storage.max_recordings_gb * GB) - reserve)
         # петля ради лимита — не меньше часа записи (но не больше половины лимита): защищённые сверх лимита иначе
-        # оставили бы от неё последние минуты; глубже чистит только нехватка свободного места. Байт/с — по битрейту
-        # из настроек: у передней — с задней, если та пишет (передняя чистит и её записи)
-        kbps = cam.bitrate_kbps
+        # оставили бы от неё последние минуты; глубже чистит только нехватка свободного места. Байт/с — по битрейту:
+        # у передней — с задней, если та пишет (передняя чистит и её записи); у задней — измеренный (_own_kbps)
         if not self.rear and s.rear_camera.enabled and s.rear_camera.record:
-            kbps += s.rear_camera.bitrate_kbps
+            kbps += read_bitrate(self.rear_state_path) or s.rear_camera.bitrate_kbps
         loop_bps = kbps * 1000 / 8
         min_loop = loop_minimum(int(loop_bps * LOOP_MIN_S), max_total)
         # передняя чистит все записи (и задней: самые старые — первыми), кроме чужого текущего сегмента;
@@ -731,10 +872,44 @@ class CameraService(FrameSink):
             rec.paused = self._no_space
         self.recordings_count, self.recordings_bytes = stats(self.root, () if self.rear else (REAR_DIR,))
 
+    def _own_kbps(self, cam: CameraSettings, rec: Recorder | None) -> tuple[float, float]:
+        """(средний битрейт своей записи, битрейт для резерва под сегмент), кбит/с. Задняя — измеренный за минуты
+        (камера шлёт VBR, часто много меньше потолка; резерв — с запасом), пока его нет — из настроек; передняя — из
+        настроек."""
+        if not self.rear:
+            return float(cam.bitrate_kbps), float(cam.bitrate_kbps)
+        self._measure_bitrate(rec)
+        kbps = self.kbps_measured
+        if not kbps:
+            return float(cam.bitrate_kbps), float(cam.bitrate_kbps)
+        if self.rear_state is not None:
+            self.rear_state.save_bitrate(kbps)  # передней: она считает петлю и с записями задней
+        return kbps, kbps * RESERVE_HEADROOM
+
+    def _measure_bitrate(self, rec: Recorder | None) -> None:
+        """Средний битрейт записи по меткам кадров за последние ≤ KBPS_WINDOW_S (не меньше KBPS_MIN_S данных);
+        значение переживает перезапуск конвейера (новое — когда у нового регистратора наберётся минута)."""
+        ts = rec.last_ts_us if rec is not None else None
+        if rec is None or ts is None:
+            return
+        if rec is not self._kbps_rec:
+            self._kbps_rec = rec
+            self._kbps_win.clear()
+        win, t, b = self._kbps_win, ts / 1e6, rec.bytes_in
+        if win and t <= win[-1][0]:
+            return
+        win.append((t, b))
+        while len(win) > 2 and t - win[1][0] >= KBPS_WINDOW_S:
+            win.popleft()
+        t0, b0 = win[0]
+        if t - t0 >= KBPS_MIN_S:
+            self.kbps_measured = round((b - b0) * 8 / (t - t0) / 1000, 1)
+
     def _housekeeping(self) -> None:
         last_clean = 0.0
         while not self._stop.is_set():
             self.time_sync.refresh()
+            self._learn_camera()
             now = time.monotonic()
             if self._hk_wake.is_set() or now - last_clean >= self.housekeeping_s:
                 self._hk_wake.clear()
@@ -752,3 +927,11 @@ LIVE_PARAMS = ("live_bitrate_kbps", "max_exposure_ms_driving", "max_exposure_ms_
 def _rec_params(cam) -> object:
     """Параметры камеры, после смены которых конвейер перезапускается (всё, что не меняется на ходу)."""
     return cam.model_copy(update=dict.fromkeys(LIVE_PARAMS, 0))
+
+
+REAR_LIVE = {"mirror": False, "fps": 1, "bitrate_kbps": 200}  # задняя: экран и оценки — без переподключения
+
+
+def _rear_params(r: RearCameraSettings) -> object:
+    """Настройки задней, после смены которых камера переподключается."""
+    return r.model_copy(update=REAR_LIVE)

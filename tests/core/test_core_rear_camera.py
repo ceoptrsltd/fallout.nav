@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -54,6 +55,89 @@ def test_recordings_list_both_cameras_and_hls_uri(tmp_path):
     assert "../../../file/rear/2026-10-28/2026-10-28_10-00-05.ts" in rec._hls("rear/2026-10-28/2026-10-28_10-00-05.ts",
                                                                               None)
     assert "../../file/2026-10-28/2026-10-28_10-00-00.ts" in rec._hls("2026-10-28/2026-10-28_10-00-00.ts", None)
+
+
+REAR_CUR = "rear/2026-11-02/2026-11-02_10-00-00.ts"
+FRONT_CUR = "2026-11-02/2026-11-02_10-00-03.ts"
+
+
+def test_rear_segment_being_written_is_in_progress_by_its_status(tmp_path):
+    """Задняя по Wi-Fi молчит 3–15 с, её файл давно не менялся, но открыт: «идёт запись» — по статусу её сервиса
+    (current_fn), а не только по mtime: удалять нельзя (иначе пишется в удалённый файл), HLS — без ENDLIST."""
+    root = tmp_path / "rec"
+    old = time.time() - 10  # 10 с без новых кадров
+    for rel in (REAR_CUR, FRONT_CUR):
+        write_rec(root / rel, 3, sidecar=True, end=False)
+        os.utime(root / rel, (old, old))
+    current: list[str] = []
+    rec = Recordings(root, current_fn=lambda: current)
+    assert {i["path"]: i["in_progress"] for i in rec._scan(None)} == {REAR_CUR: False, FRONT_CUR: False}
+    current[:] = [FRONT_CUR, REAR_CUR]
+    assert all(i["in_progress"] for i in rec._scan(None))
+    assert rec._one(REAR_CUR, None)["in_progress"] is True
+    assert "#EXT-X-ENDLIST" not in rec._hls(REAR_CUR, None)
+    with pytest.raises(RecordingError) as e:
+        asyncio.run(rec.delete(REAR_CUR, current=None, force=True))
+    assert e.value.status == 409 and (root / REAR_CUR).is_file()
+    current.clear()  # сегмент закрыт
+    assert "#EXT-X-ENDLIST" in rec._hls(REAR_CUR, None)
+    asyncio.run(rec.delete(REAR_CUR, current=None, force=False))
+    assert not (root / REAR_CUR).exists()
+
+
+async def test_core_knows_both_cameras_current_segments(data_dir):
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/status":
+            rear = req.url.port == 8083
+            return httpx.Response(200, json=CameraStatus(
+                state="recording", recording=True, camera="rear" if rear else "front",
+                current_segment=REAR_CUR if rear else FRONT_CUR).model_dump(mode="json"))
+        return httpx.Response(200, json={"ok": True})
+
+    root = paths.recordings_dir()
+    old = time.time() - 10
+    write_rec(root / REAR_CUR, 3, sidecar=True, end=False)
+    os.utime(root / REAR_CUR, (old, old))
+    async with running_app(make_opts(local_transport=FakeUpstream(handler).transport)) as c:
+        await login(c)
+        await c.patch("/api/settings", json={"rear_camera": {"enabled": True, "url": "rtsp://10.0.0.9/s"}})
+        core = c.app.state.core
+        await core.camera_rear.poll()
+        assert core.current_segments() == [FRONT_CUR, REAR_CUR]
+        items = {i["path"]: i for i in (await c.get("/api/recordings")).json()}
+        assert items[REAR_CUR]["in_progress"] is True
+        assert (await c.delete(f"/api/recordings/file/{REAR_CUR}?force=1")).status_code == 409
+        assert "#EXT-X-ENDLIST" not in (await c.get(f"/api/recordings/hls/{REAR_CUR}.m3u8")).text
+
+
+async def test_core_saves_the_rear_address_found_by_mac(data_dir):
+    """Сервис задней нашёл камеру по MAC на новом адресе (discovered_host) — ядро записывает хост в url и lores_url
+    (сервис камеры settings.json не пишет); дальше статус без discovered_host — больше ничего не меняется."""
+    found = {"host": "10.150.83.23"}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.port == 8083 and req.url.path == "/status":
+            return httpx.Response(200, json=CameraStatus(state="recording", camera="rear",
+                                                         discovered_host=found["host"]).model_dump(mode="json"))
+        return httpx.Response(200, json={"ok": True})
+
+    async with running_app(make_opts(local_transport=FakeUpstream(handler).transport)) as c:
+        await login(c)
+        await c.patch("/api/settings", json={"rear_camera": {
+            "enabled": True, "url": "rtsp://172.23.204.5:8554/profile0", "lores_url": "rtsp://172.23.204.5:8554/profile1"}})
+        core = c.app.state.core
+        await core.camera_rear.poll()
+        for _ in range(50):
+            if core.store.get().rear_camera.url != "rtsp://172.23.204.5:8554/profile0":
+                break
+            await asyncio.sleep(0.01)
+        rc = core.store.get().rear_camera
+        assert (rc.url, rc.lores_url) == ("rtsp://10.150.83.23:8554/profile0", "rtsp://10.150.83.23:8554/profile1")
+        assert load_settings_file(paths.settings_file())[0].rear_camera.url == rc.url
+        found["host"] = None
+        await core.camera_rear.poll()
+        await asyncio.sleep(0.05)
+        assert core.store.get().rear_camera.url == rc.url
 
 
 async def test_rear_routes_off_then_mock(data_dir):
