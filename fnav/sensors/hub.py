@@ -1,8 +1,14 @@
-"""RealSensorHub — настоящие датчики: gpsd (NEO-M8N), магнитометр IST8310 по I2C, кнопка/LED/пищалка.
+"""RealSensorHub — настоящие датчики: gpsd (NEO-M8N), магнитометр IST8310 по I2C, кнопка/LED/пищалка; гироскоп и
+акселерометр MPU-6050 — через fnav-core (attach_imu: поток чтения датчика общий с охраной и уровнем).
 
 Задачи asyncio: два клиента gpsd (JSON и NMEA), цикл слияния курса 20 Гц, автокалибровка компаса по GPS.
 Поток: опрос компаса. Блокирующие операции GPIO, подгонка и настройка M8N — в asyncio.to_thread.
 Отсутствие любого устройства — не падение: текст в SensorSnapshot.errors и повторные попытки.
+
+Курс (api.md «Датчики»): компас (с компенсацией наклона, если есть калибровка уровня) + поправка привязки к GPS;
+с гироскопом — комплементарный фильтр heading.GyroHeading (курс += рысканье·dt, подтяжка к GPS-курсу, пока ему
+доверяем, и к компасу, когда медленно/стоим); без гироскопа — как раньше: смешивание компас/GPS по скорости +
+сглаживание. Задний ход (heading.ReverseDetector): GPS-курс не берётся, поправка привязки не учится.
 """
 
 from __future__ import annotations
@@ -12,10 +18,12 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import sys
 import time
 from collections.abc import Callable
+from functools import lru_cache
 from typing import Any
 
 from fnav.interfaces import ButtonEvent, LedMode
@@ -31,17 +39,26 @@ from fnav.models import (
 )
 from fnav.sensors import heading as hd
 from fnav.sensors.autocal import AutoCalibrator
-from fnav.sensors.calibration import CalibrationCollector, apply_calibration
+from fnav.sensors.calibration import CalibrationCollector, apply_calibration, has_z, z_offset
 from fnav.sensors.compass import CompassReader
-from fnav.sensors.declination import declination_deg
+from fnav.sensors.declination import declination_deg, field_nT
 from fnav.sensors.gpio import GpioController
 from fnav.sensors.gpsd import GpsdClient, GpsState, NmeaRing
+from fnav.sensors.motion import G, MotionTracker
 from fnav.sensors.stillness import StillnessFilter
 
 log = logging.getLogger("fnav.sensors")
 
 FUSION_HZ = 20.0
 MAG_STALE_S = 1.0
+TPV_FRESH_S = 0.5  # сырой TPV старше — для заднего хода и поправок наклона его нет
+ANCHOR_MAX_AGE_S = 0.3  # поправку привязки учим только по свежему TPV
+ANCHOR_MAX_TURN_DPS = 3.0  # и только на прямой (GPS-курс и гироскоп)
+OPPOSITE_DEG = 100.0  # GPS-курс почти напротив сверенного курса машины на малой скорости — не берём (задний ход?)
+STILL_TURN_DPS = 2.0  # стоим: GPS-скорость 0 и гироскоп не видит поворота
+BIAS_SAVE_DPS = 0.05  # смещение гироскопа ушло на столько от сохранённого — сохранить (не чаще BIAS_SAVE_S)
+BIAS_SAVE_S = 60.0
+FUSION_LOG_S = 60.0  # одна и та же ошибка слияния — в журнал не чаще
 AUTOCAL_TICK_S = 5.0  # как часто проверять, не пора ли переподогнать автокалибровку
 AUTOCAL_MIN_NEW = 5  # столько новых точек — повод для переподгонки
 STATE_SAVE_S = 180.0  # как часто сохранять накопленные точки в sensors_state.json
@@ -56,18 +73,30 @@ def _state_file():
     return data_dir() / "sensors_state.json"
 
 
+@lru_cache(maxsize=64)
+def _z_over_h(lat: float, lon: float) -> float:
+    """Отношение вертикальной составляющей поля (вниз) к горизонтальной по WMM (Польша ≈ 2,5)."""
+    x, y, z = field_nT(lat, lon)
+    return z / max(math.hypot(x, y), 1.0)
+
+
 class RealSensorHub:
     """Реализует fnav.interfaces.SensorHub."""
 
     def __init__(self, settings: Settings, *, gpsd_host: str = GPSD_HOST, gpsd_port: int = GPSD_PORT,
-                 enable_compass: bool = True, enable_gpio: bool = True):
+                 enable_compass: bool = True, enable_gpio: bool = True,
+                 clock: Callable[[], float] = time.monotonic):
         self.settings = settings
+        self._clock = clock
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tasks: list[asyncio.Task] = []
         self._errors: dict[str, str] = {}
+        self._fusion_logged = -math.inf
 
         # GPS
-        self.gps = GpsState()
+        self.gps = GpsState(clock=clock)
+        self._track = hd.TpvTrack()  # сырые TPV: поворот GPS-курса, dv/dt
+        self._tpv_seen = 0
         self.nmea = NmeaRing(500)
         self.gpsd = GpsdClient(gpsd_host, gpsd_port, on_message=self._on_gps_msg, on_connect=self.gps.on_connect)
         self.gpsd_nmea = GpsdClient(gpsd_host, gpsd_port, nmea=True, on_line=self.nmea.append)
@@ -91,6 +120,19 @@ class RealSensorHub:
         self._anchor_learning = False
         self._model_key: tuple | None = None
         self._model_sig = ""
+        self._z_off: float | None = None  # смещение z по точкам автокалибровки (для калибровки без оси Z)
+        self._tilt_deg: float | None = None  # наклон машины этого цикла (автокалибровке)
+
+        # гироскоп / акселерометр (attach_imu), курс по гироскопу, задний ход
+        self._imu: Any = None
+        self.motion = MotionTracker(clock)
+        self.motion.set_level(settings.level.calibration)
+        self._gh = hd.GyroHeading()
+        self._rev = hd.ReverseDetector()
+        self._yaw_prev: float | None = None
+        self._out_prev: float | None = None  # итоговый курс прошлого цикла
+        self._bias_saved: tuple[float, float, float] | None = None
+        self._bias_saved_at = -math.inf
 
         # автокалибровка по GPS-курсу
         self.autocal = AutoCalibrator(settings.compass)
@@ -98,10 +140,11 @@ class RealSensorHub:
         self._cal_cbs: list[Callable[[CompassCalibration], None]] = []
         self._autocal_axes: str | None = None  # оси, в которых накоплены точки
         self._last_fit = 0.0
-        self._state_saved_at = time.monotonic()
+        self._state_saved_at = clock()
         self._last_pos: tuple[float, float] | None = None
         self._load_state()
         self._anchor_sync()  # поправка из файла выучена под другой калибровкой — не применять
+        self._update_z()
 
         # GPIO
         self._enable_gpio = enable_gpio
@@ -110,7 +153,7 @@ class RealSensorHub:
         self._gpio_task: asyncio.Task | None = None
 
         self._snap = SensorSnapshot()
-        self._last_fuse = time.monotonic()
+        self._last_fuse = clock()
 
     # ───────────── жизненный цикл ─────────────
     async def start(self) -> None:
@@ -141,7 +184,7 @@ class RealSensorHub:
             await asyncio.to_thread(self.compass_reader.join, 2.0)
             self.compass_reader = None
         await asyncio.to_thread(self.gpio.close)
-        if self.autocal.dirty:
+        if self._bias_due(self._clock(), force=True) or self.autocal.dirty:
             await asyncio.to_thread(self._save_state)
 
     # ───────────── компас ─────────────
@@ -154,7 +197,7 @@ class RealSensorHub:
         self.compass_reader.start()
 
     def _on_mag(self, v: tuple[float, float, float], chip: str) -> None:  # поток компаса
-        t = time.monotonic()
+        t = self._clock()
         self._mag = (t, v, chip)
         self.calib.add(v)
         self.autocal.add_mag(t, v)
@@ -164,6 +207,18 @@ class RealSensorHub:
             self._errors["compass"] = msg
         else:
             self._errors.pop("compass", None)
+
+    # ───────────── гироскоп и акселерометр (MPU-6050) ─────────────
+    def attach_imu(self, imu: Any) -> None:
+        """Поток чтения MPU-6050 fnav-core (fnav/core/imu.py ImuService.subscribe_motion): гироскоп — курс,
+        акселерометр — наклон компаса и трогание назад. Без датчика (или пока он не отвечает) курс — как раньше."""
+        if self._imu is imu:
+            return
+        self._imu = imu
+        imu.subscribe_motion(self._on_motion)
+
+    def _on_motion(self, acc: list, gyr: list, dt: float) -> None:  # поток датчика
+        self.motion.add(acc, gyr, dt)
 
     # ───────────── GPIO ─────────────
     def _schedule_gpio_setup(self) -> None:
@@ -210,6 +265,11 @@ class RealSensorHub:
             if off is not None and isinstance(model, str) and model:
                 self._anchor.learn(0.0, float(off), 0.0)
                 self._anchor_model = model
+        with contextlib.suppress(Exception):
+            b = d.get("gyro_bias")  # до первой стоянки (там уточнится) — смещение нуля гироскопа с прошлого раза
+            if isinstance(b, list) and len(b) == 3 and all(isinstance(v, (int, float)) for v in b):
+                self._bias_saved = (float(b[0]), float(b[1]), float(b[2]))
+                self.motion.set_bias(self._bias_saved, "saved")
         ac = d.get("autocal")
         if isinstance(ac, dict):
             n = self.autocal.load_state(ac)
@@ -225,6 +285,8 @@ class RealSensorHub:
         if self._anchor.offset_deg is not None and self._anchor_model:
             d["anchor_offset_deg"] = round(self._anchor.offset_deg, 2)
             d["anchor_model"] = self._anchor_model
+        if self._bias_saved is not None:
+            d["gyro_bias"] = [round(v, 4) for v in self._bias_saved]
         ac = self.autocal.to_state()
         ac["axes"] = self._autocal_axes
         d["autocal"] = ac
@@ -238,7 +300,7 @@ class RealSensorHub:
             tmp = p.with_suffix(".tmp")
             tmp.write_text(data, encoding="utf-8")
             os.replace(tmp, p)
-        self._state_saved_at = time.monotonic()
+        self._state_saved_at = self._clock()
 
     # ───────────── привязка компаса к GPS-курсу ─────────────
     def _compass_model(self) -> str:
@@ -300,53 +362,166 @@ class RealSensorHub:
             try:
                 self._fuse_once()
                 self._maybe_autoconfigure()
-            except Exception as e:
-                log.exception("heading fusion failed")
-                self._errors["fusion"] = f"Heading: internal error ({e})"
+            except Exception as e:  # noqa: BLE001 — в журнал (с трассировкой) пишет _fusion_failed
+                self._fusion_failed(e)
             await asyncio.sleep(1.0 / FUSION_HZ)
 
+    def _fusion_failed(self, e: Exception) -> None:
+        """Цикл не собрал снимок: ошибка — в прежний снимок (иначе её не видно), в журнал — не чаще FUSION_LOG_S.
+        Следующий удачный цикл её снимает (_fuse_once)."""
+        msg = f"Heading: internal error ({e})"
+        now = self._clock()
+        if msg != self._errors.get("fusion") or now - self._fusion_logged >= FUSION_LOG_S:
+            log.exception("heading fusion failed")
+            self._fusion_logged = now
+        self._errors["fusion"] = msg
+        errs = [x for x in self._snap.errors if not x.startswith("Heading: internal error")]
+        self._snap = self._snap.model_copy(update={"errors": [*errs, msg]})
+
+    def _raw_tpv(self, raw: GpsFix) -> tuple[float | None, float | None, float | None]:
+        """Сырой TPV (без фильтра «стоим»): в историю для поворота GPS-курса и dv/dt; → (скорость, курс, eps)
+        свежего TPV, иначе (None, None, None)."""
+        if self.gps.tpv_count != self._tpv_seen:
+            self._tpv_seen = self.gps.tpv_count
+            if raw.fix != "none" and raw.speed_mps is not None and self.gps.last_tpv is not None:
+                self._track.add(self.gps.last_tpv, raw.speed_mps, raw.course_deg)
+            else:
+                self._track.clear()
+        if raw.fix == "none" or raw.age_s is None or raw.age_s > TPV_FRESH_S:
+            return None, None, None
+        return raw.speed_mps, raw.course_deg, getattr(raw, "eps_mps", None)
+
+    def _vertical(self, ms: Any, speed: float | None, rate: float | None) -> tuple[float, float, float] | None:
+        """«Вверх» в осях машины (aF, aR, aU) по акселерометру без разгона/торможения (dv/dt по GPS) и центробежного
+        (v·рысканье); только с калибровкой уровня по эталону. Задним ходом знаки скорости и ускорения обратные.
+        Без свежей скорости по GPS — только если датчик неподвижен: в тоннеле на повороте центробежное (10 м/с,
+        10 °/с — 0,18 g) выглядело бы как крен 10°, и «компенсация» увела бы компас на десятки градусов."""
+        if ms is None or not ms.tilt_ok or ms.acc_v is None or (speed is None and ms.still_s <= 0.0):
+            return None
+        af, ar, au = ms.acc_v
+        if speed is not None and speed >= hd.REV_MIN_MPS:
+            k = -1.0 if self._rev.reversing else 1.0
+            turn = rate if rate is not None else self._track.course_rate()
+            af -= k * (self._track.accel() or 0.0) / G
+            ar -= k * speed * math.radians(turn or 0.0) / G
+        return af, ar, au
+
     def _fuse_once(self) -> None:
-        now = time.monotonic()
+        now = self._clock()
         dt = now - self._last_fuse
         self._last_fuse = now
         s = self.settings
-        fix = self._still.apply(now, self.gps.current(), s.gps)
+        raw_fix = self.gps.current()
+        fix = self._still.apply(now, raw_fix, s.gps)
+        r_speed, r_course, r_eps = self._raw_tpv(raw_fix)
+
+        # гироскоп: приращение курса за шаг (накопленное в потоке датчика + экстраполяция на «сейчас»)
+        ms = self.motion.read() if self._imu is not None else None
+        if self._imu is not None:
+            self.motion.set_moving(None if r_speed is None else r_speed >= hd.REV_STOP_MPS)
+        gyro_ok = ms is not None and ms.gyro_ok
+        rate = ms.rate_dps if gyro_ok else None  # type: ignore[union-attr]
+        d_gyro = 0.0
+        if gyro_ok:
+            ext = ms.yaw_deg + (rate or 0.0) * min(max(now - (ms.t or now), 0.0), 0.2)  # type: ignore[union-attr]
+            if self._yaw_prev is not None:
+                d_gyro = ext - self._yaw_prev
+            self._yaw_prev = ext
+        else:
+            self._yaw_prev = None
+        up_v = self._vertical(ms, r_speed, rate)
+        self._tilt_deg = None
+        if up_v is not None:
+            n = math.sqrt(up_v[0] ** 2 + up_v[1] ** 2 + up_v[2] ** 2)
+            self._tilt_deg = math.degrees(math.acos(max(-1.0, min(1.0, up_v[2] / n)))) if n > 1e-6 else None
 
         decl = self._declination(fix)
         compass: CompassRaw | None = None
         mag_deg: float | None = None
+        tilt_comp = False
+        cal = self.effective_calibration()
         mag = self._mag
         if mag is not None:
             t, raw, chip = mag
             fresh = now - t <= MAG_STALE_S
-            cal = self.effective_calibration()
             cx, cy, cz = apply_calibration(raw, cal)
             compass = CompassRaw(x=round(cx, 2), y=round(cy, 2), z=round(cz, 2),
                                  raw_x=round(raw[0], 2), raw_y=round(raw[1], 2), raw_z=round(raw[2], 2),
                                  chip=chip, ok=fresh)
             if fresh:
-                mag_deg = hd.true_mag_heading(hd.mag_heading_deg(cx, cy), decl or 0.0, s.compass.mount_offset_deg,
-                                              cal.deviation)
+                theta = None
+                zc = cz if has_z(cal) else (cz - self._z_off if self._z_off is not None else None)
+                if up_v is not None and zc is not None:
+                    # модуль повёрнут относительно машины на −(установка + A девиации)
+                    phi = -(s.compass.mount_offset_deg + (cal.deviation[0] if cal.deviation else 0.0))
+                    theta = hd.tilt_mag_heading_deg((cx, cy, zc), hd.compass_up(up_v, phi))
+                    tilt_comp = theta is not None
+                if theta is None:
+                    theta = hd.mag_heading_deg(cx, cy)
+                mag_deg = hd.true_mag_heading(theta, decl or 0.0, s.compass.mount_offset_deg, cal.deviation)
 
         gps_course = fix.course_deg if fix.fix != "none" else None
         speed = fix.speed_mps if fix.fix != "none" else None
-        fused_mag = mag_deg
+        gps_w = hd.gps_trust(speed, getattr(fix, "eps_mps", None), s.heading.gps_above_mps, s.heading.blend_band_mps)
+        if fix.age_s is None or fix.age_s > TPV_FRESH_S:
+            gps_w = 0.0  # TPV перестали приходить (тоннель): курс замер на прежнем — не тянуть к нему поворот
         self._anchor_sync()  # поправка — только под той моделью компаса, под которой выучена
-        if s.heading.anchor_to_gps and mag_deg is not None:
+        anchor_on = s.heading.anchor_to_gps and mag_deg is not None
+        fused_mag = self._anchor.apply(mag_deg) if anchor_on else mag_deg
+        # компас сверен: поправка привязки к GPS, автокалибровка по GPS-курсу или (без привязки) ручная калибровка —
+        # иначе он может врать на десятки градусов, и «GPS-курс напротив» ничего не значит
+        mag_ok = fused_mag is not None and ((anchor_on and self._anchor.offset_deg is not None) or cal.source == "auto"
+                                            or (not s.heading.anchor_to_gps and cal.source == "manual"))
+
+        # задний ход: по курсу машины, ещё не подтянутому к GPS (гироскоп/компас)
+        gyro_psi = gyro_ok and self._gh.psi is not None
+        ref = self._gh.psi if gyro_psi else self._out_prev
+        confirmed = self._gh.referenced if gyro_psi else mag_ok
+        reversing = self._rev.update(
+            now, r_speed, r_course, r_eps, ref, confirmed, gyro_psi, rate,
+            ms.v_long if ms is not None else None, ms.still_s if ms is not None and ms.fresh else None)
+        # задним ходом GPS-курс смотрит назад; почти напротив сверенного курса на малой скорости — не берём, пока
+        # не ясно (иначе компас и GPS смешиваются: 1° → 271° → 89° → 181°)
+        opposite = (gps_course is not None and ref is not None and confirmed and (speed or 0.0) <= hd.REV_MAX_MPS
+                    and abs(hd.angle_diff(gps_course, ref)) > OPPOSITE_DEG)
+        if reversing or opposite:
+            gps_w = 0.0
+        gps_use = gps_course if gps_w > 0.0 else None
+
+        if anchor_on:
             self._anchor.tau_s = s.heading.anchor_tau_s
-            # учимся только когда курс полностью по GPS (скорость выше зоны перехода) — там он надёжен
-            learning = gps_course is not None and hd.gps_weight(speed, s.heading.gps_above_mps,
-                                                                 s.heading.blend_band_mps) >= 1.0
+            # учимся только по надёжному GPS-курсу: полное доверие, вперёд, свежий TPV, на прямой
+            turn = self._track.course_rate()
+            straight = turn is not None and abs(turn) < ANCHOR_MAX_TURN_DPS and (
+                rate is None or abs(rate) < ANCHOR_MAX_TURN_DPS)
+            fresh_tpv = fix.age_s is not None and fix.age_s < ANCHOR_MAX_AGE_S
+            learning = gps_use is not None and gps_w >= 1.0 and straight and fresh_tpv
             if learning:
-                self._anchor.learn(mag_deg, gps_course, dt)
+                self._anchor.learn(mag_deg, gps_use, dt)  # type: ignore[arg-type]
+                fused_mag = self._anchor.apply(mag_deg)
             elif self._anchor_learning and self._loop is not None:
                 self._loop.run_in_executor(None, self._save_state)  # остановились — сохранить поправку
             self._anchor_learning = learning
-            fused_mag = self._anchor.apply(mag_deg)
-        deg, src = hd.fuse(fused_mag, gps_course, speed, s.heading.gps_above_mps, s.heading.blend_band_mps)
+        deg, src = hd.fuse(fused_mag, gps_use, speed, s.heading.gps_above_mps, s.heading.blend_band_mps, w=gps_w)
         self._smoother.tau_s = s.heading.smoothing_s
         sm = self._smoother.update(deg, dt)
+        out = sm
+        if gyro_ok:
+            if self._gh.psi is None and sm is not None:  # гироскоп появился — продолжить с нынешнего курса
+                self._gh.init(sm, mag_ok or src == "gps", src)
+            # стоим: GPS-скорость 0 (без фикса — датчик движения неподвижен) и поворота нет
+            imu_still = ms is not None and ms.fresh and ms.still_s > 0.0
+            still = (speed == 0.0 or (speed is None and imu_still)) and (rate is None or abs(rate) < STILL_TURN_DPS)
+            psi = self._gh.update(now, dt, d_gyro, rate, fused_mag, mag_ok, gps_use, gps_w, still,
+                                  gps_lag_s=hd.GPS_LATENCY_S + (fix.age_s or 0.0))
+            if psi is not None:
+                self._smoother.set(psi)  # гироскоп пропадёт — сглаживание продолжит отсюда, без скачка
+                out, src = psi, self._gh.source
+        elif self._gh.psi is not None:
+            self._gh.reset()
+        self._out_prev = out
 
+        self._errors.pop("fusion", None)  # цикл удался — прежняя ошибка слияния снята
         errors = []
         if self._configuring:
             errors.append("GPS: receiver is being reconfigured")
@@ -362,18 +537,21 @@ class RealSensorHub:
         self._snap = SensorSnapshot(
             gps=fix,
             heading=Heading(
-                deg=None if sm is None else round(sm, 1),
+                deg=None if out is None else round(out, 1) % 360.0,
                 source=src,  # type: ignore[arg-type]
                 mag_deg=None if mag_deg is None else round(mag_deg, 1),
                 gps_course_deg=None if gps_course is None else round(gps_course, 1),
                 declination_deg=None if decl is None else round(decl, 2),
                 anchor_offset_deg=None if self._anchor.offset_deg is None or not s.heading.anchor_to_gps
                 else round(self._anchor.offset_deg, 1),
+                yaw_rate_dps=None if rate is None else round(rate, 1),
+                tilt_comp=tilt_comp,
             ),
             compass=compass,
             compass_cal=self._autocal_status(),
             satellites=list(self.gps.satellites),
             errors=errors,
+            reversing=reversing,
         )
 
     # ───────────── автонастройка M8N ─────────────
@@ -384,7 +562,7 @@ class RealSensorHub:
         if self._autoconf_done or self._configuring or self._loop is None:
             return
         g = self.gps
-        now = time.monotonic()
+        now = self._clock()
         receiving = g.last_tpv is not None and g.last_tpv >= g.since and now - g.last_tpv < 2.0
         bps = g.device_bps
         if not receiving or not bps or bps == self.settings.gps.baud or now < self._autoconf_next:
@@ -411,13 +589,22 @@ class RealSensorHub:
 
     def _on_gps_msg(self, msg: dict) -> None:  # event loop (клиент gpsd)
         self.gps.handle(msg)
-        if msg.get("class") != "TPV" or not self.settings.compass.auto_calibrate:
+        if msg.get("class") != "TPV" or not self.settings.compass.auto_calibrate or self._rev.reversing:
             return
         mag = self._mag
-        if mag is None or time.monotonic() - mag[0] > MAG_STALE_S:
+        now = self._clock()
+        if mag is None or now - mag[0] > MAG_STALE_S:
             return
         fix = self.gps.current()
-        self.autocal.on_gps(time.monotonic(), fix, self._declination(fix))
+        self.autocal.on_gps(now, fix, self._declination(fix), self._tilt_deg)
+
+    def _update_z(self) -> None:
+        """Смещение z для действующей калибровки без оси Z — по точкам автокалибровки и WMM (calibration.z_offset)."""
+        cal = self.effective_calibration()
+        if has_z(cal) or self._last_pos is None:
+            self._z_off = None
+            return
+        self._z_off = self.autocal.z_offset(cal, _z_over_h(*self._last_pos))
 
     def _check_axes(self) -> None:
         """Точки копятся в осях корпуса — при смене осей они непригодны."""
@@ -431,6 +618,7 @@ class RealSensorHub:
             log.info("compass axes changed %s -> %s: auto-calibration points reset", self._autocal_axes, spec)
             self.autocal.reset()
             self._cal_auto = None
+            self._z_off = None
             self._autocal_axes = spec
             self._anchor_reset()  # оси чипа (chip=auto нашёл другой) в отпечаток не входят — сброс явно
             self._anchor_sync()
@@ -449,7 +637,7 @@ class RealSensorHub:
         self._check_axes()
         c = self.settings.compass
         self.autocal.cfg = c
-        now = time.monotonic()
+        now = self._clock()
         new = self.autocal.new_points
         if c.auto_calibrate and (force or new >= AUTOCAL_MIN_NEW or (new > 0 and now - self._last_fit > 60)):
             self._last_fit = now
@@ -468,8 +656,23 @@ class RealSensorHub:
                         cb(save)
                     except Exception:
                         log.exception("calibration update callback failed")
-        if self.autocal.dirty and (force or time.monotonic() - self._state_saved_at >= STATE_SAVE_S):
+        self._update_z()
+        bias_due = self._bias_due(now)
+        if bias_due or (self.autocal.dirty and (force or self._clock() - self._state_saved_at >= STATE_SAVE_S)):
             await asyncio.to_thread(self._save_state)
+
+    def _bias_due(self, now: float, force: bool = False) -> bool:
+        """Смещение гироскопа, выученное на стоянке, заметно ушло от сохранённого — пора сохранить."""
+        st = self.motion.read()
+        b = st.bias
+        if st.bias_src != "still" or b is None or (not force and now - self._bias_saved_at < BIAS_SAVE_S):
+            return False
+        old = self._bias_saved
+        if old is not None and max(abs(b[i] - old[i]) for i in range(3)) < BIAS_SAVE_DPS:
+            return False
+        self._bias_saved = (b[0], b[1], b[2])
+        self._bias_saved_at = now
+        return True
 
     def _autocal_status(self) -> AutoCalStatus:
         c = self.settings.compass
@@ -493,9 +696,13 @@ class RealSensorHub:
         if nc.calibration != oc.calibration:
             if nc.calibration != self._cal_auto:
                 self._cal_auto = None  # задана другая калибровка — она главная до следующей подгонки
-            if nc.calibration.source == "manual" and nc.calibration.fitted_at != oc.calibration.fitted_at:
+            if nc.calibration.source == "manual" and nc.calibration.fitted_at is not None \
+                    and nc.calibration.fitted_at != oc.calibration.fitted_at:
                 self.autocal.reset()  # новая ручная калибровка (модуль могли переставить) — набираем заново
+            self._update_z()
         self._anchor_sync()  # калибровка, установка, оси, склонение
+        if old.level.calibration != settings.level.calibration:
+            self.motion.set_level(settings.level.calibration)  # оси машины для гироскопа и наклона компаса
         if old.gpio != settings.gpio and self._enable_gpio and self._loop is not None:
             self._loop.call_soon_threadsafe(self._schedule_gpio_setup)
 
@@ -538,8 +745,13 @@ class RealSensorHub:
         """CalibrationError (подкласс ValueError) с текстом, если данных мало — сбор продолжается."""
         cal = self.calib.finish()
         info = self.calib.last_info
-        cal = cal.model_copy(update={"source": "manual", "samples": int(info.get("samples", 0)),
-                                     "coverage_pct": float(info.get("coverage_pct", 0.0))})
+        upd: dict[str, Any] = {"source": "manual", "samples": int(info.get("samples", 0)),
+                               "coverage_pct": float(info.get("coverage_pct", 0.0))}
+        if not has_z(cal) and self._last_pos is not None:  # 2D (крутили машину): смещение z — по WMM
+            dz = z_offset(self.calib.points(), cal, _z_over_h(*self._last_pos))
+            if dz is not None:  # ровно 0 значило бы «z неизвестна» (calibration.has_z)
+                upd["offset"] = [cal.offset[0], cal.offset[1], round(cal.offset[2] + dz, 4) or 1e-4]
+        cal = cal.model_copy(update=upd)
         new = self.settings.model_copy(deep=True)
         new.compass.calibration = cal
         self.apply_settings(new)
@@ -555,6 +767,7 @@ class RealSensorHub:
     def auto_calibration_reset(self) -> None:
         self.autocal.reset()
         self._cal_auto = None
+        self._z_off = None
         self._anchor_sync()
 
     # кнопка / LED / пищалка

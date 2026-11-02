@@ -505,6 +505,8 @@ class Heading(_Model):
     gps_course_deg: float | None = None
     declination_deg: float | None = None
     anchor_offset_deg: float | None = None  # текущая поправка компаса по GPS (CompassAnchor), °
+    yaw_rate_dps: float | None = None  # скорость поворота по гироскопу, °/с (> 0 — вправо); None — гироскопа нет
+    tilt_comp: bool = False  # компас с компенсацией наклона (крен/тангаж по акселерометру)
 
 
 class CompassRaw(_Model):
@@ -532,6 +534,7 @@ class SensorSnapshot(_Model):
     compass_cal: AutoCalStatus | None = None
     satellites: list[Satellite] = []
     errors: list[str] = []  # человекочитаемые проблемы ("компас не отвечает" и т.п.)
+    reversing: bool = False  # едем задним ходом (fnav/sensors/heading.py ReverseDetector, api.md «Датчики»)
 
 
 # ───────────────────────────── Камера ─────────────────────────────

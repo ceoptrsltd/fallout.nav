@@ -90,30 +90,60 @@ class FakeBus:
     def close(self) -> None:
         self.closed = True
 
-    def push(self, *samples: tuple[float, float, float]) -> None:
+    def push(self, *samples: tuple[float, float, float],
+             gyro: tuple[float, float, float] | None = (0.0, 0.0, 0.0)) -> None:
+        """Отсчёты в FIFO: с гироскопом — по 12 байт (как у датчика с gyro=True), gyro=None — по 6."""
         for s in samples:
             self.fifo += struct.pack(">hhh", *(round(v * mpu.LSB_PER_G) for v in s))
+            if gyro is not None:
+                self.fifo += struct.pack(">hhh", *(round(v * mpu.LSB_PER_DPS) for v in gyro))
 
 
-def _open(bus: FakeBus, address: int = 0x68) -> mpu.Mpu6050:
-    return mpu.open_mpu6050(1, address, bus_opener=lambda n: bus, sleep=lambda s: None)
+def _open(bus: FakeBus, address: int = 0x68, gyro: bool = True) -> mpu.Mpu6050:
+    return mpu.open_mpu6050(1, address, bus_opener=lambda n: bus, sleep=lambda s: None, gyro=gyro)
 
 
 def test_mpu_init_and_fifo_read():
     bus = FakeBus()
     dev = _open(bus)
-    assert dev.model == "MPU-6050" and dev.who_am_i == 0x68
-    assert bus.writes == [(0x6B, 0x80), (0x6B, 0x00), (0x6C, 0x07), (0x1A, 0x02), (0x19, 4), (0x1C, 0x00),
-                          (0x23, 0x08), (0x6A, 0x04), (0x6A, 0x40)]  # без ACCEL_CONFIG2 у оригинала
+    assert dev.model == "MPU-6050" and dev.who_am_i == 0x68 and dev.has_gyro
+    # PLL от гироскопа, гироскоп включён ±250 °/с, в FIFO — акселерометр и гироскоп; без ACCEL_CONFIG2 у оригинала
+    assert bus.writes == [(0x6B, 0x80), (0x6B, 0x01), (0x6C, 0x00), (0x1A, 0x02), (0x19, 4), (0x1C, 0x00),
+                          (0x1B, 0x00), (0x23, 0x78), (0x6A, 0x04), (0x6A, 0x40)]
     samples = [(0.01 * i, -0.02, 1.0) for i in range(12)]
-    bus.push(*samples)
-    bus.fifo += b"\x01\x02\x03"  # половина следующего отсчёта — остаётся в FIFO
-    got = dev.read()
-    assert len(got) == 12 and got[3] == pytest.approx((0.03, -0.02, 1.0), abs=1e-4)
+    bus.push(*samples, gyro=(1.5, -0.5, 30.0))
+    bus.fifo += b"\x01\x02\x03\x04\x05\x06\x07"  # начало следующего отсчёта — остаётся в FIFO
+    acc, gyr = dev.read_imu()
+    assert len(acc) == 12 and acc[3] == pytest.approx((0.03, -0.02, 1.0), abs=1e-4)
+    assert len(gyr) == 12 and gyr[5] == pytest.approx((1.5, -0.5, 30.0), abs=0.01)
     fifo_reads = [n for reg, n in bus.block_reads if reg == mpu.FIFO_R_W]
-    assert fifo_reads == [30, 30, 12] and all(n <= 32 and n % 6 == 0 for n in fifo_reads)
-    assert len(bus.fifo) == 3
+    assert fifo_reads == [24] * 6 and all(n <= 32 and n % 12 == 0 for n in fifo_reads)
+    assert len(bus.fifo) == 7
+    bus.fifo.clear()
+    bus.push((0.0, 0.0, 1.0))
+    assert dev.read() == [(0.0, 0.0, 1.0)]  # read() — только акселерометр (охрана, уровень)
     assert mpu.parse_fifo(struct.pack(">hhh", -16384, 8192, 16384) + b"\x00") == [(-1.0, 0.5, 1.0)]
+
+
+def test_mpu_accel_only():
+    bus = FakeBus()
+    dev = _open(bus, gyro=False)
+    assert not dev.has_gyro
+    assert bus.writes == [(0x6B, 0x80), (0x6B, 0x00), (0x6C, 0x07), (0x1A, 0x02), (0x19, 4), (0x1C, 0x00),
+                          (0x23, 0x08), (0x6A, 0x04), (0x6A, 0x40)]
+    bus.push(*[(0.0, 0.0, 1.0)] * 5, gyro=None)
+    bus.fifo += b"\x01\x02\x03"
+    assert dev.read_imu() == ([(0.0, 0.0, 1.0)] * 5, [])
+    assert len(bus.fifo) == 3
+
+
+def test_mpu_fifo_misaligned_by_half_a_frame():
+    """FIFO сбился на 6 байт: на месте ускорений — угловые скорости (≈ 0 на стоянке) — пачка отброшена, сброс."""
+    bus = FakeBus()
+    dev = _open(bus)
+    bus.push(*[(0.0, 0.0, 1.0)] * 6, gyro=(0.3, -0.2, 0.1))
+    del bus.fifo[:6]
+    assert dev.read_imu() == ([], []) and len(bus.fifo) == 0
 
 
 def test_mpu_overflow_resets_fifo():

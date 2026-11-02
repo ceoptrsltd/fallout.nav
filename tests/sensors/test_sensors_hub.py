@@ -45,7 +45,9 @@ def test_protocol() -> None:
 async def test_gps_heading_when_fast() -> None:
     srv = FakeGpsd(lines=[tpv(12.0, 359.0)], nmea_lines=["$GNRMC,a*00"])
     await srv.start()
-    hub = RealSensorHub(Settings(), gpsd_port=srv.port, enable_compass=False, enable_gpio=False)
+    st = Settings()
+    st.gps.moving_confirm_s = 0.0  # TPV один: курс берётся, только пока он свежий (≤ 0,5 с), без секунды «едем?»
+    hub = RealSensorHub(st, gpsd_port=srv.port, enable_compass=False, enable_gpio=False)
     await hub.start()
     try:
         assert await wait_until(lambda: hub.snapshot().gps.fix == "3d" and hub.snapshot().heading.deg is not None)

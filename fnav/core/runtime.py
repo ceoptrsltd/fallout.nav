@@ -224,6 +224,8 @@ class Core:
             "alarm": self._keypad_alarm,
         }, get_bindings=lambda: self.store.get().keypad)
         self.hub: SensorHub = self._make_hub(s)
+        if (attach_imu := getattr(self.hub, "attach_imu", None)) is not None:
+            attach_imu(self.imu)  # гироскоп MPU-6050 — в курс, акселерометр — наклон компаса и задний ход
         self.display_state = self.nav.update(time.monotonic(), self.hub.snapshot().gps)
         self._tasks: list[asyncio.Task] = []
         self._led: LedMode | None = None

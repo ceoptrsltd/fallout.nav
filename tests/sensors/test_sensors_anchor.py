@@ -74,17 +74,25 @@ def settings(cal: CompassCalibration | None = None) -> Settings:
     return st
 
 
+class Clock:
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
 def make_hub(st: Settings) -> RealSensorHub:
-    return RealSensorHub(st, gpsd_port=1, enable_compass=False, enable_gpio=False)
+    return RealSensorHub(st, gpsd_port=1, enable_compass=False, enable_gpio=False, clock=Clock())
 
 
 def drive(hub: RealSensorHub, psi: float, speed: float, seconds: float, step: float = 0.05):
-    """Курс psi, GPS-курс = psi, скорость speed (0 — стоим); шаги слияния по step без настоящего ожидания."""
+    """Курс psi, GPS-курс = psi, скорость speed (0 — стоим); шаги слияния по step на своих часах хаба."""
     hub._still.moving = speed > 1.0  # без секунды подтверждения «едем»
     for _ in range(round(seconds / step)):
+        hub._clock.t += step
         hub.gps.handle({"class": "TPV", "mode": 3, "lat": 52.2, "lon": 21.0, "speed": speed, "track": psi})
         hub._on_mag(raw(psi), "ist8310")
-        hub._last_fuse -= step
         hub._fuse_once()
     return hub.snapshot().heading
 

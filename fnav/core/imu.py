@@ -1,8 +1,10 @@
-"""Один поток чтения MPU-6050 на всех потребителей: охрана (fnav/core/alarm.py) и уровень (fnav/core/level.py).
+"""Один поток чтения MPU-6050 на всех потребителей: охрана (fnav/core/alarm.py), уровень (fnav/core/level.py) и курс
+(гироскоп — fnav/sensors/hub.py attach_imu).
 
 Датчик открывается один раз (шина и адрес — settings.alarm.sensor_bus / sensor_address). Потребители подписываются
-subscribe(cb): cb(samples, dt) вызывается в потоке чтения ~10 раз в секунду с пачкой отсчётов (g, оси датчика) —
-считать там же и быстро, в event loop отдавать только готовое.
+subscribe(cb): cb(samples, dt) вызывается в потоке чтения ~20 раз в секунду с пачкой отсчётов (g, оси датчика) —
+считать там же и быстро, в event loop отдавать только готовое. subscribe_motion(cb): cb(samples, gyro, dt) — те же
+отсчёты и угловые скорости (°/с, оси датчика) той же пачки; только у датчика с гироскопом.
 """
 
 from __future__ import annotations
@@ -17,8 +19,10 @@ from fnav.sensors.mpu6050 import RATE_HZ, AccelReader, AccelSource, FakeAccel, V
 log = logging.getLogger("fnav.core.imu")
 
 Consumer = Callable[[list[Vec], float], None]
+MotionConsumer = Callable[[list[Vec], list[Vec], float], None]
 SourceOpener = Callable[[int, int], AccelSource]
 BUS_FALLBACK = (3, 1)  # где ещё искать датчик: своя шина (pins 7/29) и шина компаса (pins 3/5)
+READ_PERIOD_S = 0.05  # FIFO с гироскопом (12 байт на отсчёт) вмещает ~0,4 с — читаем почаще, с запасом на задержки
 
 
 class ImuService:
@@ -40,9 +44,11 @@ class ImuService:
         self.bus: int | None = None  # шина, на которой датчик нашёлся
         self.rate_hz = RATE_HZ
         self.ok = False
+        self.gyro = False  # у датчика есть гироскоп (отсчёты идут и в subscribe_motion)
         self.model: str | None = None
         self.error: str | None = None
         self._consumers: list[Consumer] = []
+        self._motion: list[MotionConsumer] = []
         self._reader: AccelReader | None = None
 
     def _open_fake(self, _bus: int, address: int) -> AccelSource:
@@ -57,10 +63,14 @@ class ImuService:
     def subscribe(self, cb: Consumer) -> None:
         self._consumers.append(cb)
 
+    def subscribe_motion(self, cb: MotionConsumer) -> None:
+        self._motion.append(cb)
+
     def start(self) -> None:
         if self._reader is not None:
             return
-        self._reader = AccelReader(self._open_any, self.feed, self._on_state, retry_s=self.retry_s)
+        self._reader = AccelReader(self._open_any, self.feed, self._on_state, period_s=READ_PERIOD_S,
+                                   retry_s=self.retry_s, on_gyro=self.feed_gyro)
         self._reader.start()
 
     def _open_any(self) -> AccelSource:
@@ -102,8 +112,9 @@ class ImuService:
         if src is not None:
             self.ok, self.model, self.address, self.error = True, src.model, src.address, None
             self.rate_hz = src.rate_hz
+            self.gyro = bool(getattr(src, "has_gyro", False))
         else:
-            self.ok, self.error = False, error
+            self.ok, self.gyro, self.error = False, False, error
         if (self.ok, self.error) != was:
             if self.ok:
                 log.info("imu: %s at 0x%02X", self.model, self.address)
@@ -118,3 +129,12 @@ class ImuService:
                 cb(samples, dt)
             except Exception:
                 log.exception("imu consumer")
+
+    def feed_gyro(self, samples: list[Vec], gyro: list[Vec]) -> None:
+        """Та же пачка с угловыми скоростями (°/с) → потребителям движения (поток чтения; тесты зовут напрямую)."""
+        dt = 1.0 / self.rate_hz
+        for cb in self._motion:
+            try:
+                cb(samples, gyro, dt)
+            except Exception:
+                log.exception("imu motion consumer")

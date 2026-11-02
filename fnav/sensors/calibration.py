@@ -7,6 +7,11 @@
   ось Z не трогаем (offset_z = 0, масштаб 1) — для курса она не нужна.
 
 Качество 0..1 = (1 − разброс радиусов после коррекции / 15 %) × покрытие направлений (норма — 80 %).
+
+Смещение по Z (для компенсации наклона компаса, heading.tilt_mag_heading_deg) при 2D-подгонке неизвестно. Его оценка —
+по точкам на ровной дороге: в осях FRD вертикальная составляющая поля = горизонтальная · Z/H по модели WMM, значит
+смещение_z = медиана(z − |горизонт| · Z/H) (z_offset). Ручная 2D-калибровка сохраняет его в offset[2]; для
+автокалибровки (её offset[2] = 0) хаб считает его по накопленным точкам на лету.
 """
 
 from __future__ import annotations
@@ -38,6 +43,26 @@ def apply_calibration(v: tuple[float, float, float] | np.ndarray, cal: CompassCa
         m[1][0] * x + m[1][1] * y + m[1][2] * z,
         m[2][0] * x + m[2][1] * y + m[2][2] * z,
     )
+
+
+def has_z(cal: CompassCalibration) -> bool:
+    """Калибровка знает ось Z: 3D-подгонка (матрица затрагивает z) или оценённое смещение z (offset[2] ≠ 0)."""
+    m = cal.matrix
+    return cal.offset[2] != 0.0 or m[2][0] != 0.0 or m[2][1] != 0.0 or m[2][2] != 1.0 or m[0][2] != 0.0 \
+        or m[1][2] != 0.0
+
+
+Z_MIN_POINTS = 40
+
+
+def z_offset(xyz: np.ndarray, cal: CompassCalibration, z_over_h: float) -> float | None:
+    """Добавочное смещение по z (вычесть из z после калибровки) по точкам с ровной дороги / ровного места: в осях
+    FRD z = |горизонт| · Z/H (WMM, Z — вниз). Медиана — устойчиво к уклонам в обе стороны. Точек мало — None."""
+    p = np.asarray(xyz, dtype=float).reshape(-1, 3)
+    if len(p) < Z_MIN_POINTS or not math.isfinite(z_over_h):
+        return None
+    c = (p - np.asarray(cal.offset, dtype=float)) @ np.asarray(cal.matrix, dtype=float).T
+    return float(np.median(c[:, 2] - np.hypot(c[:, 0], c[:, 1]) * z_over_h))
 
 
 def _sqrtm_spd(m: np.ndarray) -> np.ndarray:

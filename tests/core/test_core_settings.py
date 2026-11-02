@@ -207,6 +207,23 @@ async def test_vehicle_settings(data_dir):
         assert (await c.get("/api/settings")).json()["vehicle"]["length_m"] == 5.4
 
 
+async def test_compass_reset_clears_the_whole_calibration(data_dir):
+    """B8: «Reset calibration» в админке (web/admin/js/pages/compass.js resetCal) — reset-auto и PATCH всей калибровки
+    по умолчанию: PATCH сливает объекты, и прежние offset/matrix без deviation/source/rms оставляли старую девиацию."""
+    auto = {"offset": [5.0, -2.0, 0.0], "matrix": [[1.1, 0.0, 0.0], [0.0, 0.9, 0.0], [0.0, 0.0, 1.0]],
+            "fitted_at": "2026-11-01T10:00:00+00:00", "quality": 0.9, "deviation": [3.0, 1.0, -1.0, 0.5, 0.2],
+            "source": "auto", "samples": 800, "coverage_pct": 80.0, "rms_deg": 1.4}
+    async with running_app() as c:
+        await login(c)
+        assert (await c.patch("/api/settings", json={"compass": {"calibration": auto}})).status_code == 200
+        assert (await c.post("/api/compass/calibration/reset-auto")).status_code == 200
+        defaults = (await c.get("/api/settings/defaults")).json()["compass"]["calibration"]
+        r = await c.patch("/api/settings", json={"compass": {"calibration": defaults}})
+        assert r.status_code == 200
+        assert r.json()["compass"]["calibration"] == Settings().compass.calibration.model_dump()
+        await _drain()
+
+
 async def _drain():
     import asyncio
 

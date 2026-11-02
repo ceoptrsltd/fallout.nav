@@ -1,11 +1,9 @@
 // Compass: live X/Y/Z and heading, calibration wizard, mounting offset, declination.
-import { h, clear, isNum, compassWord, clone } from "../dom.js";
+import { h, clear, isNum, compassWord } from "../dom.js";
 import { api, errText } from "../api.js";
 import { SettingsForm, section } from "../form.js";
 import { store, on, applySettings } from "../store.js";
 import { toast, confirmDialog, poll, banner, segmented, switchEl } from "../ui.js";
-
-const IDENTITY = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 
 /** Per-sector point counts (36 x 10 deg, index 0 = north). Falls back to an even spread by coverage %. */
 function sectorCounts(cal) {
@@ -87,7 +85,8 @@ export async function mount(root) {
   const kvr = (k, label) => { const v = h("span.v", null, "—"); hv[k] = v; return [h("span.k", null, label), v]; };
   const headCard = h(".card", null, h("h2", null, "Heading"),
     h(".bigrow", null, hd, rose), h("hr.sep"),
-    h(".kv", null, kvr("src", "Source"), kvr("mag", "Compass"), kvr("gps", "GPS (COG)"), kvr("decl", "Declination")));
+    h(".kv", null, kvr("src", "Source"), kvr("mag", "Compass"), kvr("gps", "GPS (COG)"), kvr("decl", "Declination"),
+      kvr("gyro", "Gyro (turn rate)"), kvr("tilt", "Tilt compensation")));
 
   const bars = {};
   const axisRow = (k) => {
@@ -134,6 +133,9 @@ export async function mount(root) {
     setV("mag", isNum(hh.mag_deg) ? hh.mag_deg.toFixed(1) + "°" : "—");
     setV("gps", isNum(hh.gps_course_deg) ? hh.gps_course_deg.toFixed(1) + "°" : "—");
     setV("decl", isNum(hh.declination_deg) ? hh.declination_deg.toFixed(1) + "°" : "—");
+    setV("gyro", isNum(hh.yaw_rate_dps) ? `${hh.yaw_rate_dps.toFixed(1)}°/s` : "off");
+    setV("tilt", hh.tilt_comp ? "on" : "off");
+    hv.tilt.title = "Needs the level calibration with a reference level, and the compass Z offset (learned from auto-calibration samples, or from a manual calibration)";
     const c = t.compass;
     for (const k of ["x", "y", "z"]) {
       const b = bars[k];
@@ -251,11 +253,15 @@ export async function mount(root) {
     wstate = "idle"; renderWiz();
   }
   async function resetCal() {
-    if (!(await confirmDialog({ title: "Reset calibration?", text: "Offset and matrix go back to identity values. The compass will be inaccurate until you calibrate again.", okText: "Reset", danger: true }))) return;
+    if (!(await confirmDialog({ title: "Reset calibration?", text: "The whole saved calibration goes back to defaults: offset, matrix, deviation and its quality figures. The samples that auto-calibration has learned while driving are cleared too. The compass will be inaccurate until you calibrate again or drive enough in different directions.", okText: "Reset", danger: true }))) return;
     try {
-      const res = await api.patch("/api/settings", { compass: { calibration: { offset: [0, 0, 0], matrix: clone(IDENTITY), fitted_at: null, quality: null } } });
+      // Learned samples first, so auto-calibration cannot refit the old result from them right after the reset.
+      await api.post("/api/compass/calibration/reset-auto");
+      // The settings PATCH merges objects: send every calibration field (the defaults), not only offset and matrix.
+      const defaults = await api.get("/api/settings/defaults");
+      const res = await api.patch("/api/settings", { compass: { calibration: defaults.compass.calibration } });
       if (res && res.compass) applySettings(res);
-      toast("ok", "Calibration reset");
+      toast("ok", "Calibration and learned samples reset");
       renderWiz();
     } catch (e) { toast("error", errText(e)); }
   }

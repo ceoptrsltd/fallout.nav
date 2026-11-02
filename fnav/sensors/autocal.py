@@ -3,9 +3,10 @@
 Точки: (GPS-курс, сырое поле компаса в осях FRD, склонение), только при «чистых» условиях:
 fix 3d, скорость ≥ auto_min_speed_mps, hdop ≤ auto_max_hdop, почти прямолинейное движение
 (наклон регрессии GPS-курса за ~3 с ≤ auto_max_turn_rate_dps), свежие замеры компаса, синхронизированные
-с GPS-курсом с учётом задержки GPS, без выбросов |B| и без тряски. Не чаще 1 точки/с, не больше SECTOR_CAP
-точек на 10°-сектор GPS-курса (FIFO — старые точки вытесняются новыми: калибровка адаптируется к переносу
-модуля).
+с GPS-курсом с учётом задержки GPS, без выбросов |B| и без тряски; если известны — точность скорости (eps: ошибка
+курса ≈ eps/v ≤ ~4°) и наклон машины (≤ 3°: на уклоне горизонтальное поле искажено). Не чаще 1 точки/с,
+не больше SECTOR_CAP точек на 10°-сектор GPS-курса (FIFO — старые точки вытесняются новыми: калибровка
+адаптируется к переносу модуля).
 
 Подгонка:
   1) hard/soft iron — эллипс по сырым (x, y) (calibration.fit_calibration(force="2d"));
@@ -28,6 +29,7 @@ import numpy as np
 
 from fnav.models import AutoCalStatus, CompassCalibration, CompassSettings, GpsFix
 from fnav.sensors.calibration import CalibrationError, fit_calibration
+from fnav.sensors.calibration import z_offset as _z_offset
 
 SECTORS = 36
 SECTOR_CAP = 30  # точек на сектор (FIFO)
@@ -43,6 +45,8 @@ B_TOL = 0.10  # |B| в пределах ±10 % от медианы точек т
 MAX_AXIS_STD_UT = 3.0  # тряска/помехи в окне синхронизации
 MAX_APPLY_RMS_DEG = 8.0
 APPLY_MARGIN_DEG = 0.2
+MAX_COURSE_ERR = math.tan(math.radians(4.0))  # eps / скорость: ошибка GPS-курса не больше ~4°
+MAX_TILT_DEG = 3.0  # наклон машины (крен/тангаж по акселерометру), выше — точку не берём
 STATE_VERSION = 1
 
 
@@ -166,8 +170,9 @@ class AutoCalibrator:
         self.last_reject = why
         return why
 
-    def on_gps(self, t: float, fix: GpsFix, decl: float | None) -> str | None:
+    def on_gps(self, t: float, fix: GpsFix, decl: float | None, tilt_deg: float | None = None) -> str | None:
         """Обработать TPV (t — monotonic момента приёма). None = точка принята, иначе причина отказа.
+        tilt_deg — наклон машины по акселерометру (None — неизвестен).
 
         Точка берётся из СЕРЕДИНЫ окна ~3 с, и только если всё окно — прямая (до и после точки):
         так начало поворота, замеченное с запаздыванием, в выборку не попадает. Курс точки — значение
@@ -179,6 +184,13 @@ class AutoCalibrator:
         if fix.fix == "none" or course is None or speed < 1.5:
             h.clear()
             return self._reject("stopped / no fix")
+        eps = getattr(fix, "eps_mps", None)  # точность скорости (gpsd eps / u-blox sAcc), есть не у всех версий
+        if isinstance(eps, (int, float)) and eps > MAX_COURSE_ERR * speed:
+            h.clear()
+            return self._reject("poor speed accuracy")
+        if tilt_deg is not None and tilt_deg > MAX_TILT_DEG:
+            h.clear()
+            return self._reject("slope")
         if h and t - h[-1][0] > 1.5:  # разрыв в данных
             h.clear()
         h.append((t, float(course), float(speed), fix.hdop, fix.fix == "3d"))
@@ -299,6 +311,11 @@ class AutoCalibrator:
             else:
                 self.message = f"Large residual ({rms:.1f} deg): check compass mounting / magnetic interference"
         return cal
+
+    def z_offset(self, cal: CompassCalibration, z_over_h: float) -> float | None:
+        """Добавочное смещение по z для калибровки cal по накопленным точкам (calibration.z_offset); мало — None."""
+        P = self.points()
+        return _z_offset(P[:, 2:5], cal, z_over_h) if len(P) else None
 
     def rms_of(self, cal: CompassCalibration, mount_offset_deg: float) -> float:
         P = self.points()
