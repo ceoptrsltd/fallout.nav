@@ -107,6 +107,13 @@
 ## Датчики
 
 - `GET /api/gps/satellites` → `[Satellite]`. `POST /api/gps/configure` → результат `hub.gps_configure()`.
+- **Привязка компаса к GPS** (`settings.heading.anchor_to_gps`, `Heading.anchor_offset_deg`): на ходу хаб запоминает
+  поправку «GPS-курс − компас», на стоянке курс = компас + поправка. Поправка верна только для той модели компаса, под
+  которой выучена (действующая калибровка — offset/matrix/deviation, `mount_offset_deg`, `chip`/`axes`, склонение):
+  при любой их смене (ручная калибровка, сброс, новая автоподгонка, правка настроек, другие оси от `chip=auto`) она
+  сбрасывается вместе с копией в `sensors_state.json` и на ходу выучивается заново. В файле поправка хранится с
+  отпечатком модели (`anchor_model`); после перезапуска с другой действующей калибровкой (например, поправка выучена
+  под несохранённой автоподгонкой) или без отпечатка (старый файл) она не применяется.
 - `POST /api/compass/calibration/start|finish|cancel`, `GET /api/compass/calibration` → `CalibrationStatus`.
   `finish` сохраняет результат в `settings.compass.calibration` и возвращает его.
 - **Автокалибровка по GPS-курсу** (на ходу, `settings.compass.auto_calibrate`): хаб сам собирает точки и вызывает `on_calibration_update(cal)`; fnav-core сохраняет `cal` в `settings.compass.calibration`. Состояние — `Telemetry.compass_cal` (`AutoCalStatus`).

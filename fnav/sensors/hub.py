@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -86,7 +87,10 @@ class RealSensorHub:
         self._smoother = hd.HeadingSmoother(settings.heading.smoothing_s)
         self._still = StillnessFilter()
         self._anchor = hd.CompassAnchor()
+        self._anchor_model: str | None = None  # отпечаток модели компаса, под которой выучена поправка
         self._anchor_learning = False
+        self._model_key: tuple | None = None
+        self._model_sig = ""
 
         # автокалибровка по GPS-курсу
         self.autocal = AutoCalibrator(settings.compass)
@@ -97,6 +101,7 @@ class RealSensorHub:
         self._state_saved_at = time.monotonic()
         self._last_pos: tuple[float, float] | None = None
         self._load_state()
+        self._anchor_sync()  # поправка из файла выучена под другой калибровкой — не применять
 
         # GPIO
         self._enable_gpio = enable_gpio
@@ -199,9 +204,12 @@ class RealSensorHub:
         with contextlib.suppress(Exception):
             self._last_pos = (float(d["lat"]), float(d["lon"]))
         with contextlib.suppress(Exception):
-            off = d.get("anchor_offset_deg")
-            if off is not None:  # машина, выключенная на стоянке, не поворачивается — поправка остаётся верной
+            off, model = d.get("anchor_offset_deg"), d.get("anchor_model")
+            # машина, выключенная на стоянке, не поворачивается — поправка остаётся верной, но только для той
+            # модели компаса, под которой выучена (без отпечатка — неизвестно какой: не берём)
+            if off is not None and isinstance(model, str) and model:
                 self._anchor.learn(0.0, float(off), 0.0)
+                self._anchor_model = model
         ac = d.get("autocal")
         if isinstance(ac, dict):
             n = self.autocal.load_state(ac)
@@ -214,8 +222,9 @@ class RealSensorHub:
         d: dict[str, Any] = {}
         if self._last_pos is not None:
             d["lat"], d["lon"] = self._last_pos
-        if self._anchor.offset_deg is not None:
+        if self._anchor.offset_deg is not None and self._anchor_model:
             d["anchor_offset_deg"] = round(self._anchor.offset_deg, 2)
+            d["anchor_model"] = self._anchor_model
         ac = self.autocal.to_state()
         ac["axes"] = self._autocal_axes
         d["autocal"] = ac
@@ -230,6 +239,45 @@ class RealSensorHub:
             tmp.write_text(data, encoding="utf-8")
             os.replace(tmp, p)
         self._state_saved_at = time.monotonic()
+
+    # ───────────── привязка компаса к GPS-курсу ─────────────
+    def _compass_model(self) -> str:
+        """Отпечаток пересчёта «сырой вектор → истинный курс»: действующая калибровка (offset, matrix,
+        deviation), поправка установки, чип и оси, склонение. Поправка CompassAnchor (GPS-курс − компас)
+        верна только для того же отпечатка."""
+        c = self.settings.compass
+        cal = self.effective_calibration()
+        key = (tuple(cal.offset), tuple(tuple(r) for r in cal.matrix), tuple(cal.deviation), c.mount_offset_deg,
+               c.chip, c.axes, c.declination)
+        if key != self._model_key:
+            self._model_key = key
+            norm = [[round(float(v), 6) for v in cal.offset], [[round(float(v), 6) for v in r] for r in cal.matrix],
+                    [round(float(v), 6) for v in cal.deviation], round(float(c.mount_offset_deg), 6), c.chip, c.axes,
+                    c.declination if isinstance(c.declination, str) else round(float(c.declination), 6)]
+            self._model_sig = hashlib.sha1(json.dumps(norm).encode()).hexdigest()[:12]
+        return self._model_sig
+
+    def _anchor_reset(self) -> None:
+        """Сбросить поправку и её копию в sensors_state.json."""
+        if self._anchor.offset_deg is None:
+            return
+        self._anchor.reset()
+        if self._loop is not None:
+            self._loop.run_in_executor(None, self._save_state)
+        else:  # ещё до start() (конструктор, тесты) — вне event loop
+            self._save_state()
+
+    def _anchor_sync(self) -> None:
+        """Сменилась калибровка (ручная, сброс, новая автоподгонка), установка, оси или склонение — поправка,
+        выученная под прежней, даёт ошибку в десятки градусов: сброс, на ходу выучится заново."""
+        model = self._compass_model()
+        if model == self._anchor_model:
+            return
+        if self._anchor.offset_deg is not None:
+            log.info("compass calibration/mounting changed: GPS anchor offset %+.1f deg dropped",
+                     self._anchor.offset_deg)
+            self._anchor_reset()
+        self._anchor_model = model
 
     # ───────────── склонение ─────────────
     def _declination(self, fix: GpsFix) -> float | None:
@@ -283,6 +331,7 @@ class RealSensorHub:
         gps_course = fix.course_deg if fix.fix != "none" else None
         speed = fix.speed_mps if fix.fix != "none" else None
         fused_mag = mag_deg
+        self._anchor_sync()  # поправка — только под той моделью компаса, под которой выучена
         if s.heading.anchor_to_gps and mag_deg is not None:
             self._anchor.tau_s = s.heading.anchor_tau_s
             # учимся только когда курс полностью по GPS (скорость выше зоны перехода) — там он надёжен
@@ -383,6 +432,8 @@ class RealSensorHub:
             self.autocal.reset()
             self._cal_auto = None
             self._autocal_axes = spec
+            self._anchor_reset()  # оси чипа (chip=auto нашёл другой) в отпечаток не входят — сброс явно
+            self._anchor_sync()
 
     async def _autocal_loop(self) -> None:
         while True:
@@ -410,6 +461,7 @@ class RealSensorHub:
                 self._cal_auto = apply
                 log.info("compass auto-calibration applied: rms %.2f deg, coverage %.0f%%, %d points",
                          apply.rms_deg or 0.0, apply.coverage_pct, apply.samples)
+                self._anchor_sync()
             if save is not None:
                 for cb in list(self._cal_cbs):
                     try:
@@ -443,6 +495,7 @@ class RealSensorHub:
                 self._cal_auto = None  # задана другая калибровка — она главная до следующей подгонки
             if nc.calibration.source == "manual" and nc.calibration.fitted_at != oc.calibration.fitted_at:
                 self.autocal.reset()  # новая ручная калибровка (модуль могли переставить) — набираем заново
+        self._anchor_sync()  # калибровка, установка, оси, склонение
         if old.gpio != settings.gpio and self._enable_gpio and self._loop is not None:
             self._loop.call_soon_threadsafe(self._schedule_gpio_setup)
 
@@ -502,6 +555,7 @@ class RealSensorHub:
     def auto_calibration_reset(self) -> None:
         self.autocal.reset()
         self._cal_auto = None
+        self._anchor_sync()
 
     # кнопка / LED / пищалка
     def on_button(self, callback: Callable[[ButtonEvent], None]) -> None:
