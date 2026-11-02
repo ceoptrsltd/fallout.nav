@@ -177,6 +177,33 @@ async def test_system_endpoints_mock(data_dir):
         r = await c.post("/api/system/wifi", json={"ssid": "Home", "password": "123", "priority": 5})
         assert r.status_code == 400
         assert (await c.delete("/api/system/wifi/Home")).json()["ok"] is True
+        # SSID с «/»: в пути %2F раскодируется до маршрутизации (404), поэтому — параметром запроса
+        assert (await c.delete("/api/system/wifi/Cafe%2FBar")).status_code == 404
+        assert (await c.delete("/api/system/wifi", params={"ssid": "Cafe/Bar"})).json()["ok"] is True
+        # все службы fallout.nav видны на странице System, их журналы открываются
+        for unit in ("fnav-camera-rear", "fnav-watch", "fnav-radio", "fnav-tunnel"):
+            assert unit in st["services"], unit
+            assert (await c.get(f"/api/system/logs?unit={unit}&lines=5")).status_code == 200
+
+
+async def test_wifi_delete_ssid_with_slash(monkeypatch):
+    from fnav.core import system as sysmod
+
+    calls = []
+
+    async def fake_run(*args, timeout=5.0):
+        calls.append(args)
+        if args[:3] == ("nmcli", "-t", "-f"):
+            return 0, "Cafe/Bar:uuid-1:802-11-wireless:no\nHome:uuid-2:802-11-wireless:yes\n", ""
+        if args[:4] == ("nmcli", "-t", "-g", "802-11-wireless.ssid"):
+            return 0, {"uuid-1": "Cafe/Bar\n", "uuid-2": "Home\n"}[args[-1]], ""
+        return 0, "", ""
+
+    monkeypatch.setattr(sysmod, "IS_LINUX", True)
+    monkeypatch.setattr(sysmod, "run", fake_run)
+    svc = sysmod.SystemService(mock=False)
+    assert await svc.wifi_delete("Cafe/Bar") == {"ok": True}
+    assert ("nmcli", "connection", "delete", "uuid", "uuid-1") in calls
 
 
 def test_nmcli_split():

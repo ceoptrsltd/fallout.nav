@@ -8,15 +8,58 @@
   Защита от перебора: после 5 неудачных попыток с IP — пауза 30 с.
 - `POST /api/logout` → удаляет cookie. `GET /api/session` → `{"authenticated": bool, "local", "remote", "mock"}`;
   со входом ещё `"timezone": "Europe/Warsaw"|null` — пояс устройства (см. «Часовой пояс»; без входа не отдаётся:
-  пояс ≈ страна, где машина).
+  пояс ≈ страна, где машина) и `"guest": bool`; у гостя (см. «Гостевой доступ») `authenticated: true`, `guest: true`
+  и `"guest_expires"` (unix) — до когда действует его ссылка.
 - Пароль хранится как хэш `hashlib.scrypt` в `secrets.env` (`FNAV_PASSWORD_HASH=scrypt$<n>$<r>$<p>$<salt_b64>$<hash_b64>`), секрет подписи сессий — `FNAV_SESSION_SECRET`.
-- **Без авторизации доступно:** `/api/login`, `/api/session`, `/admin/login.html` и статика логина;
+- Мусор в cookie (в том числе не-ASCII подпись) — просто неверная сессия (`401`), не `500`.
+- **Без авторизации доступно:** `/api/login`, `/api/session`, `/api/guest/login`, `/admin/login.html` и статика логина;
   а с адреса `127.0.0.1` (киоск Chromium на самом устройстве) — также `/display/**`, `/ws`, `/tiles/**`, `/api/camera/mjpeg`, `/api/camera/rear/mjpeg`, `/api/settings` (GET).
 - Всё остальное без сессии → `401` (API) или редирект на `/admin/login.html` (страницы).
 - Установленное приложение (PWA, `display-mode: standalone` / iOS Home Screen) при первом запуске на устройстве
   спрашивает пароль, даже если браузер уже вошёл (на Android приложение делит cookie с Chrome): метка
   `fnav.appLogin` в localStorage ставится только входом из самого приложения и снимается кнопкой Log out
   (`web/admin/js/app-login.js`). Это клиентская ступенька; защита — по-прежнему сессия на сервере.
+
+## Гостевой доступ (только просмотр)
+
+Владелец даёт ссылку, по которой другой человек видит **всю админку, как владелец, но ничего не может изменить**.
+Код: `fnav/core/guests.py` (ссылки), `fnav/core/auth.py` (роль сессии и запрет), `fnav/core/ws.py` (команды WS).
+
+- Ссылка: `<адрес админки>admin/login.html#guest=<токен>` — на устройстве `http://<ip>/admin/…`, через сервер
+  `https://<сервер>/fnadmin/admin/…` (токен один и тот же). Токен — во фрагменте (`#`): в адресе запроса и журналах
+  nginx его нет. Страница входа сразу убирает его из адресной строки (`history.replaceState`) и меняет на cookie:
+  `POST /api/guest/login` `{"token": "..."}` → `200 {"ok":true,"guest":true,"expires":…}` + cookie `fnav_session`
+  (гостевая, `Max-Age` — до конца срока ссылки); неверный, отозванный или истёкший токен → `401`. Анти-перебор —
+  тот же счётчик, что у входа паролем (5 ошибок с IP → `429` на 30 с; удачная гостевая попытка счётчик не сбрасывает),
+  через сервер ещё `limit_req` nginx. Пока устройство не в сети, ссылку не обменять (`503 Device is offline`).
+- Гостевая cookie: `g1.<exp>.<id ссылки>.<sig>`, подпись — тем же ключом, что у сессий владельца
+  (HMAC(секрет сессий, хэш пароля)): смена пароля сбрасывает и гостевые cookie (ссылку можно открыть снова).
+  Действует, пока не вышел её срок **и** ссылка есть в списке (отзыв = удаление — сразу).
+- Ссылки — `{data_dir}/guest_links.json` (атомарная запись, 0600): `id`, `label`, `created`, `expires`, `last_used`
+  и **только SHA-256 токена**; сам токен показывается владельцу один раз, в ответе на создание. Истёкшие удаляются
+  при следующей записи; `last_used` пишется на диск не чаще раза в 5 мин. Ссылок не больше 50.
+- Только владелец (гостю `403`):
+  - `GET /api/guest/links` → `{"links":[{"id","label","created","expires","last_used"}],"remote_origin":…,"now":…}`
+    (действующие, новые первыми; `now` — часы устройства, `remote_origin` — `https://<сервер>` удалённой админки,
+    если её открывали: тогда и с Wi-Fi машины показывается ссылка «через сервер»);
+  - `POST /api/guest/links` `{"label"?: str ≤ 64, "expires_in_s": 600…31536000}` → то же + `"link"`, `"token"`,
+    `"path": "admin/login.html#guest=<токен>"`; админка: 1 день / 7 дней / своя дата (страница System);
+  - `DELETE /api/guest/links/{id}` → отозвать (`404` — нет такой).
+- **Запрет — на сервере, по методу, а не по списку маршрутов** (`AuthMiddleware`): гостю можно `GET`/`HEAD`/`OPTIONS`
+  и явный короткий список (`auth.guest_allowed`): живое видео WebRTC — `POST /api/camera[/rear]/whep` (предложение
+  SDP), `PATCH`/`DELETE /api/camera[/rear]/whep/…` (ICE, закрыть свою сессию), и `POST /api/logout` (удаляет cookie
+  только у самого гостя). Всё остальное — `403 {"detail":"Read-only guest access"}`, в том числе маршруты, которых
+  ещё нет: новый `POST` закрыт для гостя сам (тест обходит все маршруты приложения). Гость не создаёт ссылки, не
+  меняет пароль, не подписывается на push (это fnav-relay, remote.md), не выходит «за владельца».
+- WebSocket: гость подключается, получает то же, но настройки — без секретов; из команд — только чтение (`subscribe`,
+  `unsubscribe`, `ping`), на любую другую — `{"type":"error","status":403,"detail":"Read-only guest access",
+  "command":"…"}` (новые команды для гостя закрыты, пока их не добавят в `ws.READ_COMMANDS`).
+- Секреты гостю не отдаются (`guests.redact_settings`): в `GET /api/settings` и сообщении WS `settings` пустой
+  `tiles.esri_api_key` и без `логин:пароль@` в `rear_camera.url`/`lores_url`. Остальное и так без секретов: пароли
+  Wi-Fi, пароль задней камеры (`password_set`), хэш пароля, секрет сессий, токен устройства на сервере, endpoint'ы
+  push-подписок наружу не отдаются никому.
+- Админка (`web/admin/js/guest.js`): бейдж и баннер «Guest — read only», кнопки действий (`.btn.primary`,
+  `.btn.danger`, отправка форм, поля паролей) выключены, полоса «Save» скрыта. Это только вид — решает сервер.
 
 ## Статика
 
@@ -41,6 +84,7 @@
 Клиент → сервер:
 - `{"type":"subscribe","topics":["nmea"]}` / `{"type":"unsubscribe","topics":["nmea"]}`.
 - `{"type":"ping"}` → `{"type":"pong"}` (в общей очереди с телеметрией).
+- Гостю (только просмотр) — только эти; на остальные — `{"type":"error","status":403,…}` (см. «Гостевой доступ»).
 
 Живость связи в админке (`web/admin/js/store.js`, правила — `conn-fmt.js`): пинг раз в 5 с; открытый сокет, от
 которого 4 с не пришло ни одного сообщения (телеметрия идёт 10 Гц, через туннель 2 Гц), закрывается и открывается
@@ -56,10 +100,17 @@ push test, журнал и т.п.) и понятной ошибкой «No answe
 
 ## Настройки
 
-- `GET /api/settings` → `Settings`. `GET /api/settings/defaults` → `Settings()` по умолчанию.
+- `GET /api/settings` → `Settings` (гостю — без секретов, см. «Гостевой доступ»). `GET /api/settings/defaults` →
+  `Settings()` по умолчанию.
 - `PATCH /api/settings` — частичное глубокое слияние `{"display":{"orientation":"north_up"}}` → валидированный полный `Settings`; `422` с описанием при ошибке.
 - `PUT /api/settings` — полная замена. `POST /api/settings/reset` — сброс к умолчаниям.
 - После сохранения: атомарная запись `settings.json`, рассылка по WS, `hub.apply_settings()`, `POST 127.0.0.1:8081/reload` (ошибку недоступности камеры игнорировать).
+- Последняя удачная копия — `settings.json.lkg` (после каждой удачной загрузки, если отличается, и каждого
+  сохранения). Битый `settings.json` (не JSON, не проходит проверку, не читается) → настройки из копии (битые секции —
+  из копии, без неё — умолчания), исходник — в `settings.json.bad-<ГГГГММДД-ЧЧММСС>` (хранятся 3 новейших, одинаковые
+  не дублируются), и файл сразу переписывается восстановленным — следующий запуск читает целый файл. Не читается
+  (права) и копии нет — файл не трогается до первого сохранения. Все файлы — 0600, владелец — пользователь сервиса
+  (`fnav:fnav`); чужой владелец (root) = «не читается».
 
 ## Экран
 
@@ -192,11 +243,15 @@ push test, журнал и т.п.) и понятной ошибкой «No answe
 
 ## Система
 
-- `GET /api/system/status` → `{"system": SystemStatus, "disk": DiskStatus, "services": {"fnav-camera":"active",...}, "version":"..."}`.
+- `GET /api/system/status` → `{"system": SystemStatus, "disk": DiskStatus, "services": {"fnav-camera":"active",...}, "version":"..."}`;
+  `services` — `fnav-core`, `fnav-camera`, `fnav-camera-rear`, `fnav-watch`, `fnav-display`, `fnav-radio`,
+  `fnav-tunnel` (без `/etc/fnav/remote.env` — `inactive`), `mediamtx`, `gpsd`, `chrony`.
   В `SystemStatus` (и в телеметрии) — `timezone` (IANA, `null` — не известен) и `utc_offset_min` пояса устройства.
 - `GET /api/system/logs?unit=fnav-core&lines=200` → `{"lines":[...]}` (`journalctl`, только `fnav-*`, `mediamtx`, `gpsd`).
 - `POST /api/system/reboot`, `POST /api/system/shutdown`.
-- `GET /api/system/wifi` → `[{"ssid","priority","active","signal_pct"}]`; `POST /api/system/wifi` `{"ssid","password","priority"}`; `DELETE /api/system/wifi/{ssid}` (через `nmcli`).
+- `GET /api/system/wifi` → `[{"ssid","priority","active","signal_pct"}]`; `POST /api/system/wifi` `{"ssid","password","priority"}`;
+  `DELETE /api/system/wifi?ssid=<SSID>` (через `nmcli`). SSID — параметром запроса: `/` в пути (`%2F`) раскодируется
+  до маршрутизации; прежний `DELETE /api/system/wifi/{ssid}` оставлен для SSID без `/`.
 - `POST /api/system/password` `{"old","new"}` (новый ≥ 6 символов).
 - В mock-режиме системные действия не выполняются, возвращают `{"ok":true,"mock":true}`.
 
@@ -223,4 +278,5 @@ push test, журнал и т.п.) и понятной ошибкой «No answe
 
 ## Ошибки
 
-`{"detail": "message in English"}` + код (`400/401/404/409/422/429/500/503`; 429 + `Retry-After` — блокировка после 5 неудачных входов).
+`{"detail": "message in English"}` + код (`400/401/403/404/409/422/429/500/503`; 429 + `Retry-After` — блокировка после 5 неудачных входов;
+403 `Read-only guest access` — гостю нельзя менять).

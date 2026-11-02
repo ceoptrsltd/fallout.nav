@@ -16,8 +16,16 @@
 #   FNAV_USER       ssh user on the device (default falloutnav); needs passwordless sudo
 #   FNAV_SSH_KEY    path to the private key (optional; ssh-agent / ~/.ssh/config work as usual)
 #   FNAV_SSH_OPTS   extra ssh options (default: -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15)
+#   FNAV_RESTART    services to restart, like --only ("" = restart nothing). Precedence: --no-restart / --only on
+#                   the command line (the last one wins) > FNAV_RESTART > the default list above
 #   FNAV_HOSTNAME, FNAV_TIMEZONE, MEDIAMTX_VERSION   passed on to install.sh with --install
 #   FNAV_WEB_COPY   "no": do not update the server's copy of web/ after the deploy (tools/remote.sh deploy does it itself)
+#
+# What is sent: the files git tracks, with their working-tree content (uncommitted edits to tracked files deploy
+# too), plus the generated web/admin/version.json. Untracked files in the checkout stay on this PC (they are listed),
+# and so do tests/, this PC's server details (tools/.remote.env, tools/.publish.env), secrets and scratch
+# directories (.tmp_*). The device mirrors the pack: files deployed earlier that are no longer in it are removed.
+# Not a git checkout (an exported copy): the whole tree minus the same exclusions.
 #
 # The pack carries web/admin/version.json (tools/web-version.sh): an open admin sees the new version and offers a
 # reload. After a regular deploy the remote admin's copy of web/ on the server is updated too (tools/remote.sh web)
@@ -32,11 +40,15 @@ DEV_USER="${FNAV_USER:-falloutnav}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 MODE=deploy
-RESTART="fnav-core fnav-camera fnav-camera-rear fnav-watch fnav-display"
+if [ -n "${FNAV_RESTART+x}" ]; then
+    RESTART="$FNAV_RESTART"; RESTART_FROM="FNAV_RESTART"
+else
+    RESTART="fnav-core fnav-camera fnav-camera-rear fnav-watch fnav-display"; RESTART_FROM="default"
+fi
 while [ $# -gt 0 ]; do
     case "$1" in
-        --no-restart) RESTART="" ;;
-        --only) RESTART="${2:?--only needs a quoted list of services}"; shift ;;
+        --no-restart) RESTART=""; RESTART_FROM="--no-restart" ;;
+        --only) RESTART="${2:?--only needs a quoted list of services}"; RESTART_FROM="--only"; shift ;;
         --stage) MODE=stage ;;
         --install) MODE=install ;;
         --dry-run) MODE=dry ;;
@@ -55,22 +67,79 @@ fi
 [ -n "${FNAV_SSH_KEY:-}" ] && SSH_ARGS+=(-i "$FNAV_SSH_KEY")
 TARGET="${DEV_USER}@${HOST}"
 
-# Pack the working tree (uncommitted changes included). Order matters: --anchored/--no-anchored apply to
-# the --exclude options that follow them. This PC's server details (tools/.remote.env, tools/.publish.env) and
-# scratch directories (.tmp_*) never go to the device.
-pack() {
-    tar -C "$ROOT" -czf - --owner=0 --group=0 --numeric-owner \
-        --no-anchored --exclude='__pycache__' --exclude='*.pyc' --exclude='.pytest_cache' --exclude='.ruff_cache' \
-        --anchored --exclude='./.git' --exclude='./.devdata' --exclude='./tests' --exclude='./.venv' \
-        --exclude='./venv' --exclude='./node_modules' --exclude='./.claude' --exclude='./secrets.env' \
-        --exclude='./tools/.remote.env' --exclude='./tools/.publish.env' --exclude='./.tmp_*' \
-        .
+[ -f "$ROOT/pyproject.toml" ] && [ -d "$ROOT/pi" ] || { echo "Cannot find the repository root (looked in $ROOT)" >&2; exit 1; }
+
+# never on the device, tracked or not (paths relative to the repository root)
+pack_excluded() {
+    case "$1" in
+        tests/*|.tmp_*|*/.tmp_*|.claude/*|.devdata/*|secrets.env|tools/.remote.env|tools/.publish.env) return 0 ;;
+    esac
+    return 1
 }
 
-[ -f "$ROOT/pyproject.toml" ] && [ -d "$ROOT/pi" ] || { echo "Cannot find the repository root (looked in $ROOT)" >&2; exit 1; }
+# The list of files to pack (NUL-separated, for tar -T): git-tracked files present in the working tree + version.json.
+# SKIPPED: untracked files left on this PC; MISSING: tracked files deleted here (so not on the device either).
+LIST=""
+SKIPPED=()
+MISSING=()
+TMPFILES=()
+cleanup() { [ ${#TMPFILES[@]} -eq 0 ] || rm -f "${TMPFILES[@]}"; }
+trap cleanup EXIT
+
+build_list() {
+    git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+        echo "Note: $ROOT is not a git checkout - packing the whole tree" >&2
+        return 0
+    }
+    LIST="$(mktemp)"; TMPFILES+=("$LIST")
+    local f
+    while IFS= read -r -d '' f; do
+        pack_excluded "$f" && continue
+        if [ -e "$ROOT/$f" ] || [ -L "$ROOT/$f" ]; then printf '%s\0' "$f" >> "$LIST"; else MISSING+=("$f"); fi
+    done < <(git -C "$ROOT" ls-files -z --cached)
+    [ -f "$ROOT/web/admin/version.json" ] && printf '%s\0' "web/admin/version.json" >> "$LIST"
+    while IFS= read -r -d '' f; do
+        pack_excluded "$f" || SKIPPED+=("$f")
+    done < <(git -C "$ROOT" ls-files -z --others --exclude-standard)
+}
+
+# "label" max  name...  — at most max names, then "... and N more"
+print_names() {
+    local label="$1" max="$2" n=0
+    shift 2
+    [ $# -gt 0 ] || return 0
+    echo "$label ($#):"
+    for f in "$@"; do
+        n=$((n + 1))
+        if [ "$n" -gt "$max" ]; then echo "  ... and $(($# - max)) more"; break; fi
+        echo "  $f"
+    done
+}
+
+report_left_out() {
+    local max="$1"
+    print_names "Not deployed: untracked here (git add them to deploy)" "$max" ${SKIPPED[@]+"${SKIPPED[@]}"}
+    print_names "Not deployed: tracked but deleted here (removed on the device too)" "$max" \
+        ${MISSING[@]+"${MISSING[@]}"}
+}
+
+# Order matters in the fallback: --anchored/--no-anchored apply to the --exclude options that follow them.
+pack() {
+    if [ -n "$LIST" ]; then
+        tar -C "$ROOT" -czf - --owner=0 --group=0 --numeric-owner --no-recursion --null -T "$LIST"
+    else
+        tar -C "$ROOT" -czf - --owner=0 --group=0 --numeric-owner \
+            --no-anchored --exclude='__pycache__' --exclude='*.pyc' --exclude='.pytest_cache' --exclude='.ruff_cache' \
+            --anchored --exclude='./.git' --exclude='./.devdata' --exclude='./tests' --exclude='./.venv' \
+            --exclude='./venv' --exclude='./node_modules' --exclude='./.claude' --exclude='./secrets.env' \
+            --exclude='./tools/.remote.env' --exclude='./tools/.publish.env' --exclude='./.tmp_*' \
+            .
+    fi
+}
 
 # the admin's version marker goes into the pack (web/admin/version.json, not in git)
 bash "$ROOT/tools/web-version.sh"
+build_list
 
 # The server's copy of web/ (remote admin <server>/fnadmin/, docs/contracts/remote.md) does not come from the device:
 # without an update it keeps serving the old UI.
@@ -88,11 +157,13 @@ web_copy() {
 }
 
 if [ "$MODE" = dry ]; then
-    tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+    tmp="$(mktemp)"; TMPFILES+=("$tmp")
     pack > "$tmp"
-    echo "Archive: $(wc -c < "$tmp") bytes, $(tar -tzf "$tmp" | grep -vc '/$') files"
-    echo "Top level:"; tar -tzf "$tmp" | awk -F/ 'NF>=2 && $2!="" {print "  " $2}' | sort -u
-    echo "Target: $TARGET (mode: $MODE, restart: ${RESTART:-nothing})"
+    echo "Archive: $(wc -c < "$tmp") bytes, $(tar -tzf "$tmp" | grep -vc '/$') files ($([ -n "$LIST" ] \
+        && echo "git-tracked + web/admin/version.json" || echo "whole tree: not a git checkout"))"
+    echo "Top level:"; tar -tzf "$tmp" | sed 's#^\./##' | awk -F/ '$1!="" {print "  " $1 (NF>1 ? "/" : "")}' | sort -u
+    report_left_out 50
+    echo "Target: $TARGET (mode: $MODE, restart: ${RESTART:-nothing} [$RESTART_FROM])"
     if [ "${FNAV_WEB_COPY:-}" = no ]; then w="no"
     elif [ -f "$ROOT/tools/.remote.env" ]; then w="after the deploy (tools/remote.sh web)"
     else w="no (no tools/.remote.env)"; fi
@@ -101,6 +172,7 @@ if [ "$MODE" = dry ]; then
 fi
 
 echo "Deploying $ROOT -> $TARGET (mode: $MODE)"
+report_left_out 10
 
 if [ "$MODE" = stage ] || [ "$MODE" = install ]; then
     STAGE_REMOTE='set -e; rm -rf ~/fallout.nav.new; mkdir ~/fallout.nav.new; tar -xzf - -C ~/fallout.nav.new; rm -rf ~/fallout.nav; mv ~/fallout.nav.new ~/fallout.nav; chmod +x ~/fallout.nav/pi/install.sh ~/fallout.nav/pi/deploy.sh ~/fallout.nav/pi/bin/*; echo "Uploaded to ~/fallout.nav"'
@@ -119,6 +191,7 @@ if [ "$MODE" = stage ] || [ "$MODE" = install ]; then
 fi
 
 # Regular deploy: upload + unpack to a temp dir, then fnav-deploy-remote (as root) does the rest.
+echo "Restart after the deploy: ${RESTART:-nothing} [$RESTART_FROM]"
 REMOTE='set -euo pipefail; tmp=$(mktemp -d /tmp/fnav-deploy.XXXXXX); trap '"'"'rm -rf "$tmp"'"'"' EXIT; tar -xzf - -C "$tmp"; sudo -n env FNAV_RESTART="$FNAV_RESTART_ARG" bash "$tmp/pi/bin/fnav-deploy-remote" "$tmp"'
 REMOTE="FNAV_RESTART_ARG=$(printf '%q' "$RESTART"); $REMOTE"
 

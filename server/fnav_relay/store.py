@@ -6,11 +6,16 @@
   2. иначе ближайшее известное место в радиусе → новый визит в нём;
   3. иначе новое место (координаты этой точки) и новый визит.
 Перерыв в данных визит не разрывает, если точка снова в том же месте.
+
+Точка «из будущего» (дальше MAX_FUTURE_S от часов сервера: у устройства нет RTC, плохое время в NMEA) не принимается:
+иначе она подняла бы last_ts, и все настоящие точки после неё отбрасывались бы как старые — журнал бы встал.
+Отметку, которую такая точка уже подняла (база до этой версии), ingest сбрасывает сам (_repair_future).
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 import threading
@@ -18,7 +23,10 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
+log = logging.getLogger("fnav_relay.store")
+
 EARTH_R_M = 6371008.8
+MAX_FUTURE_S = 600.0  # точка позже «сейчас» на столько — сбой часов устройства, а не позиция
 M_PER_DEG_LAT = 111320.0
 _FAR = 1e300  # «всё время» для фильтра по диапазону
 
@@ -78,12 +86,14 @@ def _num(v: Any) -> float | None:
     return f if math.isfinite(f) else None
 
 
-def clean_sample(s: Any) -> dict | None:
-    """Проверенная точка или None (без ts/координат, вне диапазона, NaN)."""
+def clean_sample(s: Any, now: float | None = None) -> dict | None:
+    """Проверенная точка или None (без ts/координат, вне диапазона, NaN, позже now + MAX_FUTURE_S)."""
     if not isinstance(s, dict):
         return None
     ts, lat, lon = _num(s.get("ts")), _num(s.get("lat")), _num(s.get("lon"))
     if ts is None or ts <= 0 or lat is None or lon is None or abs(lat) > 90 or abs(lon) > 180:
+        return None
+    if ts > (time.time() if now is None else now) + MAX_FUTURE_S:
         return None
     fix = s.get("fix")
     return {
@@ -169,16 +179,48 @@ class Store:
                 best, best_d = r, d
         return best
 
+    def _repair_future(self, limit: float) -> float | None:
+        """Отметка last_ts в будущем (её подняла точка со сбитым временем до проверки в clean_sample): убрать визиты
+        из будущего, обрезать визит, который такая точка продлила, вернуть отметку по последней настоящей точке."""
+        prev = self._get("last_sample")
+        try:  # когда пришла плохая точка — по часам сервера: до тех пор машина и была в том месте
+            arrived = float(json.loads(prev)["received_ts"]) if prev else None
+        except (ValueError, KeyError, TypeError):
+            arrived = None
+        self.db.execute("DELETE FROM visits WHERE start_ts > ?", (limit,))
+        self.db.execute("UPDATE visits SET end_ts = MAX(start_ts, MIN(?, ?)) WHERE end_ts > ?",
+                        (arrived if arrived is not None else 0.0, limit, limit))
+        self.db.execute("DELETE FROM places WHERE created_ts > ? AND id NOT IN (SELECT place_id FROM visits)",
+                        (limit,))
+        self.db.execute("DELETE FROM kv WHERE key = 'last_sample'")
+        row = self.db.execute("SELECT MAX(end_ts) FROM visits").fetchone()
+        last_ts = row[0] if row and row[0] is not None else None
+        if last_ts is None:
+            self.db.execute("DELETE FROM kv WHERE key = 'last_ts'")
+        else:
+            self._set("last_ts", repr(float(last_ts)))
+        return last_ts
+
     def ingest(self, samples: list, now: float | None = None) -> dict:
-        """Принять пачку точек. Точки с ts ≤ последней обработанной пропускаются (повтор безопасен)."""
-        clean = sorted((c for c in map(clean_sample, samples) if c), key=lambda c: c["ts"])
+        """Принять пачку точек. Точки с ts ≤ последней обработанной пропускаются (повтор безопасен), точки
+        из будущего (сбой часов устройства) — тоже: отметку last_ts они не двигают."""
+        t_now = time.time() if now is None else now
+        clean = sorted((c for c in (clean_sample(x, t_now) for x in samples) if c), key=lambda c: c["ts"])
         skipped = len(samples) - len(clean)
+        future = sum(1 for x in samples if isinstance(x, dict) and (ts := _num(x.get("ts"))) is not None
+                     and ts > t_now + MAX_FUTURE_S)
+        if future:
+            log.warning("samples: %d point(s) from the future (device clock?) skipped", future)
         accepted = 0
         with self._lock:
             self.db.execute("BEGIN IMMEDIATE")
             try:
                 v = self._get("last_ts")
                 last_ts = float(v) if v is not None else None
+                if last_ts is not None and last_ts > t_now + MAX_FUTURE_S:
+                    old = last_ts
+                    last_ts = self._repair_future(t_now + MAX_FUTURE_S)
+                    log.warning("samples: last_ts %.0f was in the future - reset to %s", old, last_ts)
                 cur = self.db.execute(
                     "SELECT v.id, p.lat, p.lon FROM visits v JOIN places p ON p.id = v.place_id "
                     "ORDER BY v.id DESC LIMIT 1").fetchone()

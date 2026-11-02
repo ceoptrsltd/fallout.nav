@@ -1,4 +1,12 @@
-"""Хранилище настроек: загрузка с проверкой, глубокое слияние, атомарная запись settings.json."""
+"""Хранилище настроек: загрузка с проверкой, глубокое слияние, атомарная запись settings.json.
+
+Последняя удачная копия: `settings.json.lkg` — пишется после каждой удачной загрузки (если отличается) и каждого
+сохранения. Битый settings.json (не читается, не JSON, не проходит проверку) → настройки берутся из копии (битые
+секции — из копии, а без неё — умолчания), исходник — в `settings.json.bad-<время>` (хранятся BAD_KEEP новейших),
+и settings.json сразу перезаписывается восстановленным: следующий запуск снова читает целый файл, а не плодит .bad.
+Исключение: файл не читается (права) и удачной копии нет — он не трогается до первого сохранения, как раньше.
+Все файлы — через atomic_write_text (mkstemp: 0600, владелец — пользователь сервиса, на устройстве fnav:fnav).
+"""
 
 from __future__ import annotations
 
@@ -20,6 +28,9 @@ from fnav.models import SETTINGS_VERSION, Settings
 log = logging.getLogger("fnav.core.config")
 
 Listener = Callable[[Settings], Awaitable[None] | None]
+
+LKG_SUFFIX = ".lkg"  # settings.json.lkg — последняя удачно прочитанная или сохранённая копия
+BAD_KEEP = 3  # сколько копий битого файла (settings.json.bad-*) хранить
 
 
 class SettingsError(ValueError):
@@ -79,47 +90,100 @@ def validate_settings(data: Any) -> Settings:
     return s
 
 
-def load_settings_file(path: Path) -> tuple[Settings, list[str]]:
-    """Прочитать settings.json. Битые секции заменяются умолчаниями (с предупреждением)."""
-    warnings: list[str] = []
+def lkg_path(path: Path) -> Path:
+    return path.with_name(path.name + LKG_SUFFIX)
+
+
+def _read_json(path: Path) -> tuple[str, Any]:
+    """→ ("missing", None) | ("error", текст) | ("corrupt", текст) | ("ok", dict)."""
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return Settings(), warnings
-    except OSError as e:
-        warnings.append(f"cannot read {path}: {e}")
-        return Settings(), warnings
+        return "missing", None
+    except OSError as e:  # права, ввод-вывод: содержимое не прочесть и не скопировать
+        return "error", f"cannot read {path}: {e}"
+    except UnicodeDecodeError as e:
+        return "corrupt", f"{path.name} is corrupted ({e})"
     try:
         data = json.loads(raw)
     except ValueError as e:
-        data = e
+        return "corrupt", f"{path.name} is corrupted ({e})"
     if not isinstance(data, dict):
-        warnings.append(f"settings.json is corrupted ({data if isinstance(data, Exception) else 'not an object'})"
-                        " - using defaults")
-        _backup_bad(path)
-        return Settings(), warnings
-    data = migrate(data)
+        return "corrupt", f"{path.name} is corrupted (not an object)"
+    return "ok", data
+
+
+def _load_lkg(path: Path) -> Settings | None:
+    state, data = _read_json(lkg_path(path))
+    if state != "ok":
+        return None
     try:
-        return validate_settings(data), warnings
-    except SettingsError as e:
-        warnings.append(str(e))
-    # по секциям: берём то, что проходит проверку
-    cur = Settings().model_dump()
-    for key, val in data.items():
+        return validate_settings(migrate(data))
+    except SettingsError:
+        return None
+
+
+def load_settings(path: Path) -> tuple[Settings, list[str], str]:
+    """Прочитать settings.json → (настройки, предупреждения, состояние).
+
+    Состояние: "ok" — файл цел; "missing" — файла нет (умолчания); "recovered" — файл битый: настройки из последней
+    удачной копии (.lkg), битые секции — из неё же или умолчаниями, исходник сохранён в .bad-<время> — файл можно
+    перезаписать восстановленным; "degraded" — то же, но перезаписывать нельзя: файл не читается (права) или копию
+    исходника сделать не удалось, а удачной копии нет — иначе настройки владельца пропали бы безвозвратно."""
+    warnings: list[str] = []
+    state, data = _read_json(path)
+    if state == "missing":
+        return Settings(), warnings, "missing"
+    lkg = None
+    if state == "ok":
+        data = migrate(data)
         try:
-            cur = validate_settings({**cur, key: val}).model_dump()
-        except SettingsError:
-            warnings.append(f"section '{key}' reset to defaults")
-    _backup_bad(path)
-    return Settings.model_validate(cur), warnings
+            return validate_settings(data), warnings, "ok"
+        except SettingsError as e:
+            warnings.append(str(e))
+        lkg = _load_lkg(path)
+        # по секциям: целые — из файла, битые — из последней удачной копии, а без неё — умолчания
+        cur = (lkg or Settings()).model_dump()
+        for key, val in data.items():
+            try:
+                cur = validate_settings({**cur, key: val}).model_dump()
+            except SettingsError:
+                warnings.append(f"section '{key}' reset to {'the last good copy' if lkg else 'defaults'}")
+        settings = Settings.model_validate(cur)
+    else:
+        warnings.append(data)
+        lkg = _load_lkg(path)
+        settings = lkg or Settings()
+        warnings.append(f"settings restored from {lkg_path(path).name}" if lkg
+                        else f"no good copy ({lkg_path(path).name}) - using defaults")
+    kept = state != "error" and _backup_bad(path)  # нечитаемый (права, ввод-вывод) не скопировать
+    return settings, warnings, "recovered" if lkg is not None or kept else "degraded"
 
 
-def _backup_bad(path: Path) -> None:
+def load_settings_file(path: Path) -> tuple[Settings, list[str]]:
+    """Прочитать settings.json (см. load_settings). Битые секции — из последней удачной копии или умолчания."""
+    settings, warnings, _state = load_settings(path)
+    return settings, warnings
+
+
+def _backup_bad(path: Path, keep: int = BAD_KEEP) -> bool:
+    """Копия битого файла (0600: в настройках бывают ключи); такая же уже есть — не дублировать; хранить keep
+    новейших. → есть ли копия этого содержимого."""
     try:
-        bad = path.with_name(f"{path.name}.bad-{time.strftime('%Y%m%d-%H%M%S')}")
-        bad.write_bytes(path.read_bytes())
-    except OSError:
-        pass
+        data = path.read_bytes()
+        olds = sorted(path.parent.glob(f"{path.name}.bad-*"), key=lambda q: (q.stat().st_mtime, q.name))
+        if not any(q.read_bytes() == data for q in olds):
+            bad = path.with_name(f"{path.name}.bad-{time.strftime('%Y%m%d-%H%M%S')}")
+            fd = os.open(bad, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            olds = [q for q in olds if q != bad] + [bad]
+        for q in olds[:-keep]:
+            q.unlink(missing_ok=True)
+        return True
+    except OSError as e:
+        log.warning("cannot keep a copy of the broken %s: %s", path.name, e)
+        return False
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -158,7 +222,7 @@ def atomic_write_text(path: Path, text: str) -> None:
 class SettingsStore:
     def __init__(self, path: Path | None = None):
         self.path = path or paths.settings_file()
-        self.settings, warnings = load_settings_file(self.path)
+        self.settings, warnings, self.load_state = load_settings(self.path)
         for w in warnings:
             log.warning("%s", w)
         self.warnings = warnings
@@ -172,20 +236,46 @@ class SettingsStore:
         self._listeners.append(cb)
 
     def ensure_file(self) -> None:
-        """Записать файл, если его нет (чтобы камера читала то же самое)."""
-        if not self.path.exists():
+        """Файла нет или он был битый — записать то, с чем работаем (камера читает то же самое); целый — обновить
+        последнюю удачную копию (.lkg), если она отличается."""
+        text = self._dump(self.settings)
+        if self.load_state == "degraded":  # файл не тронут: владелец может починить права и перезапустить
+            log.error("%s is broken and neither a copy of it nor a good copy exists: left as is, running on "
+                      "defaults until settings are saved", self.path.name)
+            return
+        if self.load_state == "recovered" or not self.path.exists():
             try:
-                atomic_write_text(self.path, self._dump(self.settings))
+                atomic_write_text(self.path, text)
             except OSError as e:
                 log.error("cannot write %s: %s", self.path, e)
+                return
+            if self.load_state == "recovered":
+                log.warning("%s rewritten with the recovered settings", self.path.name)
+            self.load_state = "ok"
+        self._write_lkg(text, only_if_changed=True)
+
+    def _write_lkg(self, text: str, only_if_changed: bool = False) -> None:
+        lkg = lkg_path(self.path)
+        try:
+            if only_if_changed and lkg.read_text(encoding="utf-8") == text:
+                return
+        except (OSError, UnicodeDecodeError):
+            pass
+        try:
+            atomic_write_text(lkg, text)
+        except OSError as e:
+            log.warning("cannot write %s: %s", lkg, e)
 
     @staticmethod
     def _dump(s: Settings) -> str:
         return json.dumps(s.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n"
 
     async def _save(self, s: Settings) -> None:
-        await asyncio.to_thread(atomic_write_text, self.path, self._dump(s))
+        text = self._dump(s)
+        await asyncio.to_thread(atomic_write_text, self.path, text)
         self.settings = s
+        self.load_state = "ok"
+        await asyncio.to_thread(self._write_lkg, text)  # последняя удачная копия — после каждого сохранения
 
     async def replace(self, new: Settings | dict) -> Settings:
         s = new if isinstance(new, Settings) else validate_settings(new)

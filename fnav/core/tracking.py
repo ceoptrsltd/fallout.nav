@@ -148,11 +148,14 @@ class TrackService:
         self.outbox = Outbox(outbox_path)
         self.relay = relay
         self.get_auth = get_auth  # → (password_hash, session_secret)
+        # гостевые ссылки для сервера ([{"id","expires"}], fnav/core/guests.py): с ними fnav-relay пускает гостей
+        # смотреть журнал; None — поле не отправляется
+        self.get_guests: Callable[[], list[dict]] | None = None
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0), transport=transport,
                                          trust_env=False)
         self._kick = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
-        self._auth_synced: tuple[str, str] | None = None
+        self._auth_synced: tuple | None = None
         self.last_sample_ts: float | None = None
         self.last_upload_ts: float | None = None
         self.last_error: str | None = None
@@ -203,13 +206,21 @@ class TrackService:
     async def _sync_auth(self) -> None:
         """Сервер принимает вход тем же паролем и проверяет те же cookie — отдаём ему хэш и секрет."""
         pw_hash, secret = self.get_auth()
-        if not pw_hash or not secret or self._auth_synced == (pw_hash, secret):
+        body: dict = {"password_hash": pw_hash, "session_secret": secret}
+        if self.get_guests is not None:
+            body["guest_links"] = self.get_guests()
+        state = json.dumps(body, sort_keys=True)
+        if not pw_hash or not secret or self._auth_synced == (state,):
             return
-        r = await self._client.post(f"{self.relay.url}/device/auth", headers=self._headers(),
-                                    json={"password_hash": pw_hash, "session_secret": secret})
+        r = await self._client.post(f"{self.relay.url}/device/auth", headers=self._headers(), json=body)
         r.raise_for_status()
-        self._auth_synced = (pw_hash, secret)
+        self._auth_synced = (state,)
         log.info("tracking: login credentials synced to the server")
+
+    def resync_auth(self) -> None:
+        """Гостевые ссылки изменились (создана, отозвана): отправить серверу при ближайшей возможности."""
+        self._auth_synced = None
+        self._kick.set()
 
     async def _flush(self) -> None:
         while True:

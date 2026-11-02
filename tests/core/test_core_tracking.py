@@ -93,6 +93,26 @@ async def test_upload_retries_and_syncs_auth(tmp_path):
     await svc.stop()
 
 
+async def test_guest_links_synced_to_relay(tmp_path):
+    """Сервер пускает гостей к журналу только по списку действующих ссылок: он уходит вместе с хэшем пароля и
+    заново — при каждом изменении (resync_auth)."""
+    relay = FakeRelay()
+    svc = TrackService(tmp_path / "o.db", RelayConfig("http://relay", "tok"), lambda: ("scrypt$h", "sec"),
+                       transport=httpx.MockTransport(relay))
+    links = [{"id": "abcdef012345", "expires": 2000000000}]
+    svc.get_guests = lambda: list(links)
+    await svc.upload_once()
+    assert relay.auth == {"password_hash": "scrypt$h", "session_secret": "sec", "guest_links": links}
+    relay.auth = None
+    await svc.upload_once()
+    assert relay.auth is None  # не изменилось — не отправляется
+    links.clear()
+    svc.resync_auth()
+    await svc.upload_once()
+    assert relay.auth == {"password_hash": "scrypt$h", "session_secret": "sec", "guest_links": []}
+    await svc.stop()
+
+
 async def test_not_configured(tmp_path):
     svc = TrackService(tmp_path / "o.db", RelayConfig(), lambda: (None, ""))
     code, body, _ = await svc.proxy_get("places", "")

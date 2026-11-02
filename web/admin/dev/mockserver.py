@@ -1497,7 +1497,9 @@ async def system_status():
     return {
         "system": tel["system"],
         "disk": tel["disk"],
-        "services": {"fnav-core": "active", "fnav-camera": "active", "fnav-display": "active", "mediamtx": "active", "gpsd": "active", "chrony": "active"},
+        "services": {"fnav-core": "active", "fnav-camera": "active", "fnav-camera-rear": "inactive", "fnav-watch": "active",
+                     "fnav-display": "active", "fnav-radio": "active", "fnav-tunnel": "failed", "mediamtx": "active",
+                     "gpsd": "active", "chrony": "active"},
         "version": "0.1.0-mock",
     }
 
@@ -1544,6 +1546,11 @@ async def wifi_add(request: Request):
     return {"ok": True, "mock": True}
 
 
+@app.delete("/api/system/wifi")
+async def wifi_del_q(ssid: str):
+    return await wifi_del(ssid)  # the admin sends the SSID in the query (a "/" in it does not survive the path)
+
+
 @app.delete("/api/system/wifi/{ssid}")
 async def wifi_del(ssid: str):
     for w in wifi:
@@ -1551,6 +1558,42 @@ async def wifi_del(ssid: str):
             wifi.remove(w)
             return {"ok": True, "mock": True}
     return err(404, "No such network")
+
+
+# guest links (docs/contracts/api.md "Guest access"): the owner's side only — list, create, revoke
+guest_links: list[dict] = []
+
+
+def _guest_out() -> dict:
+    now = time.time()
+    return {"links": [g for g in guest_links if g["expires"] > now], "remote_origin": None, "now": now}
+
+
+@app.get("/api/guest/links")
+async def guest_list():
+    return _guest_out()
+
+
+@app.post("/api/guest/links")
+async def guest_create(request: Request):
+    b = await request.json()
+    ttl = b.get("expires_in_s")
+    if not isinstance(ttl, int) or not 600 <= ttl <= 365 * 86400:
+        return err(422, "Invalid request: expires_in_s: out of range")
+    now, token = time.time(), secrets.token_urlsafe(32)
+    link = {"id": secrets.token_hex(6), "label": str(b.get("label") or "")[:64], "created": now,
+            "expires": now + ttl, "last_used": None}
+    guest_links.insert(0, link)
+    return {**_guest_out(), "link": link, "token": token, "path": f"admin/login.html#guest={token}"}
+
+
+@app.delete("/api/guest/links/{link_id}")
+async def guest_revoke(link_id: str):
+    for g in guest_links:
+        if g["id"] == link_id:
+            guest_links.remove(g)
+            return _guest_out()
+    return err(404, "Guest link not found")
 
 
 @app.post("/api/system/password")

@@ -23,7 +23,9 @@ from fnav.models import DiskStatus, SystemStatus
 log = logging.getLogger("fnav.core.system")
 
 IS_LINUX = sys.platform.startswith("linux")
-SERVICES = ("fnav-core", "fnav-camera", "fnav-display", "mediamtx", "gpsd", "chrony")
+# состояние на странице System (журналы — любые fnav-*, см. _UNIT_RE); fnav-tunnel без /etc/fnav/remote.env — inactive
+SERVICES = ("fnav-core", "fnav-camera", "fnav-camera-rear", "fnav-watch", "fnav-display", "fnav-radio",
+            "fnav-tunnel", "mediamtx", "gpsd", "chrony")
 _UNIT_RE = re.compile(r"^(fnav-[a-z0-9-]{1,32}|mediamtx|gpsd)$")
 
 

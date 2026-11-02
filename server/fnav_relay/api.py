@@ -24,6 +24,9 @@ _TRACKING_GET = {"/api/tracking/places", "/api/tracking/track", "/api/tracking/l
 _PUSH_SUB_RE = re.compile(r"^/api/push/subscriptions/(\d+)$")
 _PUSH_SNAP_RE = re.compile(r"^/api/push/snap/([A-Za-z0-9_-]{24,64})\.jpg$")
 
+GUEST_DENIED = "Read-only guest access"
+MAX_GUEST_LINKS = 200
+
 
 class ApiError(Exception):
     def __init__(self, status: int, detail: str, headers: dict[str, str] | None = None) -> None:
@@ -132,9 +135,27 @@ class Handler(BaseHTTPRequestHandler):
         got = self.headers.get("X-Fnav-Device-Token") or ""
         return bool(want) and hmac.compare_digest(got.encode(), want.encode())
 
-    def _logged_in(self) -> bool:
+    def _guest_links(self) -> dict[str, float]:
+        """Действующие гостевые ссылки (id → срок), как их прислало устройство в POST /device/auth."""
+        raw = self.server.store.get_value("guest_links")
+        try:
+            return {str(x["id"]): float(x["expires"]) for x in json.loads(raw)} if raw else {}
+        except (ValueError, KeyError, TypeError):
+            return {}
+
+    def _role(self) -> str | None:
+        """"owner" (вход паролем), "guest" (гостевая ссылка: только просмотр) или None."""
         password_hash, secret = self.server.store.auth()
-        return auth.check_token(self._session_token(), secret, password_hash)
+        token = self._session_token()
+        if auth.check_token(token, secret, password_hash):
+            return "owner"
+        if token and token.startswith("g1.") and auth.check_guest_token(token, secret, password_hash,
+                                                                        self._guest_links()):
+            return "guest"
+        return None
+
+    def _logged_in(self) -> bool:
+        return self._role() == "owner"
 
     def _range_arg(self, qs: dict, name: str) -> float | None:
         v = qs.get(name, [""])[0]
@@ -192,19 +213,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True}, cookies=[self._cookie("", 0)])
         if path == "/api/session":
             self._method(method, "GET")
-            return self._send(200, {"authenticated": self._logged_in(), "local": False, "mock": False,
-                                    "offline": True})
-        if path == "/api/tracking" or path.startswith("/api/tracking/"):
-            if not (self._has_device_token() or self._logged_in()):
+            role = self._role()
+            out = {"authenticated": role is not None, "local": False, "mock": False, "offline": True}
+            if role is not None:
+                out["guest"] = role == "guest"
+            return self._send(200, out)
+        if path in ("/api/tracking", "/api/push") or path.startswith(("/api/tracking/", "/api/push/")):
+            role = "device" if self._has_device_token() else self._role()
+            if role is None:
                 raise ApiError(401, "Login required")
+            if role == "guest" and method != "GET":  # гость — только просмотр: ни подписок, ни теста push
+                raise ApiError(403, GUEST_DENIED)
+        if path == "/api/tracking" or path.startswith("/api/tracking/"):
             return self._tracking(method, path, qs)
         m = _PUSH_SNAP_RE.match(path)
         if m:  # картинка уведомления: браузер грузит её без cookie — неугадываемая ссылка с ограниченным сроком
             self._method(method, "GET")
             return self._push_snap(m.group(1))
         if path == "/api/push" or path.startswith("/api/push/"):
-            if not (self._has_device_token() or self._logged_in()):
-                raise ApiError(401, "Login required")
             try:
                 return self._push(method, path)
             except webpush.PushUnavailable:
@@ -219,9 +245,19 @@ class Handler(BaseHTTPRequestHandler):
         h, s = data.get("password_hash"), data.get("session_secret")
         if not auth.looks_like_hash(h) or not isinstance(s, str) or len(s) < 16:
             raise ApiError(400, "password_hash (scrypt$…) and session_secret (16+ chars) are required")
+        links = data.get("guest_links", [])  # гостевые ссылки устройства: какие гостевые cookie принимать
+        if not isinstance(links, list) or len(links) > MAX_GUEST_LINKS:
+            raise ApiError(400, "'guest_links' must be a list of {\"id\", \"expires\"}")
+        clean = [{"id": x["id"], "expires": float(x["expires"])} for x in links
+                 if isinstance(x, dict) and isinstance(x.get("id"), str) and auth.GUEST_ID_RE.match(x["id"])
+                 and isinstance(x.get("expires"), (int, float)) and not isinstance(x.get("expires"), bool)]
         if self.server.store.auth() != (h, s):
             self.server.store.set_auth(h, s)
             log.info("device synced its password hash and session secret")
+        text = json.dumps(sorted(clean, key=lambda x: x["id"]))
+        if (self.server.store.get_value("guest_links") or "[]") != text:
+            self.server.store.set_values({"guest_links": text})
+            log.info("device synced %d guest link(s)", len(clean))
         self._send(200, {"ok": True})
 
     def _device_samples(self) -> None:

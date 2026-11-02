@@ -1,11 +1,14 @@
-// System: services, logs, the time zone, Wi-Fi, password change, reboot / shutdown.
+// System: services, logs, the time zone, Wi-Fi, password change, guest links (read-only access), reboot / shutdown.
 import { h, icon, clear, fmt, isNum, fmtUptime } from "../dom.js";
-import { api, errText } from "../api.js";
+import { api, errText, ROOT } from "../api.js";
 import { toast, confirmDialog, poll, badge, banner, switchEl } from "../ui.js";
 import { store, on, applySettings } from "../store.js";
 import { zoneText } from "../devtime.js";
+import { EXPIRY_CHOICES, ttlSeconds, localInputValue, guestUrls, fmtLeft, fmtAgo } from "../guest-fmt.js";
 
-const DEFAULT_UNITS = ["fnav-core", "fnav-camera", "fnav-display", "mediamtx", "gpsd"];
+// journals the backend gives (fnav/core/system.py _UNIT_RE: any fnav-*, mediamtx, gpsd)
+const DEFAULT_UNITS = ["fnav-core", "fnav-camera", "fnav-camera-rear", "fnav-watch", "fnav-display", "fnav-radio",
+  "fnav-tunnel", "fnav-games", "mediamtx", "gpsd"];
 const SVC_STATE = { active: ["running", "ok"], activating: ["starting", "warn"], inactive: ["stopped", "warn"], failed: ["failed", "bad"], deactivating: ["stopping", "warn"] };
 
 export function mount(root) {
@@ -63,10 +66,13 @@ export function mount(root) {
   }
   unitSel.addEventListener("change", () => loadLogs());
   linesSel.addEventListener("change", () => loadLogs());
+  // auto-refresh only while the page is on screen; back on screen — at once
   const autoSw = switchEl({ checked: false, label: "Auto-refresh", onchange: (v) => {
     clearInterval(logTimer);
-    if (v) logTimer = setInterval(() => loadLogs(true), 3000);
+    logTimer = v ? setInterval(() => { if (!document.hidden) loadLogs(true); }, 3000) : null;
   } });
+  const onVisible = () => { if (!document.hidden && logTimer) loadLogs(true); };
+  document.addEventListener("visibilitychange", onVisible);
   loadLogs();
 
   // ── Wi‑Fi ──
@@ -90,7 +96,8 @@ export function mount(root) {
           h("td.right", null, h("button.btn.sm.danger", { type: "button", onclick: async () => {
             const ok = await confirmDialog({ title: "Forget network?", text: h("div", null, "The network “", h("b", null, w.ssid), "” will be forgotten." + (w.active ? " You are connected to it right now, so the connection to the device may be lost!" : "")), okText: "Forget", danger: true });
             if (!ok) return;
-            try { await api.del("/api/system/wifi/" + encodeURIComponent(w.ssid)); toast("ok", "Network removed"); loadWifi(); } catch (e) { toast("error", errText(e)); }
+            // the SSID goes in the query: a "/" in it would not survive the path (%2F is decoded before routing)
+            try { await api.del("/api/system/wifi?ssid=" + encodeURIComponent(w.ssid)); toast("ok", "Network removed"); loadWifi(); } catch (e) { toast("error", errText(e)); }
           } }, icon("trash"))),
         ));
       }
@@ -134,6 +141,86 @@ export function mount(root) {
     h("div.btnrow", { style: { marginTop: "12px" } }, h("button.btn.primary", { type: "submit" }, "Change password")),
     pMsg);
 
+  // ── guest links: the whole admin for someone else, read only (docs/contracts/api.md "Guest access") ──
+  const guestCard = h(".card", { hidden: true });
+  const guestBody = h("tbody");
+  const guestNew = h("div");
+  const gLabel = h("input", { type: "text", placeholder: "Who is it for (optional)", maxlength: 64, autocomplete: "off" });
+  // app.css styles text inputs only: the same look inline
+  const gCustom = h("input", { type: "datetime-local", hidden: true, title: "The link stops working at", style: {
+    background: "var(--bg)", color: "var(--text)", border: "1px solid var(--line2)", borderRadius: "4px", padding: "6px 9px",
+    font: "inherit", minHeight: "34px", colorScheme: "dark" } });
+  const gExpiry = h("select", { title: "How long the link works", onchange: () => {
+    gCustom.hidden = gExpiry.value !== "custom";
+    if (!gCustom.hidden && !gCustom.value) gCustom.value = localInputValue(Date.now() + 3 * 86400e3);
+  } }, EXPIRY_CHOICES.map((c) => h("option", { value: c.value }, c.label)));
+  const fmtDate = (ts) => new Date(ts * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+
+  function renderGuests(res) {
+    const now = typeof res.now === "number" ? res.now : Date.now() / 1000; // the device's clock
+    clear(guestBody);
+    if (!res.links.length) guestBody.append(h("tr", null, h("td", { colspan: 4, class: "dim" }, "No active guest links")));
+    for (const l of res.links) {
+      guestBody.append(h("tr", null,
+        h("td", null, l.label || h("span.dim", null, "no label")),
+        h("td", { title: fmtDate(l.expires) }, fmtLeft(l.expires - now)),
+        h("td", { title: l.last_used ? fmtDate(l.last_used) : "" }, fmtAgo(l.last_used, now)),
+        h("td.right", null, h("button.btn.sm.danger", { type: "button", title: "Revoke: the link stops working at once", onclick: async () => {
+          const ok = await confirmDialog({ title: "Revoke the guest link?", text: h("div", null, "Whoever has the link “", h("b", null, l.label || "no label"), "” loses access at once."), okText: "Revoke", danger: true });
+          if (!ok) return;
+          try { renderGuests(await api.del("/api/guest/links/" + encodeURIComponent(l.id))); clear(guestNew); toast("ok", "Guest link revoked"); } catch (e) { toast("error", errText(e)); }
+        } }, icon("trash"), "Revoke")),
+      ));
+    }
+  }
+  async function loadGuests() {
+    try {
+      const res = await api.get("/api/guest/links");
+      if (stopped) return;
+      guestCard.hidden = false;
+      renderGuests(res);
+    } catch (e) {
+      if (e.status === 403) { guestCard.hidden = true; return; } // a guest: links are the owner's business
+      guestCard.hidden = false;
+      clear(guestBody).append(h("tr", null, h("td", { colspan: 4, class: "red" }, errText(e))));
+    }
+  }
+  async function copyText(text, input) {
+    try { await navigator.clipboard.writeText(text); toast("ok", "Link copied"); } catch { input.select(); toast("info", "Select and copy the link"); }
+  }
+  function showNewLink(res) {
+    const urls = guestUrls(res.path, { origin: location.origin, root: ROOT, remoteOrigin: res.remote_origin });
+    clear(guestNew).append(banner("ok", [
+      h("div", null, h("b", null, "Copy the link now"), ": it is shown only once (the device keeps only a hash of it)."),
+      ...urls.map((u) => {
+        const inp = h("input", { type: "text", readonly: true, value: u.url, style: { flex: "1", minWidth: "0" }, onfocus: (e) => e.target.select() });
+        return h("div", { style: { marginTop: "8px" } }, h("div.dim", null, u.where),
+          h("div", { style: { display: "flex", gap: "6px" } }, inp,
+            h("button.btn.sm", { type: "button", onclick: () => copyText(u.url, inp) }, "Copy"),
+            navigator.share ? h("button.btn.sm", { type: "button", onclick: () => navigator.share({ title: "fallout.nav (read only)", url: u.url }).catch(() => {}) }, icon("share")) : null));
+      }),
+      ROOT === "/" && !res.remote_origin ? h("div.hint", null, "This address only works on the van's network. Create the link in the remote admin (<server>/fnadmin/) once and the address through the server is shown here too.") : null,
+    ]));
+  }
+  const guestForm = h("form", { class: "btnrow", style: { marginTop: "12px" }, onsubmit: async (e) => {
+    e.preventDefault();
+    const t = ttlSeconds(gExpiry.value, gCustom.value, Date.now());
+    if (t.error) return toast("error", t.error);
+    try {
+      const res = await api.post("/api/guest/links", { label: gLabel.value.trim(), expires_in_s: t.s });
+      gLabel.value = "";
+      renderGuests(res);
+      showNewLink(res);
+    } catch (err) { toast("error", errText(err)); }
+  } }, gLabel, gExpiry, gCustom, h("button.btn.primary", { type: "submit" }, icon("plus"), "Create link"));
+  guestCard.append(
+    h(".card-head", null, h("h2", null, "Guest access (read only)"), h("button.btn.sm", { type: "button", onclick: loadGuests }, icon("refresh"))),
+    h(".hint", null, "A guest link opens this whole admin for someone else, at the van and through the server: they see everything, "
+      + "but cannot change anything. Wi-Fi passwords and keys are not shown to guests."),
+    guestForm, guestNew,
+    h(".tbl-wrap", { style: { marginTop: "12px" } }, h("table", null, h("thead", null, h("tr", null, h("th", null, "Guest"), h("th", null, "Expires"), h("th", null, "Last used"), h("th"))), guestBody)));
+  loadGuests();
+
   // ── power ──
   async function power(kind) {
     const word = kind === "reboot" ? "reboot" : "shutdown";
@@ -174,6 +261,7 @@ export function mount(root) {
       h(".tbl-wrap", null, h("table", null, h("thead", null, h("tr", null, h("th", null, "Network"), h("th.num", null, "Signal"), h("th", null, "Priority"), h("th"))), wifiBody)),
       h("h3", { style: { marginTop: "14px" } }, "Add a network"), wifiForm,
       h(".hint", null, "The device connects to the available network with the highest priority.")),
+    guestCard,
     h(".grid.g2", null,
       h(".card", null, h("h2", null, "Login password"), pwForm),
       h(".card", null, h("h2", null, "Power and reset"),
@@ -184,5 +272,5 @@ export function mount(root) {
         h(".hint", null, "Before cutting power it is better to press \"Shut down\" so the filesystem closes cleanly (recording survives power loss anyway).")),
     ),
   );
-  return () => { stopped = true; stopStatus(); offSettings(); clearInterval(logTimer); };
+  return () => { stopped = true; stopStatus(); offSettings(); clearInterval(logTimer); document.removeEventListener("visibilitychange", onVisible); };
 }

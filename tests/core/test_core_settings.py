@@ -1,10 +1,13 @@
 import json
+import os
+import stat
+from pathlib import Path
 
 import httpx
 from core_helpers import FakeUpstream, login, make_opts, running_app
 
 from fnav import paths
-from fnav.core.config import deep_merge, load_settings_file
+from fnav.core.config import BAD_KEEP, SettingsStore, deep_merge, lkg_path, load_settings, load_settings_file
 from fnav.models import Settings
 
 
@@ -28,6 +31,93 @@ def test_load_corrupted_and_partial(tmp_path):
     assert s.display.orientation == "north_up"  # валидная секция сохранена
     assert s.nav.camera_below_mps == 2.0  # битая сброшена
     assert any("nav" in w for w in warns)
+
+
+async def test_broken_settings_restored_from_last_good_copy(tmp_path):
+    """B26: битый settings.json → настройки из settings.json.lkg, файл сразу переписан (следующий запуск читает целый
+    файл и не плодит .bad), копий битого — не больше BAD_KEEP, одинаковые не дублируются."""
+    p = tmp_path / "settings.json"
+    st = SettingsStore(p)
+    assert st.load_state == "missing"
+    st.ensure_file()
+    await st.patch({"display": {"orientation": "north_up"}, "camera": {"fps": 12}})
+    assert json.loads(lkg_path(p).read_text(encoding="utf-8"))["camera"]["fps"] == 12  # копия — после сохранения
+
+    for n in range(5):  # пять отключений питания подряд с битым файлом
+        p.write_text("{half-written" + "x" * n, encoding="utf-8")
+        st = SettingsStore(p)
+        assert st.load_state == "recovered"
+        assert st.get().display.orientation == "north_up" and st.get().camera.fps == 12
+        assert any("restored from settings.json.lkg" in w for w in st.warnings)
+        st.ensure_file()
+        assert json.loads(p.read_text(encoding="utf-8"))["camera"]["fps"] == 12  # переписан восстановленным
+        again = SettingsStore(p)
+        assert again.load_state == "ok" and not again.warnings
+    bads = sorted(tmp_path.glob("settings.json.bad-*"))
+    assert 1 <= len(bads) <= BAD_KEEP
+    # тот же битый файл ещё раз — новой копии нет
+    p.write_text("{half-writtenxxxx", encoding="utf-8")
+    SettingsStore(p)
+    assert len(list(tmp_path.glob("settings.json.bad-*"))) == len(bads)
+    if os.name == "posix":  # на устройстве: 0600, как сам settings.json (в нём бывают ключи)
+        for f in (p, lkg_path(p), *tmp_path.glob("settings.json.bad-*")):
+            assert stat.S_IMODE(f.stat().st_mode) == 0o600, f
+
+
+def test_bad_copies_capped_newest_kept(tmp_path):
+    p = tmp_path / "settings.json"
+    for i in range(5):  # копии от прежних запусков (до этой версии их не ограничивали)
+        old = tmp_path / f"settings.json.bad-2026010{i}-000000"
+        old.write_text(f"old {i}", encoding="utf-8")
+        os.utime(old, (1_700_000_000 + i, 1_700_000_000 + i))
+    p.write_text("[1, 2", encoding="utf-8")
+    load_settings(p)
+    left = sorted(f.read_text(encoding="utf-8") for f in tmp_path.glob("settings.json.bad-*"))
+    assert len(left) == BAD_KEEP and left == ["[1, 2", "old 3", "old 4"]
+
+
+def test_broken_section_taken_from_last_good_copy(tmp_path):
+    p = tmp_path / "settings.json"
+    good = Settings().model_dump(mode="json")
+    good["nav"]["camera_below_mps"] = 3.5
+    good["display"]["orientation"] = "north_up"
+    lkg_path(p).write_text(json.dumps(good), encoding="utf-8")
+    p.write_text(json.dumps({"display": {"orientation": "heading_up"}, "nav": {"camera_below_mps": -5}}),
+                 encoding="utf-8")
+    s, warns, state = load_settings(p)
+    assert state == "recovered"
+    assert s.display.orientation == "heading_up"  # целая секция — из файла
+    assert s.nav.camera_below_mps == 3.5  # битая — из последней удачной копии
+    assert any("the last good copy" in w for w in warns)
+
+
+def test_unreadable_settings_without_good_copy_left_alone(tmp_path, monkeypatch):
+    """Файл не читается (права: как с root-владельцем на устройстве), копии нет → умолчания в памяти, файл не трогаем
+    (владелец чинит права и перезапускает). С копией — восстановление из неё и перезапись (файл снова fnav:fnav)."""
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"camera": {"fps": 7}}), encoding="utf-8")
+    real = Path.read_text
+
+    def deny(self, *a, **kw):
+        if self == p:
+            raise PermissionError(13, "Permission denied")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", deny)
+    st = SettingsStore(p)
+    assert st.load_state == "degraded" and st.get() == Settings()
+    st.ensure_file()
+    assert json.loads(real(p, encoding="utf-8")) == {"camera": {"fps": 7}}  # не перезаписан
+    assert not list(tmp_path.glob("settings.json.bad-*"))
+
+    good = Settings().model_dump(mode="json")
+    good["camera"]["fps"] = 9
+    lkg_path(p).write_text(json.dumps(good), encoding="utf-8")
+    st = SettingsStore(p)
+    assert st.load_state == "recovered" and st.get().camera.fps == 9
+    st.ensure_file()
+    monkeypatch.undo()
+    assert SettingsStore(p).get().camera.fps == 9
 
 
 async def test_settings_api(data_dir):

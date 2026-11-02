@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -19,12 +20,13 @@ from starlette.staticfiles import StaticFiles
 from fnav import __version__, paths, tz
 from fnav.camera.gpstrack import to_gpx
 from fnav.core import secretsfile as sf
-from fnav.core.auth import COOKIE_NAME, SESSION_TTL_S, AuthMiddleware
+from fnav.core.auth import COOKIE_NAME, GUEST, GUEST_DENIED, GUEST_LOGIN, SESSION_TTL_S, AuthMiddleware
 from fnav.core.bluetooth import BluetoothError
 from fnav.core.camera import CameraUnavailable, ClosingStreamingResponse, rewrite_whep_location
 from fnav.core.config import SettingsError
 from fnav.core.controls import controls_info
 from fnav.core.games import GamesError
+from fnav.core.guests import MAX_TTL_S, MIN_TTL_S, GuestError, redact_settings
 from fnav.core.level import LevelError
 from fnav.core.marks import CLIP_RE, CLIPS_DIR
 from fnav.core.radio import GENRES, RadioError
@@ -84,6 +86,15 @@ class CameraViewBody(BaseModel):
     camera: Literal["front", "rear"] | None = None  # None — переключить
 
 
+class GuestLoginBody(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+
+
+class GuestLinkBody(BaseModel):
+    label: str = Field("", max_length=64)
+    expires_in_s: int = Field(ge=MIN_TTL_S, le=MAX_TTL_S)
+
+
 class NoCacheStatic(StaticFiles):
     """Статика других агентов меняется часто — браузер всегда перепроверяет (ETag/Last-Modified).
     Метка версии админки (version.json, пишет деплой: tools/web-version.sh) не кэшируется вовсе."""
@@ -108,8 +119,8 @@ async def _json_body(request: Request):
         raise SettingsError("Invalid JSON in request body") from None
 
 
-def _set_session_cookie(resp: Response, token: str) -> None:
-    resp.set_cookie(COOKIE_NAME, token, max_age=SESSION_TTL_S, httponly=True, samesite="lax", path="/")
+def _set_session_cookie(resp: Response, token: str, max_age: int = SESSION_TTL_S) -> None:
+    resp.set_cookie(COOKIE_NAME, token, max_age=max_age, httponly=True, samesite="lax", path="/")
 
 
 # ───────────────────────── приложение ─────────────────────────
@@ -158,7 +169,12 @@ def create_app(opts: CoreOptions | None = None) -> FastAPI:
     async def _cam_err(_r: Request, e: CameraUnavailable):
         return _err(503, str(e))
 
+    @app.exception_handler(GuestError)
+    async def _guest_err(_r: Request, e: GuestError):
+        return _err(e.status, e.detail)
+
     _register_auth(app, core)
+    _register_guests(app, core)
     _register_settings(app, core)
     _register_ws(app, core)
     _register_tiles(app, core)
@@ -204,10 +220,14 @@ def _register_auth(app: FastAPI, core: Core) -> None:
 
     @app.get("/api/session")
     async def session(request: Request):
-        authed = core.auth.is_authenticated(request)
-        out = {"authenticated": authed, "local": core.auth.is_local(request),
+        role = core.auth.role(request)
+        out = {"authenticated": role is not None, "local": core.auth.is_local(request),
                "remote": core.auth.is_remote(request), "mock": core.mock}
-        if authed:  # пояс устройства (≈ страна, где машина) — только своим; админка переводит по нему время записей
+        if role is not None:
+            out["guest"] = role == GUEST  # гость: вся админка, но только просмотр (docs/contracts/api.md)
+            if role == GUEST and (link := core.guests.links.get(core.auth.guest_id(request) or "")):
+                out["guest_expires"] = link.expires
+            # пояс устройства (≈ страна, где машина) — только своим; админка переводит по нему время записей
             out["timezone"] = tz.zone_name()
         return out
 
@@ -231,6 +251,77 @@ def _register_auth(app: FastAPI, core: Core) -> None:
         return resp
 
 
+# ───────────────────────── гостевой доступ (только просмотр) ─────────────────────────
+
+
+def _remote_origin(request: Request) -> str | None:
+    """https://<сервер> удалённой админки: на удалённом входе Host ставит nginx сервера."""
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+    proto = (request.headers.get("x-forwarded-proto") or "https").split(",")[0].strip().lower()
+    return f"{proto}://{host}" if host and proto in ("http", "https") else None
+
+
+def _register_guests(app: FastAPI, core: Core) -> None:
+    def owner_only(request: Request) -> JSONResponse | None:
+        # чтение гостю middleware пропускает; список ссылок и их создание — только владельцу
+        return None if core.auth.is_authenticated(request) else _err(403, GUEST_DENIED)
+
+    async def note_origin(request: Request) -> None:
+        if core.auth.is_remote(request):
+            await core.guests.note_remote_origin(_remote_origin(request))
+
+    def links_out() -> dict:
+        return {"links": core.guests.list(), "remote_origin": core.guests.remote_origin, "now": time.time()}
+
+    @app.post(GUEST_LOGIN)
+    async def guest_login(body: GuestLoginBody, request: Request):
+        """Токен гостевой ссылки → cookie гостевой сессии (до конца срока ссылки). Анти-перебор — как у входа."""
+        if not core.auth.password_hash:
+            return _err(503, "No password is set on the device: run python -m fnav.core.passwd")
+        ip = core.auth.client_ip(request)
+        wait = core.auth.lockout_left(ip)
+        if wait > 0:
+            return _err(429, f"Too many attempts. Wait {int(wait) + 1} s",
+                        headers={"Retry-After": str(int(wait) + 1)})
+        now = time.time()
+        link = core.guests.find_token(body.token, now)
+        if link is None:
+            # удача счётчик не сбрасывает: действующая ссылка не должна снимать паузу перебора пароля
+            core.auth.register_attempt(ip, False)
+            log.warning("invalid guest link from %s", ip)
+            return _err(401, "This guest link is invalid, expired or revoked")
+        await core.guests.touch(link.id, now)
+        log.info("guest link %s opened from %s", link.id, ip)
+        resp = JSONResponse({"ok": True, "guest": True, "expires": link.expires})
+        _set_session_cookie(resp, core.auth.issue_guest_token(link.id, link.expires),
+                            max(1, int(link.expires - now)))
+        return resp
+
+    @app.get("/api/guest/links")
+    async def guest_links(request: Request):
+        if (deny := owner_only(request)) is not None:
+            return deny
+        await note_origin(request)
+        return links_out()
+
+    @app.post("/api/guest/links")
+    async def guest_link_create(body: GuestLinkBody, request: Request):
+        """Новая ссылка: токен — только в этом ответе (на устройстве хранится его хэш)."""
+        if (deny := owner_only(request)) is not None:
+            return deny
+        await note_origin(request)
+        link, token = await core.guests.create(body.label, body.expires_in_s)
+        return {**links_out(), "link": link.public(), "token": token, "path": f"admin/login.html#guest={token}"}
+
+    @app.delete("/api/guest/links/{link_id}")
+    async def guest_link_revoke(link_id: str, request: Request):
+        if (deny := owner_only(request)) is not None:
+            return deny
+        if not await core.guests.revoke(link_id):
+            return _err(404, "Guest link not found")
+        return links_out()
+
+
 # ───────────────────────── настройки и экран ─────────────────────────
 
 
@@ -239,8 +330,9 @@ def _register_settings(app: FastAPI, core: Core) -> None:
         return s.model_dump(mode="json")
 
     @app.get("/api/settings")
-    async def get_settings():
-        return dump(core.store.get())
+    async def get_settings(request: Request):
+        out = dump(core.store.get())
+        return redact_settings(out) if core.auth.is_guest(request) else out  # гостю — без ключей
 
     @app.get("/api/settings/defaults")
     async def get_defaults():
@@ -290,10 +382,17 @@ def _register_settings(app: FastAPI, core: Core) -> None:
 def _register_ws(app: FastAPI, core: Core) -> None:
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):
-        hello = [core.settings_message(), core.build_telemetry().model_dump_json()]
+        # гость — только просмотр: настройки без секретов, команды — только чтение; закрывается с концом ссылки (ws.py)
+        guest = core.auth.guest_id(ws)
+        link = core.guests.links.get(guest) if guest else None
+        settings = core.settings_message()
+        if guest and core.ws.guest_filter is not None:
+            settings = json.dumps(core.ws.guest_filter(json.loads(settings)), ensure_ascii=False)
+        hello = [settings, core.build_telemetry().model_dump_json()]
         if (weather := core.weather.status()) is not None:
             hello.append(weather.model_dump_json())
-        await core.ws.serve(ws, hello, REMOTE_TELEMETRY_EVERY if core.auth.is_remote(ws) else 1)
+        await core.ws.serve(ws, hello, REMOTE_TELEMETRY_EVERY if core.auth.is_remote(ws) else 1, guest=guest,
+                            guest_until=link.expires if link else None)
 
 
 # ───────────────────────── тайлы ─────────────────────────
@@ -599,9 +698,14 @@ def _register_system(app: FastAPI, core: Core) -> None:
     async def wifi_add(body: WifiBody):
         return await core.system.wifi_add(body.ssid, body.password, body.priority)
 
+    @app.delete("/api/system/wifi")
+    async def wifi_delete_q(ssid: str):
+        """SSID — в параметре запроса: «/» в пути (%2F) раскодируется до маршрутизации, /wifi/{ssid} не совпал бы."""
+        return await core.system.wifi_delete(ssid)
+
     @app.delete("/api/system/wifi/{ssid}")
     async def wifi_delete(ssid: str):
-        return await core.system.wifi_delete(ssid)
+        return await core.system.wifi_delete(ssid)  # прежний вид (SSID без «/»): старые копии админки
 
 
 # ───────────────────────── журнал позиций, удалённый доступ ─────────────────────────

@@ -1,4 +1,8 @@
-"""Авторизация: пароль (scrypt), подписанные cookie-сессии (HMAC), анти-перебор, ASGI-middleware."""
+"""Авторизация: пароль (scrypt), подписанные cookie-сессии (HMAC), анти-перебор, ASGI-middleware.
+
+Роли сессии: владелец (`v1.…`, вход паролем) и гость только для просмотра (`g1.…`, по гостевой ссылке,
+fnav/core/guests.py). Гостю middleware пропускает чтение (GET/HEAD/OPTIONS) и короткий явный список запросов, нужных
+только для просмотра; всё остальное — 403 `Read-only guest access`. Новые маршруты закрыты для гостя сами собой."""
 
 from __future__ import annotations
 
@@ -9,15 +13,20 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from fnav.core import secretsfile as sf
+
+if TYPE_CHECKING:
+    from fnav.core.guests import GuestLinks
 
 log = logging.getLogger("fnav.core.auth")
 
@@ -27,6 +36,11 @@ MAX_FAILURES = 5
 LOCKOUT_S = 30.0
 LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 LOGIN_PAGE = "/admin/login.html"
+GUEST_LOGIN = "/api/guest/login"
+GUEST_DENIED = "Read-only guest access"
+ROLE_KEY = "fnav.role"  # роль запроса в ASGI scope (кэш на запрос): OWNER | GUEST | None
+OWNER, GUEST = "owner", "guest"
+GUEST_ID_RE = re.compile(r"^[a-z0-9]{8,32}$")
 
 # Статика, доступная без входа (нужна странице логина): всё, кроме .html, внутри /admin/,
 # и шрифты экрана (общие с админкой).
@@ -38,6 +52,14 @@ _PUBLIC_ASSET_EXT = (
 
 def _b64u(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+
+def _sig_ok(key: bytes, payload: str, sig: str) -> bool:
+    """Подпись токена. Не-ASCII подпись (мусор в cookie) — просто неверная, а не TypeError из compare_digest."""
+    if not sig.isascii():
+        return False
+    good = _b64u(hmac.new(key, payload.encode(), hashlib.sha256).digest())
+    return hmac.compare_digest(good, sig)
 
 
 @dataclass
@@ -57,6 +79,7 @@ class AuthManager:
     remote_port: int | None = None
     password_hash: str | None = None
     session_secret: str = ""
+    guests: GuestLinks | None = None  # гостевые ссылки (fnav/core/guests.py); None — гостевого входа нет
     _attempts: dict[str, _Attempts] = field(default_factory=dict)
 
     # ── загрузка ──
@@ -96,10 +119,32 @@ class AuthManager:
             exp = int(exp_s)
         except ValueError:
             return False
-        good = _b64u(hmac.new(self._key(), f"{ver}.{exp_s}.{nonce}".encode(), hashlib.sha256).digest())
-        if not hmac.compare_digest(good, sig):
+        if not _sig_ok(self._key(), f"{ver}.{exp_s}.{nonce}", sig):
             return False
         return exp > (now if now is not None else time.time())
+
+    # ── гостевые сессии: g1.<exp>.<id ссылки>.<sig>, тот же ключ (смена пароля сбрасывает и их) ──
+    def issue_guest_token(self, link_id: str, exp: float) -> str:
+        payload = f"g1.{int(exp)}.{link_id}"
+        return f"{payload}.{_b64u(hmac.new(self._key(), payload.encode(), hashlib.sha256).digest())}"
+
+    def guest_of_token(self, token: str | None, now: float | None = None) -> str | None:
+        """id действующей гостевой ссылки по cookie или None: подпись, срок cookie, ссылка не отозвана и не истекла."""
+        if not token or not self.password_hash or self.guests is None:
+            return None
+        try:
+            ver, exp_s, link_id, sig = token.split(".")
+            if ver != "g1" or not GUEST_ID_RE.match(link_id):
+                return None
+            exp = int(exp_s)
+        except ValueError:
+            return None
+        if not _sig_ok(self._key(), f"{ver}.{exp_s}.{link_id}", sig):
+            return None
+        now = time.time() if now is None else now
+        if exp <= now or not self.guests.active(link_id, now):
+            return None
+        return link_id
 
     # ── анти-перебор ──
     def lockout_left(self, ip: str, now: float | None = None) -> float:
@@ -122,6 +167,10 @@ class AuthManager:
             a.locked_until = now + LOCKOUT_S
         if len(self._attempts) > 10000:  # не даём словарю расти бесконечно
             self._attempts.clear()
+
+    def register_attempt(self, ip: str, ok: bool) -> None:
+        """Попытка не паролем (гостевая ссылка): тот же счётчик ошибок и та же пауза, что у входа."""
+        self._register(ip, ok, time.monotonic())
 
     async def try_password(self, ip: str, password: str) -> tuple[bool, float]:
         """→ (ok, сколько ждать). Если IP заблокирован — пароль даже не проверяется."""
@@ -156,12 +205,28 @@ class AuthManager:
                 return ip
         return conn.client.host if conn.client else "?"
 
+    def role(self, conn: HTTPConnection) -> str | None:
+        """OWNER (вход паролем), GUEST (гостевая ссылка) или None. Считается раз на запрос (кэш в scope)."""
+        if ROLE_KEY in conn.scope:
+            return conn.scope[ROLE_KEY]
+        token = conn.cookies.get(COOKIE_NAME)
+        role = OWNER if self.check_token(token) else GUEST if self.guest_of_token(token) else None
+        conn.scope[ROLE_KEY] = role
+        return role
+
     def is_authenticated(self, conn: HTTPConnection) -> bool:
-        return self.check_token(conn.cookies.get(COOKIE_NAME))
+        """Вошёл владелец. Гость сюда не входит (см. role(), is_guest())."""
+        return self.role(conn) == OWNER
+
+    def is_guest(self, conn: HTTPConnection) -> bool:
+        return self.role(conn) == GUEST
+
+    def guest_id(self, conn: HTTPConnection) -> str | None:
+        return self.guest_of_token(conn.cookies.get(COOKIE_NAME)) if self.is_guest(conn) else None
 
 
 def is_public_path(path: str, method: str) -> bool:
-    if path in ("/api/login", "/api/session", "/", "/favicon.ico", LOGIN_PAGE):
+    if path in ("/api/login", "/api/session", GUEST_LOGIN, "/", "/favicon.ico", LOGIN_PAGE):
         return True
     if path.startswith("/admin/") and path.lower().endswith(_PUBLIC_ASSET_EXT):
         return True
@@ -181,8 +246,35 @@ def is_local_allowed(path: str, method: str) -> bool:
     return path == "/api/settings" and method in ("GET", "HEAD")
 
 
+# Гостю, кроме чтения: живое видео WebRTC (WHEP: POST — предложение SDP, PATCH — ICE, DELETE — закрыть свою сессию
+# просмотра) и выход (удаляет cookie только у самого гостя). Больше ничего: список явный и короткий.
+_GUEST_READ = frozenset({"GET", "HEAD", "OPTIONS"})
+_WHEP_ROOT = re.compile(r"^/api/camera(?:/rear)?/whep$")
+_WHEP_SUB = re.compile(r"^/api/camera(?:/rear)?/whep/.+$")
+
+
+def guest_allowed(path: str, method: str) -> bool:
+    """Можно ли гостю (только просмотр) этот HTTP-запрос. Команды гостя по WebSocket проверяет ws.py."""
+    if method in _GUEST_READ:
+        return True
+    if method == "POST" and (path == "/api/logout" or _WHEP_ROOT.match(path)):
+        return True
+    return method in ("PATCH", "DELETE") and bool(_WHEP_SUB.match(path))
+
+
 def _is_api(path: str) -> bool:
     return path.startswith(("/api/", "/tiles/")) or path == "/ws"
+
+
+async def _send_json(send: Send, status: int, detail: str) -> None:
+    body = json.dumps({"detail": detail}, ensure_ascii=False).encode()
+    await send({
+        "type": "http.response.start",
+        "status": status,
+        "headers": [(b"content-type", b"application/json; charset=utf-8"),
+                    (b"content-length", str(len(body)).encode())],
+    })
+    await send({"type": "http.response.body", "body": body})
 
 
 class AuthMiddleware:
@@ -200,12 +292,23 @@ class AuthMiddleware:
         path: str = scope.get("path", "")
         method: str = scope.get("method", "GET") if scope["type"] == "http" else "GET"
         conn = HTTPConnection(scope)
+        role = auth.role(conn)
         if (
             is_public_path(path, method)
             or (auth.is_local(conn) and is_local_allowed(path, method))
-            or auth.is_authenticated(conn)
+            or role == OWNER
         ):
             await self.app(scope, receive, send)
+            return
+
+        if role == GUEST:
+            # только просмотр: WebSocket пускаем (его команды фильтрует ws.py), HTTP — по guest_allowed()
+            if scope["type"] == "websocket" or guest_allowed(path, method):
+                if auth.guests is not None:
+                    await auth.guests.touch(auth.guest_id(conn))
+                await self.app(scope, receive, send)
+            else:
+                await _send_json(send, 403, GUEST_DENIED)
             return
 
         if scope["type"] == "websocket":
@@ -215,14 +318,7 @@ class AuthMiddleware:
             return
 
         if _is_api(path) or method not in ("GET", "HEAD"):
-            body = json.dumps({"detail": "Login required"}, ensure_ascii=False).encode()
-            await send({
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [(b"content-type", b"application/json; charset=utf-8"),
-                            (b"content-length", str(len(body)).encode())],
-            })
-            await send({"type": "http.response.body", "body": body})
+            await _send_json(send, 401, "Login required")
             return
 
         qs = scope.get("query_string", b"").decode("latin-1")

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from relay_helpers import Store, at, haversine_m, pt
+import json
+
+from relay_helpers import MAX_FUTURE_S, Store, at, clean_sample, haversine_m, pt
 
 
 def visits(store: Store) -> list[tuple]:
@@ -121,3 +123,43 @@ def test_state_survives_reopen(tmp_path):
 
 def test_place_unknown(store):
     assert store.place(42) is None
+
+
+# ── B6: точка «из будущего» (нет RTC, плохое время NMEA) не останавливает журнал ──
+
+NOW = 1_800_000_000.0
+
+
+def test_future_point_does_not_stop_the_log(store):
+    real = [pt(NOW - 600), pt(NOW - 540, 5)]
+    res = store.ingest([*real, pt(NOW + 86400 * 365, 3)], now=NOW)
+    assert res == {"accepted": 2, "skipped": 1, "last_ts": NOW - 540}  # из будущего — пропуск, отметка не сдвинута
+    res = store.ingest([pt(NOW - 480, 4), pt(NOW + 300, 6)], now=NOW)  # чуть впереди (≤ 10 мин) — ещё годится
+    assert res["accepted"] == 2 and res["last_ts"] == NOW + 300
+    assert store.ingest([pt(NOW + 900, 2)], now=NOW + 700)["accepted"] == 1  # и следующие настоящие точки — тоже
+    assert store.last()["ts"] == NOW + 900
+
+
+def test_future_watermark_from_older_version_repaired(store):
+    """База, где плохая точка уже подняла last_ts (до этой версии): отметка сбрасывается, мусорный визит убран,
+    журнал идёт дальше."""
+    store.ingest([pt(NOW - 600), pt(NOW - 300, 5)], now=NOW - 300)
+    with store._lock:  # как сделала бы старая версия: точка через год продлила визит, вторая — новое место
+        store.db.execute("UPDATE visits SET end_ts = ? WHERE id = 1", (NOW + 3e7,))
+        pid = store.db.execute("INSERT INTO places(lat, lon, created_ts) VALUES(1, 1, ?)", (NOW + 3e7,)).lastrowid
+        store.db.execute("INSERT INTO visits(place_id, start_ts, end_ts, samples) VALUES(?, ?, ?, 1)",
+                         (pid, NOW + 3e7, NOW + 3e7))
+        store._set("last_ts", repr(NOW + 3e7))
+        store._set("last_sample", json.dumps({"ts": NOW + 3e7, "lat": 1, "lon": 1, "received_ts": NOW - 120}))
+    res = store.ingest([pt(NOW, 10)], now=NOW)
+    assert res["accepted"] == 1 and res["last_ts"] == NOW
+    # визит обрезан по времени прихода плохой точки, затем продлён настоящей; место «из будущего» удалено
+    assert visits(store) == [(1, NOW - 600, NOW, 3)]
+    assert store.db.execute("SELECT COUNT(*) FROM places").fetchone()[0] == 1
+    assert store.last()["ts"] == NOW
+
+
+def test_clean_sample_rejects_far_future():
+    assert clean_sample(pt(NOW + MAX_FUTURE_S - 1), now=NOW) is not None
+    assert clean_sample(pt(NOW + MAX_FUTURE_S + 1), now=NOW) is None
+    assert clean_sample(pt(1000)) is not None  # прошлое — как раньше

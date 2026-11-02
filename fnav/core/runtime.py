@@ -30,6 +30,7 @@ from fnav.core.camera import (
 )
 from fnav.core.config import SettingsStore
 from fnav.core.games import GamesService
+from fnav.core.guests import GuestLinks, redact_message
 from fnav.core.impact import ImpactService
 from fnav.core.imu import ImuService
 from fnav.core.keypad import KeypadService
@@ -163,6 +164,13 @@ class Core:
         self.tracking = TrackService(paths.data_dir() / "track_outbox.db", relay,
                                      lambda: (self.auth.password_hash, self.auth.session_secret),
                                      transport=opts.relay_transport)
+        # гостевые ссылки «только просмотр»: проверка — AuthMiddleware и ws.py, список ссылок узнаёт и fnav-relay;
+        # отозвали — открытые гостевые WebSocket закрываются
+        self.guests = GuestLinks(paths.data_dir() / "guest_links.json", on_change=lambda: (
+            self.tracking.resync_auth(), self.ws.drop_guests(self.guests.active)))
+        self.auth.guests = self.guests
+        self.tracking.get_guests = self.guests.relay_list
+        self.ws.guest_filter = redact_message
         self.bt = create_bluetooth(opts.mock, paths.data_dir(), lambda: self.store.get().bluetooth)
         self.radio = create_radio(opts.mock, paths.data_dir(), lambda: self.store.get().radio,
                                   self._save_radio_volume, transport=opts.radio_transport,

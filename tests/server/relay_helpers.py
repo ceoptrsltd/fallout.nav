@@ -17,7 +17,7 @@ from fnav_relay import alarm, auth, webpush  # noqa: F401
 from fnav_relay.alarm import Notifier  # noqa: F401
 from fnav_relay.api import RelayServer  # noqa: F401
 from fnav_relay.config import Config
-from fnav_relay.store import Store, haversine_m  # noqa: F401
+from fnav_relay.store import MAX_FUTURE_S, Store, clean_sample, haversine_m  # noqa: F401
 
 DEVICE_TOKEN = "test-device-token-0123456789"
 TEST_HASH = "scrypt$16384$8$1$c2FsdA==$aGFzaA=="  # cookie проверяется только по HMAC: хэш может быть любым

@@ -214,3 +214,79 @@ def test_core_cookie_accepted_by_relay_api(relay, tmp_path, pw_hash):
     c = f"{auth.COOKIE_NAME}={core.issue_token()}"
     assert relay.call("GET", "/fnadmin/api/session", headers={"Cookie": c}).data["authenticated"] is True
     assert relay.call("GET", "/fnadmin/api/tracking/places", headers={"Cookie": c}).status == 200
+
+
+# ── B7: мусор (не-ASCII) в cookie — не 500 ──
+
+
+@pytest.mark.parametrize("cookie", ["v1.9999999999.abc.é", "g1.9999999999.abcdefabcdef.é"])
+def test_non_ascii_cookie_is_not_500(relay, pw_hash, cookie):
+    sync_auth(relay, pw_hash)
+    c = {"Cookie": f"{auth.COOKIE_NAME}={cookie}"}  # http.client шлёт latin-1: байт 0xE9, как браузер
+    r = relay.call("GET", "/fnadmin/api/session", headers=c)
+    assert r.status == 200 and r.data["authenticated"] is False
+    assert relay.call("GET", "/fnadmin/api/tracking/last", headers=c).status == 401
+    assert not auth.check_token(cookie, SECRET, pw_hash)
+    assert auth.check_guest_token(cookie, SECRET, pw_hash, {"abcdefabcdef": time.time() + 99}) is None
+
+
+# ── гостевые cookie (только просмотр): выдаёт устройство, список действующих ссылок — тоже оно ──
+
+
+def sync_guests(relay, pw_hash: str, links: list[dict]):
+    r = relay.device("POST", "/device/auth", {"password_hash": pw_hash, "session_secret": SECRET,
+                                              "guest_links": links})
+    assert r.status == 200
+
+
+def test_guest_cookie_read_only_on_relay(relay, tmp_path, pw_hash):
+    lid, exp = "abcdef012345", time.time() + 3600
+    core = AuthManager(secrets_path=tmp_path / "s.env", password_hash=pw_hash, session_secret=SECRET)
+    c = {"Cookie": f"{auth.COOKIE_NAME}={core.issue_guest_token(lid, exp)}"}
+    sync_auth(relay, pw_hash)  # устройство без гостевых ссылок — гостя не пускают
+    assert relay.call("GET", "/fnadmin/api/session", headers=c).data["authenticated"] is False
+    assert relay.call("GET", "/fnadmin/api/tracking/places", headers=c).status == 401
+
+    sync_guests(relay, pw_hash, [{"id": lid, "expires": exp}, {"id": "BAD id", "expires": exp}])
+    s = relay.call("GET", "/fnadmin/api/session", headers=c).data
+    assert s == {"authenticated": True, "local": False, "mock": False, "offline": True, "guest": True}
+    assert relay.call("GET", "/fnadmin/api/tracking/places", headers=c).status == 200
+    assert relay.call("GET", "/fnadmin/api/tracking/last", headers=c).status == 200
+    r = relay.call("GET", "/fnadmin/api/push/subscriptions", headers=c)
+    assert r.status == 200 and all("endpoint" not in x for x in r.data["subscriptions"])
+    # подписаться, отписать, удалить чужую подписку, тест — нельзя
+    for method, path in (("POST", "/api/push/subscribe"), ("POST", "/api/push/unsubscribe"),
+                         ("POST", "/api/push/test"), ("DELETE", "/api/push/subscriptions/1"),
+                         ("POST", "/api/tracking/places")):
+        r = relay.call(method, "/fnadmin" + path, {"endpoint": "https://x"}, headers=c)
+        assert r.status == 403 and r.data == {"detail": "Read-only guest access"}, path
+    assert relay.call("POST", "/fnadmin/api/logout", {}, headers=c).status == 200  # свою cookie — можно
+
+    # подделка: чужой id, срок cookie продлён
+    forged = core.issue_guest_token("ffffffffffff", exp)
+    assert relay.call("GET", "/api/session", headers={"Cookie": f"{auth.COOKIE_NAME}={forged}"}).data[
+        "authenticated"] is False
+    # отзыв на устройстве (новый список без ссылки) — сервер больше не пускает
+    sync_guests(relay, pw_hash, [])
+    assert relay.call("GET", "/fnadmin/api/tracking/places", headers=c).status == 401
+    # истекла ссылка — тоже
+    sync_guests(relay, pw_hash, [{"id": lid, "expires": time.time() - 1}])
+    assert relay.call("GET", "/fnadmin/api/session", headers=c).data["authenticated"] is False
+    # старое устройство (без поля) — гостей нет
+    sync_guests(relay, pw_hash, [{"id": lid, "expires": exp}])
+    sync_auth(relay, pw_hash)
+    assert relay.call("GET", "/fnadmin/api/tracking/places", headers=c).status == 401
+    assert relay.device("POST", "/device/auth", {"password_hash": pw_hash, "session_secret": SECRET,
+                                                 "guest_links": "x"}).status == 400
+
+
+def test_guest_token_compatible_with_core(tmp_path, pw_hash):
+    core = AuthManager(secrets_path=tmp_path / "s.env", password_hash=pw_hash, session_secret=SECRET)
+    exp = time.time() + 600
+    tok = core.issue_guest_token("abcdef012345", exp)
+    assert tok == auth.issue_guest_token(SECRET, pw_hash, "abcdef012345", exp)
+    assert auth.check_guest_token(tok, SECRET, pw_hash, {"abcdef012345": exp}) == "abcdef012345"
+    assert auth.check_guest_token(tok, SECRET, pw_hash, {"abcdef012345": exp}, now=exp + 1) is None
+    assert auth.check_guest_token(tok, SECRET + "x", pw_hash, {"abcdef012345": exp}) is None
+    assert not auth.check_token(tok, SECRET, pw_hash)  # гостевая — не сессия владельца
+    assert not core.check_token(tok)

@@ -145,10 +145,15 @@ export FNAV_HOST=172.23.204.16 FNAV_USER=falloutnav
 ./pi/deploy.sh                          # code + system files + deps (if pyproject.toml changed) + restart fnav-core/camera/watch/display
 ./pi/deploy.sh --only "fnav-core"       # restart only core
 ./pi/deploy.sh --no-restart             # just copy
-./pi/deploy.sh --dry-run                # show what would be sent
+./pi/deploy.sh --dry-run                # show what would be sent (and what is left out)
+FNAV_RESTART="fnav-core fnav-watch" ./pi/deploy.sh   # same as --only; --only / --no-restart win over it
 ```
 
 `deploy.sh` needs key-based ssh and passwordless `sudo` for the login user; the upload is a tar stream (no rsync on Windows).
+It packs the files git tracks, with their working-tree content (uncommitted edits to tracked files deploy too), plus
+the generated `web/admin/version.json`; untracked files stay on the PC and are listed ("Not deployed: untracked here"),
+so `git add` a new file before deploying it. `/opt/fnav/app` mirrors the pack: files that are no longer in it are
+removed there.
 Restarting `fnav-camera` closes the current recording segment cleanly and starts a new one.
 A unit added after the first install (`fnav-watch`) is enabled by the deploy itself; `install.sh` enables all of them.
 

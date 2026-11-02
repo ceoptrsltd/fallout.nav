@@ -1,6 +1,7 @@
 """Пароль (scrypt) и токены сессий — байт-в-байт как fnav/core/secretsfile.py и fnav/core/auth.py, плюс анти-перебор.
 
 Хэш пароля и секрет сессий присылает устройство, поэтому cookie, выданная устройством, действует и здесь, и наоборот.
+Гостевые cookie (`g1.<exp>.<id>.<sig>`, только просмотр) — тот же ключ; какие ссылки действуют, сообщает устройство.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -20,6 +22,7 @@ MAX_FAILURES = 5  # подряд с одного IP → блокировка IP
 LOCKOUT_S = 30.0
 GLOBAL_WINDOW_S = 60.0  # общий предел неудачных попыток со всех IP за окно
 GLOBAL_MAX_FAILURES = 30
+GUEST_ID_RE = re.compile(r"^[a-z0-9]{8,32}$")
 
 
 def _b64u(b: bytes) -> str:
@@ -67,6 +70,13 @@ def issue_token(secret: str, password_hash: str, now: float | None = None) -> st
     return f"{payload}.{sig}"
 
 
+def _sig_ok(key: bytes, payload: str, sig: str) -> bool:
+    """Не-ASCII подпись (мусор в cookie) — просто неверная, а не TypeError из compare_digest (HTTP 500)."""
+    if not sig.isascii():
+        return False
+    return hmac.compare_digest(_b64u(hmac.new(key, payload.encode(), hashlib.sha256).digest()), sig)
+
+
 def check_token(token: str | None, secret: str | None, password_hash: str | None,
                 now: float | None = None) -> bool:
     if not token or not secret or not password_hash:
@@ -78,11 +88,36 @@ def check_token(token: str | None, secret: str | None, password_hash: str | None
         exp = int(exp_s)
     except ValueError:
         return False
-    good = _b64u(hmac.new(_key(secret, password_hash), f"{ver}.{exp_s}.{nonce}".encode(),
-                          hashlib.sha256).digest())
-    if not hmac.compare_digest(good, sig):
+    if not _sig_ok(_key(secret, password_hash), f"{ver}.{exp_s}.{nonce}", sig):
         return False
     return exp > (now if now is not None else time.time())
+
+
+def issue_guest_token(secret: str, password_hash: str, link_id: str, exp: float) -> str:
+    """Как AuthManager.issue_guest_token в fnav-core (тесты; сервер гостевые cookie не выдаёт)."""
+    payload = f"g1.{int(exp)}.{link_id}"
+    return f"{payload}.{_b64u(hmac.new(_key(secret, password_hash), payload.encode(), hashlib.sha256).digest())}"
+
+
+def check_guest_token(token: str | None, secret: str | None, password_hash: str | None, links: dict[str, float],
+                      now: float | None = None) -> str | None:
+    """Гостевая cookie → id ссылки, если подпись верна, срок не вышел и устройство считает ссылку действующей
+    (`links`: id → срок, из POST /device/auth). Иначе None."""
+    if not token or not secret or not password_hash:
+        return None
+    try:
+        ver, exp_s, link_id, sig = token.split(".")
+        if ver != "g1" or not GUEST_ID_RE.match(link_id):
+            return None
+        exp = int(exp_s)
+    except ValueError:
+        return None
+    if not _sig_ok(_key(secret, password_hash), f"{ver}.{exp_s}.{link_id}", sig):
+        return None
+    now = time.time() if now is None else now
+    if exp <= now or links.get(link_id, 0.0) <= now:
+        return None
+    return link_id
 
 
 # ── анти-перебор ──

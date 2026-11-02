@@ -117,6 +117,11 @@ tools/remote.sh web                             # after UI changes (pi/deploy.sh
 
 Details: `docs/contracts/remote.md`.
 
+Guest access (System page, "Guest access (read only)"): a link that opens the whole admin for someone else — on the
+van's network or through the server — for 1 day, 7 days or until a chosen date. A guest sees everything but the
+device refuses every change (403), keys are not shown, and a link can be revoked at once. Details:
+`docs/contracts/api.md`, "Гостевой доступ".
+
 ### Develop on a PC (no hardware)
 
 ```bash

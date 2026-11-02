@@ -1,4 +1,10 @@
-"""WebSocket /ws: рассылка телеметрии, настроек, событий и NMEA."""
+"""WebSocket /ws: рассылка телеметрии, настроек, событий и NMEA.
+
+Гость (только просмотр, fnav/core/guests.py) получает то же, но сообщения проходят через `guest_filter` (настройки —
+без секретов), а из его команд выполняются только команды чтения (READ_COMMANDS); остальные — ответ
+`{"type":"error","status":403,"detail":"Read-only guest access"}`. Новая команда для гостя закрыта, пока её не
+добавят в READ_COMMANDS. Гостевое соединение закрывается, когда истекает его ссылка (проверка с каждым кадром
+телеметрии) или её отзывают (drop_guests)."""
 
 from __future__ import annotations
 
@@ -6,6 +12,8 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
+from collections.abc import Callable
 from typing import Any
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
@@ -15,11 +23,17 @@ from fnav.core.util import cancel_tasks
 log = logging.getLogger("fnav.core.ws")
 
 QUEUE_MAX = 50  # 5 с телеметрии; клиент, который не успевает, отключаем
+READ_COMMANDS = frozenset({"subscribe", "unsubscribe", "ping"})  # команды, которые можно гостю
+GUEST_DENIED = "Read-only guest access"
 
 
 class Client:
-    def __init__(self, ws: WebSocket, telemetry_every: int = 1):
+    def __init__(self, ws: WebSocket, telemetry_every: int = 1, guest: str | None = None,
+                 guest_until: float | None = None):
         self.ws = ws
+        self.guest = guest is not None  # гостевая сессия: только просмотр
+        self.guest_id = guest  # id гостевой ссылки
+        self.guest_until = guest_until  # срок ссылки (unix): после него соединение закрывается
         self.telemetry_every = max(1, telemetry_every)  # 1 — каждый кадр телеметрии, 5 — каждый пятый
         self.queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=QUEUE_MAX)
         self.topics: set[str] = set()
@@ -41,10 +55,22 @@ class Client:
                 pass
             return False
 
+    def close(self) -> None:
+        """Закрыть со стороны сервера: отправитель доходит до None и закрывает сокет."""
+        if self.closed:
+            return
+        self.closed = True
+        with contextlib.suppress(asyncio.QueueEmpty, asyncio.QueueFull):
+            if self.queue.full():
+                self.queue.get_nowait()
+            self.queue.put_nowait(None)
+
 
 class WsManager:
     def __init__(self) -> None:
         self.clients: set[Client] = set()
+        # сообщение для гостя (без секретов); None — как всем (fnav/core/guests.py redact_message)
+        self.guest_filter: Callable[[dict], dict] | None = None
 
     def __len__(self) -> int:
         return len(self.clients)
@@ -55,13 +81,34 @@ class WsManager:
                 c.send(text)
 
     def broadcast_telemetry(self, text: str, tick: int) -> None:
+        now = time.time()
         for c in list(self.clients):
-            if tick % c.telemetry_every == 0:
+            if c.guest_until is not None and now >= c.guest_until:
+                c.close()  # гостевая ссылка истекла
+            elif tick % c.telemetry_every == 0:
                 c.send(text)
 
+    def drop_guests(self, active: Callable[[str], bool]) -> None:
+        """Закрыть гостевые соединения, чьи ссылки больше не действуют (отозваны)."""
+        for c in list(self.clients):
+            if c.guest and not active(c.guest_id or ""):
+                c.close()
+
     def broadcast(self, msg: dict[str, Any], topic: str | None = None) -> None:
-        if self.clients:
-            self.broadcast_text(json.dumps(msg, ensure_ascii=False), topic)
+        if not self.clients:
+            return
+        text = json.dumps(msg, ensure_ascii=False)
+        guest_text: str | None = None
+        for c in list(self.clients):
+            if topic is not None and topic not in c.topics:
+                continue
+            if c.guest and self.guest_filter is not None:
+                if guest_text is None:
+                    gm = self.guest_filter(msg)
+                    guest_text = text if gm is msg else json.dumps(gm, ensure_ascii=False)
+                c.send(guest_text)
+            else:
+                c.send(text)
 
     def event(self, event: str, **fields: Any) -> None:
         self.broadcast({"type": "event", "event": event, **fields})
@@ -72,9 +119,11 @@ class WsManager:
     def subscribers(self, topic: str) -> list[Client]:
         return [c for c in self.clients if topic in c.topics]
 
-    async def serve(self, ws: WebSocket, hello: list[str], telemetry_every: int = 1) -> None:
+    async def serve(self, ws: WebSocket, hello: list[str], telemetry_every: int = 1, guest: str | None = None,
+                    guest_until: float | None = None) -> None:
+        """hello — уже готовые для этого клиента сообщения (для гостя — без секретов); guest — id гостевой ссылки."""
         await ws.accept()
-        client = Client(ws, telemetry_every)
+        client = Client(ws, telemetry_every, guest, guest_until)
         for h in hello:
             client.send(h)
         self.clients.add(client)
@@ -114,6 +163,10 @@ class WsManager:
         if not isinstance(msg, dict):
             return
         t = msg.get("type")
+        if client.guest and t not in READ_COMMANDS:  # гость: только чтение, любая другая команда — отказ
+            client.send(json.dumps({"type": "error", "status": 403, "detail": GUEST_DENIED,
+                                    "command": str(t)[:40]}))
+            return
         topics = msg.get("topics") or []
         if not isinstance(topics, list):
             return
