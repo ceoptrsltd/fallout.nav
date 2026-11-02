@@ -846,7 +846,10 @@ async def test_video_lost_raises_the_alarm_without_siren_and_back_is_a_note(tmp_
     async def protect():
         return {"ok": True, "segment": "2026-10-27/2026-10-27_14-00-00.ts"}
 
-    async def protect_rear():
+    asked: list = []
+
+    async def protect_rear(recent: bool = False):
+        asked.append(recent)  # камера пропала: текущей записи нет — последняя закрытая
         return {"ok": True, "segment": "rear/2026-10-27/2026-10-27_13-59-00.ts"}
 
     svc, clk, cfg = make_alarm(tmp_path, arm_delay_s=0, siren=True, video_loss_s=20, protect=protect,
@@ -879,7 +882,7 @@ async def test_video_lost_raises_the_alarm_without_siren_and_back_is_a_note(tmp_
     ev = svc.events[0]
     assert ev.kind == "video_lost" and ev.title == "Rear camera lost" and svc.state == "triggered"
     assert ev.data["camera"] == "rear" and ev.data["since"] == pytest.approx(clk.wall - 20)
-    assert ev.data["segment"].endswith(".ts") and ev.data["segment_rear"].startswith("rear/")
+    assert ev.data["segment"].endswith(".ts") and ev.data["segment_rear"].startswith("rear/") and asked == [True]
     assert sirens == []  # без сирены: бывает и сбой Wi-Fi
     assert svc.status().cameras[1].model_dump() == {"camera": "rear", "video": False, "lost": True}
     clk.tick(31.0)

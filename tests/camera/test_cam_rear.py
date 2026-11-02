@@ -287,12 +287,13 @@ def test_lost_camera_reports_video_age_and_protects_the_last_segment(tmp_path: P
         assert _wait(lambda: svc._p is not None and isinstance(svc._p.source, _SilentSource))
         st = svc.status()
         assert st.video_age_s is None and st.current_segment is None
-        rel = svc.protect_current()
+        assert svc.protect_current() is None  # обычная защита: текущей записи нет — ничего
+        rel = svc.protect_current(recent=True)  # охрана, камера пропала: последний закрытый сегмент
         assert rel is not None and rel.startswith("rear/")
         seg = tmp_path / "rec" / rel
         assert seg.is_file() and seg.with_name(seg.name + ".lock").is_file()
         path, rel0, _t = svc._last_segment
         svc._last_segment = (path, rel0, time.monotonic() - 601)  # старше 10 мин — не то, что было перед пропажей
-        assert svc.protect_current() is None
+        assert svc.protect_current(recent=True) is None
     finally:
         svc.stop()

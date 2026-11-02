@@ -21,8 +21,31 @@ def test_history_keeps_recent_frames_at_most_twice_a_second(monkeypatch):
     now[0] += 20  # кадров долго не было — история ограничена 12 с назад от нового кадра
     hub.publish(b"new")
     assert [j for _, j in hub._history] == [b"new"]
-    age, jpg = hub.frame_before(5)
-    assert jpg == b"new" and age == 0.0  # раньше нет — самый близкий
+    assert hub.frame_before(5) is None  # 5 с назад кадров не было — и снимка нет (не подменять кадром «сейчас»)
+    age, jpg = hub.frame_before(1.5)
+    assert jpg == b"new" and age == 0.0  # не дальше MATCH_S от того момента — годится
+
+
+def test_no_stale_frames_when_the_camera_stops(monkeypatch):
+    """Камера пропала: «сейчас» — кадра нет (а не стоп-кадр часовой давности); её последние кадры — только по
+    запросу «N секунд назад», попадающему в то время, когда они были."""
+    now = [100.0]
+    monkeypatch.setattr(mjpeg.time, "monotonic", lambda: now[0])
+    hub = MjpegHub()
+    assert hub.fresh_jpeg() is None
+    for i in range(20):  # 1 к/с, 20 с
+        hub.publish(b"f%d" % i)
+        now[0] += 1.0
+    assert hub.fresh_jpeg() == b"f19"  # последний кадр 1 с назад
+    now[0] += 2.5
+    assert hub.fresh_jpeg() is None  # 3,5 с без кадров — видео нет
+    assert hub.frame_before(5)[1] == b"f17"  # а 5 с назад оно ещё шло — кадр того времени есть
+    now[0] += 7.5
+    assert hub.frame_before(5) is None  # 11 с без кадров: «за 5 с до события» их уже не было — снимка нет
+    age, jpg = hub.frame_before(13)  # охрана просит кадр перед пропажей
+    assert jpg == b"f17" and age == 13.0
+    now[0] += 3600  # час спустя — по-прежнему ничего «текущего»
+    assert hub.fresh_jpeg() is None and hub.frame_before(5) is None
 
 
 async def test_new_viewer_gets_a_fresh_frame_not_a_stale_one():

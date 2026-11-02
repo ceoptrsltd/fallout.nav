@@ -67,8 +67,9 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
   пропало (unix). Одна пропажа — одно событие.
 - Действия — как у событий камер ([vision.md](vision.md)): журнал, push, аварийка, защита записей и снимки обеих камер;
   **без сирены** (сбой Wi-Fi или перезагрузка камеры выглядят так же). У пропавшей камеры защищается последний
-  сегмент (сервис камеры перезапустил конвейер — тот, что закрыт при остановке, если моложе 10 мин), снимок — её
-  последний кадр (история `/snapshot.jpg?before=5`). Метка на шкале записи и Play в журнале — с `data.since`.
+  сегмент (`/protect-current?recent=1`: сервис перезапустил конвейер — тот, что закрыт при остановке, если моложе
+  10 мин), снимок — её кадр за 5 с до `data.since` (`/snapshot.jpg?before=<сейчас − since + 5>` из истории хаба).
+  Метка на шкале записи и Play в журнале — с `data.since`.
 - Видео снова идёт **10 с подряд** (`VIDEO_BACK_S`; мигающая камера — одна пропажа) → событие **`video_back`**
   (`data.camera`, `data.lost_s` — сколько не было): журнал и push, **не тревога** (состояние, сирена, аварийка не
   меняются; экран плашку не показывает).
@@ -85,6 +86,12 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 
 ### Действия при событии (кроме `test`)
 
+Снимки и защита записи — **только у камер, у которых видео идёт сейчас** (`VideoWatch`: `get_video`). Задняя
+выключена — её не спрашивают; камера есть, но кадров нет (выключена из сети, не подключена, сервис не работает) — ни
+её снимка, ни записи (`data.snapshot*` / `data.segment*` нет), а не стоп-кадр или старая запись. Исключение —
+пропавшая камера в событии `video_lost` (раздел «Камера пропала»). Сервис камеры и сам не отдаёт старых кадров
+([camera.md](camera.md), `/snapshot.jpg`).
+
 1. Журнал (`data_dir/alarm_events.json`, последние 200), `Telemetry.alarm.seq += 1`.
 2. Камера: `protect-current` (клиент fnav-core к fnav-camera) — сегмент не удалится автоматически;
    имя сегмента — в `data.segment`.
@@ -94,7 +101,7 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
    **События камеры (`approach`, `face`, `loiter`) и пропажа видео (`video_lost`) сирену не включают никогда** —
    [vision.md](vision.md).
 4. Снимок камеры — кадр **за 5 с до события** (`SNAPSHOT_BEFORE_S`; `GET /snapshot.jpg?before=5` fnav-camera, кадр из
-   её истории последних 12 с: видно, что к событию привело) → `data_dir/alarm_snaps/<id>.jpg` (последние 100),
+   её истории: видно, что к событию привело; кадров тогда не было — снимка нет) → `data_dir/alarm_snaps/<id>.jpg` (последние 100),
    `data.snapshot = true`; удаляются вместе с журналом. Запись события в админке (кнопка Play) тоже начинается за 5 с.
 5. В outbox для сервера (если настроен `FNAV_RELAY_URL`/токен, как у журнала позиций).
 
@@ -169,7 +176,7 @@ to the back of the van for 8 s at 14:03». Пауза между push (`push_coo
 `AlarmStatus = {state, armed_at: float|null, arm_in_s: int|null, sensor: {ok: bool, model: str|null, address: int,
 error: str|null}, level_g: float|null, tilt_deg: float|null (текущий угол от базы, null вне armed), siren: bool
 (звучит), events: AlarmEvent[] (новые первыми, ≤ 100), relay: {configured: bool, pending: int}, hazard: {…},
-vision: {enabled, available, watching, people, error, rear: {watching, people, error} | null} ([vision.md](vision.md)),
+vision: {enabled, available, watching, people, error, rear: {watching, people, error} | null, front: {…} | null — ошибка передней отдельно: её нет, а задняя смотрится — предупреждение, не отказ} ([vision.md](vision.md)),
 cameras: [{camera: "front"|"rear", video: bool (кадры идут), lost: bool (было video_lost, ещё не вернулась)}] (задняя —
 если включена)}`
 

@@ -58,7 +58,7 @@ class MockCamera:
         self._drop = (now, now + seconds)
         log.info("mock camera %s: no video for %.0f s", self.camera, seconds)
 
-    def _dropped_for(self) -> float | None:
+    def dropped_s(self) -> float | None:
         """Сколько секунд уже нет видео; None — видео идёт."""
         d, now = self._drop, time.monotonic()
         if d is None or now >= d[1]:
@@ -224,7 +224,7 @@ class MockCamera:
 
     # ── статус и «записи» ──
     def status(self) -> CameraStatus:
-        gone = self._dropped_for()
+        gone = self.dropped_s()
         if gone is not None:
             # как у сервиса камеры после перезапуска конвейера без кадров: video_age_s — None
             return CameraStatus(state="error", camera=self.camera,  # type: ignore[arg-type]

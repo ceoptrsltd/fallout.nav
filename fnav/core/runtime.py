@@ -686,11 +686,11 @@ class Core:
         await cam.poll()
         return True
 
-    async def _protect_rear_quiet(self) -> dict:
+    async def _protect_rear_quiet(self, recent: bool = False) -> dict:
         """Для сигнализации: защитить запись задней, если она включена (выключена — пусто, без ошибки)."""
         if not self.camera_rear.enabled:
             return {}
-        return await self.camera_rear.protect_current()
+        return await self.camera_rear.protect_current(recent=recent)
 
     async def _snapshot_rear_quiet(self, before_s: float = 0.0) -> bytes:
         if not self.camera_rear.enabled:
@@ -721,8 +721,15 @@ class Core:
             log.exception("hub.beep()")
 
     async def protect_current(self) -> dict:
-        """Защитить текущие записи: передней (ошибка — наружу) и задней, если она включена (без ошибок)."""
-        res = await self.camera.protect_current()
+        """Защитить текущие записи передней и задней (если она включена) — каждую сама по себе: нет записи одной
+        камеры — защищается другая. Нет ни одной — ошибка передней наружу."""
+        res: dict = {"ok": True, "segment": None}
+        front_err: CameraUnavailable | None = None
+        try:
+            res = await self.camera.protect_current()
+        except CameraUnavailable as e:
+            front_err = e
+            log.info("front camera: cannot protect: %s", e)
         seg = res.get("segment")
         rear = None
         if self.camera_rear.enabled:
@@ -730,6 +737,8 @@ class Core:
                 rear = (await self.camera_rear.protect_current()).get("segment")
             except CameraUnavailable as e:
                 log.info("rear camera: cannot protect: %s", e)
+        if front_err is not None and not rear:
+            raise front_err
         res = {**res, "segment_rear": rear}
         self.ws.event("protected", segment=seg, segment_rear=rear)
         segs = ", ".join(x for x in (seg, rear) if x)

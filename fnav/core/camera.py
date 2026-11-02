@@ -34,6 +34,8 @@ UNAVAILABLE = "Camera service (fnav-camera) is not responding"
 REAR_UNAVAILABLE = "Rear camera service (fnav-camera-rear) is not responding"
 REAR_OFF = "Rear camera is off (Camera → Rear)"
 LIVE_UNAVAILABLE = "Live stream is unavailable"
+NO_VIDEO = "No video from the camera"
+NO_SEGMENT = "No segment is being recorded"
 # едем / стоим — для предела выдержки ночью (на стоянке длиннее: светлее, но меньше кадров/с)
 MOVING_MPS = 1.5  # быстрее ~5 км/ч — едем, сразу
 PARKED_MPS = 0.5  # медленнее ~2 км/ч…
@@ -64,6 +66,14 @@ class MotionState:
 
 class CameraUnavailable(Exception):
     pass
+
+
+def _service_error(r: httpx.Response) -> str:
+    """Текст ошибки из ответа сервиса камеры ({"ok": false, "error": "…"}); нет — пусто."""
+    try:
+        return str(r.json().get("error") or "")
+    except (ValueError, AttributeError):
+        return ""
 
 
 class CameraService:
@@ -244,16 +254,27 @@ class CameraService:
                 return {"ok": True, "mock": True}
             raise CameraUnavailable(self.unavailable_text) from None
 
-    async def protect_current(self) -> dict:
+    async def protect_current(self, recent: bool = False) -> dict:
+        """Защитить текущую запись. recent (охрана: камера пропала) — её нет, тогда последнюю закрытую (≤ 10 мин).
+        Записи нет — CameraUnavailable с ответом сервиса."""
         self._check_enabled()
         try:
-            r = await self._client.post(f"{self.base_url}/protect-current", timeout=3.0)
-            r.raise_for_status()
-            return r.json()
-        except (httpx.HTTPError, ValueError):
-            if self.mockcam is not None and not self.available:
-                return self.mockcam.protect_current()
-            raise CameraUnavailable(self.unavailable_text) from None
+            r = await self._client.post(f"{self.base_url}/protect-current", params={"recent": "1"} if recent else None,
+                                        timeout=3.0)
+        except httpx.HTTPError:
+            r = None
+        if r is not None and r.status_code == 200:
+            try:
+                return r.json()
+            except ValueError:
+                pass
+        elif r is not None and r.status_code == 409:
+            raise CameraUnavailable(_service_error(r) or NO_SEGMENT)
+        if self.mockcam is not None and not self.available:
+            if self.mockcam.dropped_s() is not None and not recent:
+                raise CameraUnavailable(NO_SEGMENT)
+            return self.mockcam.protect_current()
+        raise CameraUnavailable(self.unavailable_text)
 
     # ── видео ──
     async def open_mjpeg(self, fps: int | None = None) -> tuple[str, AsyncIterator[bytes]]:
@@ -320,17 +341,23 @@ class CameraService:
         raise CameraUnavailable(self.unavailable_text if self.mockcam is None else LIVE_UNAVAILABLE)
 
     async def snapshot(self, before_s: float = 0.0) -> bytes:
-        """Кадр камеры; before_s — кадр столько секунд назад (fnav-camera хранит последние ~12 с)."""
+        """Кадр камеры — только настоящий: видео сейчас нет — CameraUnavailable, а не стоп-кадр из памяти сервиса.
+        before_s — кадр столько секунд назад (fnav-camera хранит 12 с перед последним кадром); кадров тогда не было —
+        CameraUnavailable."""
         self._check_enabled()
         if self.available is not False:
             try:
                 q = f"?before={before_s:g}" if before_s > 0 else ""
-                r = await self._client.get(f"{self.base_url}/snapshot.jpg{q}", timeout=3.0)
-                if r.status_code == 200 and r.content:
-                    return r.content
+                r = await self._client.get(f"{self.base_url}/snapshot.jpg{q}", timeout=5.0)  # сервис ждёт кадр ≤ 3 с
             except httpx.HTTPError:
-                pass
+                r = None
+            if r is not None and r.status_code == 200 and r.content:
+                return r.content
+            if r is not None and r.status_code in (404, 503):  # сервис ответил: кадра нет — видео не идёт
+                raise CameraUnavailable(_service_error(r) or NO_VIDEO)
         if self.mockcam is not None:
+            if self.mockcam.dropped_s() is not None and before_s < self.mockcam.dropped_s():
+                raise CameraUnavailable(NO_VIDEO)  # mock: видео «пропало» (simulate video_lost)
             return await self.mockcam.snapshot()
         raise CameraUnavailable(self.unavailable_text)
 

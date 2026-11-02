@@ -376,13 +376,14 @@ class CameraService(FrameSink):
             except Exception:
                 log.exception("set max exposure failed")
 
-    def protect_current(self) -> str | None:
-        """Защитить текущий сегмент; его нет (камера пропала и конвейер перезапущен) — последний закрытый, если он
-        моложе LAST_SEGMENT_S: в нём то, что было перед пропажей."""
+    def protect_current(self, recent: bool = False) -> str | None:
+        """Защитить текущий сегмент. recent (охрана: камера пропала) — его нет, потому что конвейер перезапущен без
+        кадров: последний закрытый, если он моложе LAST_SEGMENT_S (в нём то, что было перед пропажей)."""
         p = self._p
         rel = p.recorder.protect_current() if p is not None and p.recorder is not None else None
         last = self._last_segment
-        if rel is None and last is not None and time.monotonic() - last[2] <= LAST_SEGMENT_S and last[0].is_file():
+        if (rel is None and recent and last is not None and time.monotonic() - last[2] <= LAST_SEGMENT_S
+                and last[0].is_file()):
             lock_segment(last[0])
             rel = last[1]
         if rel:

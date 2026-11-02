@@ -101,6 +101,15 @@ def _snap_name(event_id: str, camera: str) -> str:
     return f"{event_id}-rear.jpg" if camera == "rear" else f"{event_id}.jpg"
 
 
+@dataclass
+class CameraTake:
+    """Что взять у камеры к событию: снимок — кадр за before_s секунд до сейчас; recent — запись: текущей нет (камера
+    пропала), тогда последнюю закрытую."""
+
+    before_s: float
+    recent: bool = False
+
+
 # ───────────────────────── обнаружение ─────────────────────────
 
 
@@ -640,8 +649,8 @@ class HazardLights:
 class AlarmService:
     def __init__(self, data_dir: Path, get_settings: Callable[[], AlarmSettings], imu: ImuService,
                  relay: RelayConfig, *, get_fix: Callable[[], GpsFix] | None = None,
-                 protect: Callable[[], Awaitable[dict]] | None = None, radio: RadioService | None = None,
-                 snapshot: Callable[[], Awaitable[bytes]] | None = None,
+                 protect: Callable[..., Awaitable[dict]] | None = None, radio: RadioService | None = None,
+                 snapshot: Callable[..., Awaitable[bytes]] | None = None,
                  open_hazard: Callable[[HazardSettings], HazardOutput] = FakeHazard,
                  transport: httpx.AsyncBaseTransport | None = None, clock: Callable[[], float] = time.time,
                  mono: Callable[[], float] = time.monotonic) -> None:
@@ -654,8 +663,8 @@ class AlarmService:
         self.protect = protect
         self.snapshot = snapshot
         # задняя камера (если есть): ставит runtime; выключена — функции отдают пусто
-        self.protect_rear: Callable[[], Awaitable[dict]] | None = None
-        self.snapshot_rear: Callable[[], Awaitable[bytes]] | None = None
+        self.protect_rear: Callable[..., Awaitable[dict]] | None = None  # (recent=False) → {"segment": …}
+        self.snapshot_rear: Callable[..., Awaitable[bytes]] | None = None  # (before_s=…) → jpeg
         self.snap_dir = data_dir / "alarm_snaps"
         self.vision_status: Callable[[], AlarmVision] | None = None  # fnav/core/vision.py
         # идёт ли видео камер ({"front": True, "rear": False}; выключенной задней нет): ставит runtime
@@ -911,9 +920,11 @@ class AlarmService:
             spawn(self.siren.start(cfg.siren_s), name="alarm-siren-start")
         if cfg.hazard.enabled and self.state in DETECTED:
             self.hazard.flash(cfg.hazard.seconds)
+        plan = self._camera_plan(det)
+        front, rear = plan.get("front"), plan.get("rear")
         seg, snap, seg_rear, snap_rear = await asyncio.gather(
-            self._protect(), self._save_snapshot(ev.id),
-            self._protect("rear"), self._save_snapshot(ev.id, "rear"))
+            self._protect("front", front), self._save_snapshot(ev.id, "front", front),
+            self._protect("rear", rear), self._save_snapshot(ev.id, "rear", rear))
         if seg:
             ev.data["segment"] = seg
         if snap:
@@ -981,12 +992,33 @@ class AlarmService:
         tmp.write_bytes(data)
         tmp.replace(dst)
 
-    async def _save_snapshot(self, event_id: str, camera: str = "front") -> bool:
+    def _camera_plan(self, det: Detection) -> dict[str, CameraTake]:
+        """Что брать у камер к событию: снимок (кадр за before_s до сейчас) и защиту записи. Камера, у которой видео
+        сейчас нет (или задняя выключена — её нет в get_video), не даёт ничего: ни стоп-кадра из памяти сервиса, ни
+        старой записи. Кроме пропавшей камеры в событии video_lost: её последние кадры (до data.since) и последний
+        сегмент, закрытый при перезапуске конвейера. get_video не задан — как раньше: обе."""
+        if self.get_video is None:
+            return {cam: CameraTake(SNAPSHOT_BEFORE_S) for cam in CAMERA_NAMES}
+        video = self.get_video()
+        lost: list[str] = []
+        if det.kind == "video_lost":
+            cam = det.data.get("camera")
+            lost = list(CAMERA_NAMES) if cam == "both" else [str(cam)]
+        plan: dict[str, CameraTake] = {}
+        for cam, ok in video.items():
+            if cam in lost and not ok:
+                since = float(det.data.get("since") or self.clock())
+                plan[cam] = CameraTake(max(0.0, self.clock() - since) + SNAPSHOT_BEFORE_S, recent=True)
+            elif ok:
+                plan[cam] = CameraTake(SNAPSHOT_BEFORE_S)
+        return plan
+
+    async def _save_snapshot(self, event_id: str, camera: str = "front", take: CameraTake | None = None) -> bool:
         fn = self.snapshot_rear if camera == "rear" else self.snapshot
-        if fn is None:
+        if fn is None or take is None:
             return False
         try:
-            jpg = await fn(before_s=SNAPSHOT_BEFORE_S)
+            jpg = await fn(before_s=take.before_s)
         except Exception as e:  # noqa: BLE001 — камеры нет: событие идёт дальше
             log.info("alarm: no snapshot: %s", e)
             return False
@@ -1008,14 +1040,14 @@ class AlarmService:
             with contextlib.suppress(OSError):
                 (self.snap_dir / THUMBS_DIR / p.name).unlink()
 
-    async def _protect(self, camera: str = "front") -> str | None:
+    async def _protect(self, camera: str = "front", take: CameraTake | None = None) -> str | None:
         fn = self.protect_rear if camera == "rear" else self.protect
-        if fn is None:
+        if fn is None or take is None:
             return None
         try:
-            res = await fn()
+            res = await (fn(recent=True) if take.recent else fn())
         except Exception as e:  # noqa: BLE001 — камеры нет: событие идёт дальше
-            log.warning("alarm: cannot protect the recording: %s", e)
+            log.warning("alarm: cannot protect the %s recording: %s", camera, e)
             return None
         seg = res.get("segment") if isinstance(res, dict) else None
         return seg if isinstance(seg, str) and seg else None

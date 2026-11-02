@@ -15,6 +15,8 @@ log = logging.getLogger("fnav.camera.mjpeg")
 HISTORY_S = 12.0  # недавние кадры: снимок «за 5 с до события» для охраны (/snapshot.jpg?before=5)
 HISTORY_STEP_S = 0.5  # в историю — не чаще раза в столько (при клиентах MJPEG кадров больше); ~1 МБ памяти
 FRESH_S = 0.3  # новому зрителю — не кадр старше этого (без зрителей кодер пишет 1 к/с): ждём следующий, свежий
+SNAPSHOT_FRESH_S = 3.0  # снимок «сейчас» — не кадр старше (кодер пишет ≥ 1 к/с, пока видео идёт; нет — 503, а не стоп-кадр)
+MATCH_S = 2.0  # снимок «N секунд назад» — кадр не дальше этого от того момента (кадров тогда не было — нет и снимка)
 
 BOUNDARY = "frame"
 # Chromium показывает часть multipart, только когда пришли заголовки следующей части (проверено на Chromium 152:
@@ -72,13 +74,23 @@ class MjpegHub:
             ev.set()
 
     def frame_before(self, seconds: float) -> tuple[float, bytes] | None:
-        """Кадр, ближайший к «seconds назад» (кодер пишет ≥ 1 кадра/с и без зрителей): (возраст, jpeg); None — пусто."""
+        """Кадр, ближайший к «seconds назад» (кодер пишет ≥ 1 кадра/с и без зрителей): (возраст, jpeg); None — кадра
+        не дальше MATCH_S от того момента нет (видео тогда не шло: история хранит последние 12 с перед последним кадром,
+        сколько бы ему ни было)."""
         now = time.monotonic()
+        target = now - seconds
         with self._hist_lock:
             if not self._history:
                 return None
-            t, jpg = min(self._history, key=lambda e: abs(now - seconds - e[0]))
+            t, jpg = min(self._history, key=lambda e: abs(target - e[0]))
+        if abs(target - t) > MATCH_S:
+            return None
         return now - t, jpg
+
+    def fresh_jpeg(self) -> bytes | None:
+        """Последний кадр, если он не старше SNAPSHOT_FRESH_S (иначе видео сейчас нет — None)."""
+        jpg = self.jpeg
+        return jpg if jpg is not None and time.monotonic() - self.jpeg_t <= SNAPSHOT_FRESH_S else None
 
     def start_seq(self) -> int:
         """last_seq для next_frame() нового зрителя: последний кадр, если он свежий (≤ FRESH_S), иначе — ждать

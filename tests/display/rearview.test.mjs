@@ -362,3 +362,21 @@ test("camera layer: the rear view fits the CRT's visible area (display.safe_area
   cam.setSafeArea(99);
   assert.equal(el.style.props["--safe"], "20%", "clamped like the setting");
 });
+
+test("camera layer: the front without frames (by its status) — no frozen frame, NO CAMERA; frames again — picture", () => {
+  const { cam, img, msg } = layer();
+  cam.setVisible(true, 0);
+  img.fire("load");
+  assert.equal(cls(img), "");
+  cam.setNoSignal(true);
+  assert.equal(cls(img), "blank", "the last frame is hidden");
+  assert.equal(msg.hidden, false, "NO CAMERA");
+  cam.setNoSignal(false);
+  assert.equal(cls(img), "");
+  assert.equal(msg.hidden, true);
+  cam.setNoSignal(true);
+  cam.setCamera("rear", true); // the rear view has its own signal (HUD): the front's flag does not carry over
+  assert.equal(cam.noSignal, false);
+  assert.equal(msg.hidden, true);
+  cam.suspend(true);
+});

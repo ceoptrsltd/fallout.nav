@@ -3,6 +3,9 @@
 // Поток держится открытым, пока режим «камера», и ещё lingerS после возврата к карте
 // (частые переключения на светофорах не переподключают MJPEG), затем отключается — экономия CPU.
 //
+// Передняя без кадров (статус камеры, app.js — RearSignal и для неё): setNoSignal — картинка спрятана (не стоп-кадр),
+// надпись NO CAMERA, как при ошибке подключения.
+//
 // Задний вид (map/rearview.js): setCamera("rear") — тот же <img> на api/camera/rear/mjpeg, кадр целиком, вписанный
 // в видимую область кинескопа (setSafeArea; object-fit: contain — у IP-камеры обычно 16:9), зеркально по
 // display.rear_mirror (CSS только у видео, HUD не зеркалится; общее display.mirror_x переворачивает весь #root
@@ -36,6 +39,7 @@ export class CameraLayer {
     this.mirror = false;
     this.safePct = null; // видимая область для заднего вида (setSafeArea)
     this.hold = false; // задний вид без сигнала: картинку спрятать
+    this.noSignal = false; // передняя без кадров (по статусу): картинку спрятать, NO CAMERA
     this.blank = false; // что сейчас стоит в классе .blank
     this.retryTimer = null;
     this.lingerTimer = null;
@@ -43,7 +47,7 @@ export class CameraLayer {
       this.ok = true;
       this.loaded = true;
       this.failed = false;
-      this.msg.hidden = true;
+      this._syncMsg();
       this._syncBlank();
     });
     this.img.addEventListener("error", () => this._onError());
@@ -75,7 +79,7 @@ export class CameraLayer {
     this.ok = false;
     this.loaded = false;
     this.failed = true;
-    this.msg.hidden = this.which !== "front"; // задний вид: «нет сигнала» пишет HUD
+    this._syncMsg();
     this._syncBlank();
     clearTimeout(this.retryTimer);
     this.retryTimer = setTimeout(() => {
@@ -83,9 +87,14 @@ export class CameraLayer {
     }, this.retryS * 1000);
   }
 
-  /** Картинка видна, только когда есть кадр этого подключения и задний вид не «без сигнала». */
+  /** NO CAMERA — у передней: подключение не удалось или кадров нет (задний вид: «нет сигнала» пишет HUD). */
+  _syncMsg() {
+    this.msg.hidden = !(this.which === "front" && (this.failed || this.noSignal));
+  }
+
+  /** Картинка видна, только когда есть кадр этого подключения и камера не «без сигнала». */
   _syncBlank() {
-    const b = this.hold || !this.loaded;
+    const b = this.hold || this.noSignal || !this.loaded;
     if (b === this.blank) return;
     this.blank = b;
     this.img.classList.toggle("blank", b);
@@ -107,9 +116,10 @@ export class CameraLayer {
     this.which = cam;
     this.src = this.srcs[cam];
     this.img.classList.toggle("rear", cam === "rear");
-    this.msg.hidden = true;
     this.failed = false;
     this.hold = false;
+    this.noSignal = false;
+    this._syncMsg();
     if (this.shown) this._connect();
     else if (this.streaming) this._disconnect();
     else this._syncBlank();
@@ -134,7 +144,16 @@ export class CameraLayer {
     this._syncBlank();
   }
 
-  /** Переподключить поток (статус задней камеры снова «есть видео», а старый поток мог оборваться молча). */
+  /** Передняя без кадров (статус: видео нет): спрятать стоп-кадр, NO CAMERA. */
+  setNoSignal(on) {
+    on = !!on;
+    if (on === this.noSignal) return;
+    this.noSignal = on;
+    this._syncMsg();
+    this._syncBlank();
+  }
+
+  /** Переподключить поток (статус камеры снова «есть видео», а старый поток мог оборваться молча). */
   reconnect() {
     if (this.streaming) this._connect();
   }

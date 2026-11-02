@@ -173,6 +173,9 @@ const camera = new CameraLayer(
 // задний вид (display.camera = "rear"): есть ли картинка — для слоя видео и надписей HUD (map/rearview.js)
 const rearSignal = new RearSignal();
 let rearShown = false;
+// передняя в режиме камеры — то же по telemetry.camera: кадров нет — не стоп-кадр, а NO CAMERA (демо — без статуса)
+const frontSignal = new RearSignal();
+let frontShown = false;
 
 function maxZoom() {
   return settings.tiles?.max_zoom ?? 19;
@@ -403,6 +406,16 @@ function frame(tms) {
     camera.setHold(false);
   }
   rearShown = rear;
+  const front = mode === "camera" && camera.which === "front" && !DEMO && !!tel.camera;
+  if (front) {
+    const sig = frontSignal.update(tel.camera, camera, t);
+    if (frontSignal.recovered) camera.reconnect();
+    camera.setNoSignal(sig === "no_signal");
+  } else if (frontShown) {
+    frontSignal.reset();
+    camera.setNoSignal(false);
+  }
+  frontShown = front;
 
   if (ds.show_trail && m.hasPos && hasFix) {
     trail.add(m.mx, m.my, t);

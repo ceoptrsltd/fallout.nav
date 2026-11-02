@@ -92,7 +92,7 @@
   Телеметрия: `display.camera`, `display.reason = "rear"`, `display.rear_mirror`; `camera_rear` — статус задней или `null`.
 - `GET /api/camera/status` → `CameraStatus`.
 - `GET /api/camera/mjpeg` → поток `multipart/x-mixed-replace` 768×576 (для экрана и превью).
-- `GET /api/camera/snapshot.jpg`.
+- `GET /api/camera/snapshot.jpg` — текущий кадр; видео нет — 503 `{"detail": "No video from the camera"}` (не стоп-кадр).
 - `POST /api/camera/whep` — прокси WebRTC WHEP к MediaMTX `http://127.0.0.1:8889/cam/whep` (тело SDP и заголовки `Content-Type`/`Location` проброшены; `PATCH`/`DELETE` по `Location` — тоже через `/api/camera/whep/...`).
 - Кнопка на GPS-модуле: `press` (короткое) → передняя ↔ задняя камера на экране (как `camera_switch` клавиши 4; задняя
   выключена — длинный сигнал и подсказка); `long_press` (2 с) → защитить текущие записи обеих камер + событие WS + сигнал.

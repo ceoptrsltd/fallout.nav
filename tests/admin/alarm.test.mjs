@@ -289,3 +289,14 @@ test("lost camera: labels, the gap, where to watch from, the cameras line", () =
     { text: "Front ok · Rear lost", kind: "bad" });
   assert.equal(camerasText([{ camera: "front", video: false, lost: false }]).text, "Front no video");
 });
+
+test("camera watch: the front camera missing while the rear one is fine — the rear is still watched (warning)", () => {
+  const err = "No frames from the camera (is fnav-camera running and up to date?)";
+  const v = { enabled: true, available: true, watching: true, error: err, front: { watching: true, error: err }, rear: { watching: true, people: 0, error: null } };
+  assert.deepEqual(visionStatus(v), { text: `Watching the rear camera · Front camera: ${err}`, kind: "warn" });
+  assert.equal(visionStatus({ ...v, watching: false }).text.startsWith("Ready — starts watching the rear camera"), true);
+  // the models did not load (an error of the whole service) or no rear camera: still a failure
+  assert.equal(visionStatus({ ...v, error: "Cannot load detectors: x" }).kind, "bad");
+  assert.equal(visionStatus({ ...v, rear: null }).kind, "bad");
+  assert.equal(visionStatus({ ...v, rear: { watching: false, error: "No frames from the rear camera" } }).kind, "bad");
+});

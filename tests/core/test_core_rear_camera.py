@@ -8,12 +8,14 @@ import os
 import time
 
 import httpx
+import pytest
 from core_helpers import FakeUpstream, login, make_opts, running_app
 from test_core_alarm import make_alarm, settle
 from test_core_recordings import write_rec
 
 from fnav import paths
 from fnav.core import secretsfile as sf
+from fnav.core.alarm import Detection
 from fnav.core.config import load_settings_file
 from fnav.core.recordings import RecordingError, Recordings, camera_of, safe_rel_path
 from fnav.models import CameraStatus, VisionSettings
@@ -137,6 +139,48 @@ async def _ok(seg: str) -> dict:
     return {"ok": True, "segment": seg}
 
 
+async def test_alarm_takes_nothing_from_a_camera_without_video(tmp_path):
+    """Камеры нет (задняя выключена) или видео с неё не идёт — у события ни её снимка (стоп-кадра из памяти
+    сервиса), ни её записи. Камера пропала (video_lost) — её последние кадры и последний закрытый сегмент."""
+    svc, clk, _ = make_alarm(tmp_path, arm_delay_s=0, video_loss_s=20)
+    asked: list = []
+
+    def cam(name: str):
+        async def snap(before_s=0.0):
+            asked.append((name, "snap", before_s))
+            return b"\xff\xd8" + name.encode() + b"\xff\xd9"
+
+        async def protect(recent=False):
+            asked.append((name, "protect", recent))
+            return {"ok": True, "segment": f"{name}.ts"}
+
+        return snap, protect
+
+    svc.snapshot, svc.protect = cam("front")
+    svc.snapshot_rear, svc.protect_rear = cam("rear")
+    video = {"front": True, "rear": False}
+    svc.get_video = lambda: dict(video)
+    await svc.start(background=False)
+    await svc.arm()
+    await svc._fire(Detection("impact", {"peak_g": 0.5}))  # задняя без видео — у неё ничего не спрашиваем
+    assert sorted(asked) == [("front", "protect", False), ("front", "snap", 5.0)]
+    ev = svc.events[0]
+    assert ev.data["snapshot"] is True and "snapshot_rear" not in ev.data and "segment_rear" not in ev.data
+    asked.clear()
+    del video["rear"]  # задняя выключена в настройках
+    video["front"] = False  # и передней нет (не подключена / сервис не работает)
+    await svc._fire(Detection("tilt", {"tilt_deg": 4.0}))
+    assert asked == [] and not ({"snapshot", "segment", "snapshot_rear", "segment_rear"} & set(svc.events[0].data))
+    # пропала задняя: её кадр перед пропажей (since − 5 с) и последний сегмент; передняя — как обычно
+    video.update(front=True, rear=False)
+    asked.clear()
+    await svc._fire(Detection("video_lost", {"camera": "rear", "since": clk.wall - 21}))
+    assert sorted(asked) == [("front", "protect", False), ("front", "snap", 5.0), ("rear", "protect", True),
+                             ("rear", "snap", 26.0)]
+    assert svc.events[0].data["snapshot_rear"] is True and svc.events[0].data["segment_rear"] == "rear.ts"
+    await svc.stop()
+
+
 def test_settings_migration_key4_to_camera_switch(tmp_path):
     f = tmp_path / "settings.json"
     f.write_text(json.dumps({"keypad": {"key4": "video_toggle", "key1": "protect"}}), encoding="utf-8")
@@ -231,4 +275,31 @@ async def test_client_knows_whether_video_flows(tmp_path):
     cam["up"] = False  # сервис не отвечает
     await c.poll()
     assert not c.has_video()
+    await c.stop()
+
+
+async def test_client_passes_the_services_no_video_answers(tmp_path):
+    """Сервис камеры отвечает, но кадра или записи нет (видео не идёт): ошибка — его словами, а не «сервис не
+    отвечает»; охрана просит последнюю закрытую запись (recent=1)."""
+    from fnav.core.camera import CameraService as CamClient
+    from fnav.core.camera import CameraUnavailable
+
+    seen: list = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((req.url.path, dict(req.url.params)))
+        if req.url.path == "/snapshot.jpg":
+            return httpx.Response(503, json={"ok": False, "error": "No video from the camera"})
+        if req.url.path == "/protect-current" and req.url.params.get("recent") == "1":
+            return httpx.Response(200, json={"ok": True, "segment": "rear/2026-11-02/2026-11-02_10-00-00.ts"})
+        return httpx.Response(409, json={"ok": False, "error": "No segment is being recorded"})
+
+    c = CamClient(mock=False, recordings_root=tmp_path, base_url="http://cam:8083", camera_id="rear",
+                  transport=httpx.MockTransport(handler), get_enabled=lambda: True)
+    with pytest.raises(CameraUnavailable, match="No video from the camera"):
+        await c.snapshot(before_s=5)
+    assert seen[-1] == ("/snapshot.jpg", {"before": "5"})
+    with pytest.raises(CameraUnavailable, match="No segment is being recorded"):
+        await c.protect_current()
+    assert (await c.protect_current(recent=True))["segment"].startswith("rear/")
     await c.stop()

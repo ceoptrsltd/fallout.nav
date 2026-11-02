@@ -48,6 +48,7 @@ class VisionClient:
         self.people = 0
         self.error: str | None = None
         self.rear: AlarmVisionCamera | None = None  # cameras.rear из /status (сервис смотрит и заднюю)
+        self.front: AlarmVisionCamera | None = None  # cameras.front: её ошибка — не ошибка всего сервиса
         self._seq: int | None = None  # последнее обработанное событие (None — ещё не читали)
         self._logged_down = False
 
@@ -59,8 +60,11 @@ class VisionClient:
         rear = self.rear if enabled and self.available else None
         if rear is not None and not self.watching:
             rear = rear.model_copy(update={"watching": False, "people": 0})
+        front = self.front if enabled and self.available else None
+        if front is not None and not self.watching:
+            front = front.model_copy(update={"watching": False, "people": 0})
         return AlarmVision(enabled=enabled, available=self.available, watching=self.watching,
-                           people=self.people if self.watching else 0, error=error, rear=rear)
+                           people=self.people if self.watching else 0, error=error, rear=rear, front=front)
 
     async def start(self, background: bool = True) -> None:
         if background:
@@ -93,7 +97,7 @@ class VisionClient:
                 log.info("vision: %s (%s)", UNAVAILABLE, type(e).__name__)
                 self._logged_down = True
             self.available = self.watching = False
-            self.rear = None
+            self.rear = self.front = None
             return
         if self._logged_down or not self.available:
             log.info("vision: fnav-watch is available (%s)", self.base_url)
@@ -103,6 +107,7 @@ class VisionClient:
         self.people = int(st.get("people") or 0)
         self.error = st.get("error") or None
         self.rear = _camera(st, "rear")
+        self.front = _camera(st, "front")
         await self._take_events(st)
         if self.watching != want and await self._send_arm(want):
             self.watching = self._may_watch = want

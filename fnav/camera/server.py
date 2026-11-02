@@ -20,6 +20,8 @@ from .service import CameraService
 
 NO_CACHE = {"Cache-Control": "no-cache, no-store", "Pragma": "no-cache", "X-Accel-Buffering": "no"}
 LIVE_IDLE_S = 15.0  # столько ждём данных живого видео, потом закрываем поток (клиент переподключится)
+MAX_BEFORE_S = 3600.0  # ?before= — не дальше (камера пропала: охрана просит её последние кадры, video_loss_s + 5)
+NO_VIDEO = "No video from the camera"
 
 
 def fps_param(request: Request) -> float | None:
@@ -99,10 +101,11 @@ def create_app(service: CameraService, manage_service: bool = True) -> Starlette
         return LiveResponse(service.live, client)
 
     async def snapshot(request: Request) -> Response:
-        """Текущий кадр; ?before=N — кадр N секунд назад (до HISTORY_S; охрана: что было перед событием),
-        заголовок X-Frame-Age — сколько ему на самом деле секунд."""
+        """Текущий кадр — только свежий (видео нет — 503, а не стоп-кадр); ?before=N — кадр N секунд назад (охрана:
+        что было перед событием; камера пропала — её последние кадры), заголовок X-Frame-Age — сколько ему на самом
+        деле секунд. Кадра из того времени нет: N ≤ HISTORY_S — текущий (камера только что запустилась), иначе 404."""
         try:
-            before = min(max(float(request.query_params.get("before") or 0), 0.0), HISTORY_S)
+            before = min(max(float(request.query_params.get("before") or 0), 0.0), MAX_BEFORE_S)
         except ValueError:
             before = 0.0
         if before > 0:
@@ -110,17 +113,24 @@ def create_app(service: CameraService, manage_service: bool = True) -> Starlette
             if r is not None:
                 return Response(r[1], media_type="image/jpeg",
                                 headers={"Cache-Control": "no-cache, no-store", "X-Frame-Age": f"{r[0]:.1f}"})
+            if before > HISTORY_S:
+                return JSONResponse({"ok": False, "error": "No video from the camera at that moment"}, status_code=404)
         hub.last_snapshot_request = time.monotonic()
-        jpg = hub.jpeg
+        jpg = hub.fresh_jpeg()
         if jpg is None:
-            r = await hub.next_frame(-1, timeout=3.0)
+            seq = hub.seq if hub.jpeg is not None else -1
+            r = await hub.next_frame(seq, timeout=3.0)
             jpg = r[1] if r else None
         if jpg is None:
-            return JSONResponse({"ok": False, "error": "No frame available"}, status_code=503)
-        return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-cache, no-store"})
+            return JSONResponse({"ok": False, "error": NO_VIDEO}, status_code=503)
+        age = max(0.0, time.monotonic() - hub.jpeg_t)
+        return Response(jpg, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-cache, no-store", "X-Frame-Age": f"{age:.1f}"})
 
-    async def protect_current(_: Request) -> JSONResponse:
-        seg = await asyncio.to_thread(service.protect_current)
+    async def protect_current(request: Request) -> JSONResponse:
+        """Защитить текущий сегмент; ?recent=1 — его нет (камера пропала), тогда последний закрытый (≤ 10 мин)."""
+        recent = request.query_params.get("recent") in ("1", "true")
+        seg = await asyncio.to_thread(service.protect_current, recent)
         if seg is None:
             return JSONResponse({"ok": False, "error": "No segment is being recorded"}, status_code=409)
         return JSONResponse({"ok": True, "segment": seg})

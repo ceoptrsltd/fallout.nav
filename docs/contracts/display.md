@@ -15,7 +15,7 @@
 ## Слои (снизу вверх) — владелец B, кроме HUD-компонентов
 
 1. `<canvas id="map">` — карта (рендер B).
-2. `<img id="camera">` — `src="/api/camera/mjpeg"`, `object-fit: cover` на весь холст; показывается при `telemetry.display.mode === "camera"`. Плавный переход 300 мс. При ошибке загрузки — повторная попытка каждые 2 с, надпись "NO CAMERA".
+2. `<img id="camera">` — `src="/api/camera/mjpeg"`, `object-fit: cover` на весь холст; показывается при `telemetry.display.mode === "camera"`. Плавный переход 300 мс. При ошибке загрузки — повторная попытка каждые 2 с, надпись "NO CAMERA". Подключение есть, а кадров нет (по `telemetry.camera`: `recording` без `fps_actual` дольше 1,5 с, `error` без кадров, `stopped`) — то же: картинка спрятана (не стоп-кадр), "NO CAMERA"; статус снова «есть видео» — поток переподключается (как у заднего вида, `map/rearview.js` `RearSignal`).
 3. `<canvas id="wind">` — ветер вокруг машины (`drawWind` C): свой холст, чтобы анимация струек не перерисовывала HUD.
 4. `<canvas id="hud">` — HUD. Цикл кадров (requestAnimationFrame) — у B; рисование элементов — функции C.
 

@@ -128,6 +128,13 @@ export function visionStatus(v) {
 function visionStatusFront(v) {
   if (!v || typeof v !== "object") return null;
   if (!v.enabled) return { text: "Off — the camera does not guard the van", kind: "" };
+  // the front camera alone has no frames (not connected, its service down) while the rear one is fine: the rear is
+  // still watched — a warning, not a failure of the whole watch
+  const f = v.front, r = v.rear;
+  if (v.error && v.available && f && f.error === v.error && r && typeof r === "object" && !r.error) {
+    const base = v.watching ? "Watching the rear camera" : "Ready — starts watching the rear camera when the alarm is armed";
+    return { text: `${base} · Front camera: ${v.error}`, kind: "warn" };
+  }
   if (v.error) return { text: String(v.error), kind: "bad" };
   if (!v.available) return { text: "The vision service is not running", kind: "bad" };
   if (v.watching) {

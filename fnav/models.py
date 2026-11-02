@@ -733,6 +733,8 @@ class AlarmVision(_Model):
     people: int = 0  # людей в кадре сейчас (всех камер)
     error: str | None = None  # сервис или передняя камера; ошибка задней — в rear.error
     rear: AlarmVisionCamera | None = None  # смотрит и заднюю (alarm.vision.rear и rear_camera.enabled), иначе нет
+    # передняя отдельно: её ошибка (нет кадров) — не ошибка сервиса, задняя при этом смотрится (старый сервис — None)
+    front: AlarmVisionCamera | None = None
 
 
 class AlarmCameraVideo(_Model):

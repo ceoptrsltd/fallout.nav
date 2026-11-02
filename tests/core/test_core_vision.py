@@ -254,6 +254,7 @@ async def test_client_reports_rear_camera_and_forwards_camera():
     assert got == [("approach", "rear")]
     st = c.status()
     assert st.rear == AlarmVisionCamera(watching=True, people=2, error="No frames from the rear camera")
+    assert st.front == AlarmVisionCamera(watching=True, people=0, error=None)  # передняя — отдельно
     assert st.error is None and st.watching
     armed[0] = False  # охрану сняли: ядро говорит «не смотри», о людях сзади больше не сообщаем
     await c.poll()
@@ -264,7 +265,7 @@ async def test_client_reports_rear_camera_and_forwards_camera():
     assert c.status().rear is None
     w.up = False
     await c.poll()
-    assert c.status().rear is None and not c.status().available
+    assert c.status().rear is None and c.status().front is None and not c.status().available
     w.up = True
     w.cameras = {"rear": {"watching": True, "people": 1, "error": None}}
     await c.poll()
