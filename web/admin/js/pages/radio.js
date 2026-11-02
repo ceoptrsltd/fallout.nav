@@ -8,6 +8,7 @@ import { toast, banner, badge, switchEl, segmented } from "../ui.js";
 import {
   groupGenres, codecText, stationTags, sameStation, radioStateText, radioStateHint, debounce,
 } from "../radio-fmt.js";
+import { nextVolume, VOL_STEP } from "../dash-fmt.js";
 
 const ACTIVE = new Set(["playing", "connecting", "waiting_output"]);
 
@@ -58,6 +59,18 @@ export function mount(root) {
     sendVolume(Number(volIn.value));
   });
   volIn.addEventListener("change", () => { volDragUntil = Date.now() + 1500; sendVolume.flush(); });
+  // − / + (5 %, like the keypad knob and the dashboard): from the slider's value, so quick taps add up; sent at once
+  const volStep = (delta) => {
+    const v = nextVolume(Number(volIn.value), st && st.volume, delta);
+    if (v === null) return;
+    volDragUntil = Date.now() + 1500;
+    volIn.value = String(v);
+    volVal.textContent = String(v);
+    sendVolume(v);
+    sendVolume.flush();
+  };
+  const volDn = h("button.btn.np-vbtn", { type: "button", title: "Volume down", "aria-label": "Volume down", onclick: () => volStep(-VOL_STEP) }, icon("minus"));
+  const volUp = h("button.btn.np-vbtn", { type: "button", title: "Volume up", "aria-label": "Volume up", onclick: () => volStep(VOL_STEP) }, icon("plus"));
 
   const npCard = h(".card.np-card", null,
     h(".np", null,
@@ -68,7 +81,7 @@ export function mount(root) {
     ),
     h(".np-ctl", null,
       h(".np-btns", null, prevBtn, playBtn, nextBtn),
-      h(".np-vol", null, icon("vol"), volIn, volVal),
+      h(".np-vol", null, icon("vol"), volDn, volIn, volUp, volVal),
       outEl,
     ),
   );

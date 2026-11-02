@@ -397,6 +397,8 @@ tbody tr:hover { background: var(--panel2); }
 .np-vol svg { width: 20px; height: 20px; flex: none; }
 .np-vol input { flex: 1; min-width: 0; }
 .np-vol-val { width: 30px; text-align: right; color: var(--text); }
+.np-vbtn { flex: none; min-width: 40px; padding: 5px 6px; }
+.np-vbtn svg { width: 18px; height: 18px; }
 .np-out { display: flex; align-items: center; gap: 8px; color: var(--text); margin-left: auto; }
 .np-out svg { width: 18px; height: 18px; color: var(--dim); flex: none; }
 .np-set { display: flex; gap: 8px 22px; flex-wrap: wrap; }
