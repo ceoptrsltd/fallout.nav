@@ -61,7 +61,8 @@ export const DEFAULT_SETTINGS = {
         "zoom": 15.0
       }
     ],
-    "no_fix_mode": "camera"
+    "no_fix_mode": "camera",
+    "dead_reckoning_s": 90.0
   },
   "heading": {
     "gps_above_mps": 3.0,
@@ -166,6 +167,12 @@ export const DEFAULT_SETTINGS = {
     "button_active_low": null,
     "led_active_low": null,
     "long_press_s": 2.0
+  },
+  "vehicle": {
+    "length_m": 6.0,
+    "width_m": 2.05,
+    "gps_from_front_m": 0.95,
+    "gps_right_m": 0.25
   }
 };
 

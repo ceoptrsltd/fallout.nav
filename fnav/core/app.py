@@ -336,8 +336,10 @@ def _register_tiles(app: FastAPI, core: Core) -> None:
             return JSONResponse({"detail": e.detail}, status_code=e.status, headers=headers)
         if t is None:
             return Response(status_code=499, headers={"Cache-Control": "no-store"})  # ответ никто не прочтёт
+        # no-store: тайлы и так в дисковом кэше ядра и в памяти экрана; копия в дисковом кэше Chromium (tmpfs —
+        # та же оперативная память, MemoryHigh fnav-display) ничего не ускоряет
         return Response(t.data, media_type=t.content_type,
-                        headers={"Cache-Control": "max-age=86400", "X-Cache": "HIT" if t.cached else "MISS"})
+                        headers={"Cache-Control": "no-store", "X-Cache": "HIT" if t.cached else "MISS"})
 
     @app.get("/api/tiles/stats")
     async def tile_stats():

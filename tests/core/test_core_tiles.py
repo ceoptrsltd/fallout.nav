@@ -346,6 +346,47 @@ async def test_index_rebuilt_on_restart(tmp_path):
     await t2.stop()
 
 
+async def test_scan_in_background(tmp_path, monkeypatch):
+    """B20: start() не ждёт обхода кэша; пока он идёт, тайлы читаются с диска, а итог обхода не возвращает
+    в индекс то, что за это время удалили, и не теряет то, что добавили."""
+    up = AsyncUpstream(jpeg_handler())
+    t = svc(tmp_path, up)
+    await t.start(background=False)
+    for i in range(3):
+        await t.get("imagery", 5, i, 1)
+    await t.stop()
+
+    release = asyncio.Event()
+    real_scan = tmod._scan_dir
+    loop = asyncio.get_running_loop()
+
+    def slow_scan(root):
+        found = real_scan(root)  # снимок до правок ниже
+        asyncio.run_coroutine_threadsafe(release.wait(), loop).result(5)
+        return found
+
+    monkeypatch.setattr(tmod, "_scan_dir", slow_scan)
+    t2 = svc(tmp_path, up)
+    await asyncio.wait_for(t2.start(background=True), 1)  # не ждёт обхода
+    assert t2.stats()["ready"] is False
+    tile = await t2.get("imagery", 5, 0, 1)  # нет в индексе — читается с диска
+    assert tile.cached and sum(r.method == "GET" for r in up.requests) == 3  # HEAD — проверка интернета
+    assert (await t2.get("imagery", 5, 7, 1)).cached is False  # новый во время обхода
+    (tmp_path / "tiles/imagery/5/2/1.jpg").unlink()  # удалён снаружи во время обхода
+    assert (await t2.get("imagery", 5, 2, 1)).cached is False  # заново с «Esri»
+    t2._drop(("imagery", 5, 1, 1))  # вытеснен во время обхода
+    release.set()
+    for _ in range(100):
+        if t2.stats()["ready"]:
+            break
+        await asyncio.sleep(0.01)
+    st = t2.stats()
+    assert st["ready"] is True
+    assert set(t2._index) == {("imagery", 5, 0, 1), ("imagery", 5, 7, 1), ("imagery", 5, 2, 1)}
+    assert st["size_mb"] == round(sum(e.size for e in t2._index.values()) / 1048576, 2)
+    await t2.stop()
+
+
 async def test_tiles_http(data_dir):
     up = AsyncUpstream(jpeg_handler())
     async with running_app(make_opts(tile_transport=httpx.MockTransport(up))) as c:
@@ -353,7 +394,7 @@ async def test_tiles_http(data_dir):
         await login(c)
         r = await c.get("/tiles/imagery/3/1/2")
         assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
-        assert r.headers["cache-control"] == "max-age=86400" and r.headers["x-cache"] == "MISS"
+        assert r.headers["cache-control"] == "no-store" and r.headers["x-cache"] == "MISS"
         r = await c.get("/tiles/imagery/3/1/2")
         assert r.headers["x-cache"] == "HIT"
         assert (await c.get("/tiles/imagery/3/1/zz")).status_code == 400

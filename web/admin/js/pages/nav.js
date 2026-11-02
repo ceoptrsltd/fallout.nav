@@ -159,6 +159,9 @@ export async function mount(root) {
     f({ path: "nav.switch_delay_s", label: "Switch delay", hint: "How long the speed must hold before switching", type: "number", min: 0, step: 0.5, unit: "s" }),
     f({ path: "nav.zoom_delay_s", label: "Zoom change delay", hint: "Pause before changing the zoom step", type: "number", min: 0, step: 0.5, unit: "s" }),
     f({ path: "nav.no_fix_mode", label: "Without GPS fix", hint: "What to show when there are no coordinates", type: "seg", options: [{ value: "camera", label: "Camera" }, { value: "map", label: "Map" }] }),
+    store.settings?.nav?.dead_reckoning_s !== undefined
+      ? f({ path: "nav.dead_reckoning_s", label: "Keep the map in tunnels", hint: "GPS lost while driving faster than \"Return to map above\": the map stays this long and the vehicle moves on by the last speed and the current heading (dimmed icon, DR). 0 = switch at once", type: "number", min: 0, max: 300, step: 10, unit: "s" })
+      : null,
   );
 
   const layersCard = section("Map layers",
@@ -229,12 +232,26 @@ export async function mount(root) {
       : null,
   );
 
-  root.append(
+  // vehicle size and the GPS antenna on it: the car screen puts the icon at the vehicle center, not at the antenna
+  const vehNum = (path, label, hint, min, max) => f({ path, label, hint, type: "number", min, max, step: 0.05, unit: "m" });
+  const vehicleCard = store.settings?.vehicle !== undefined
+    ? section("Vehicle and GPS antenna",
+      vehNum("vehicle.length_m", "Length", "Bumper to bumper", 2, 20),
+      vehNum("vehicle.width_m", "Width", "Body, without mirrors", 1, 3.5),
+      f({ path: "vehicle.gps_from_front_m", label: "Antenna from the front", hint: "How far back from the front bumper the GPS receiver sits", type: "number", min: 0, max: 20, step: 0.05, unit: "m",
+        validate: (v) => (v > (form.get("vehicle.length_m") ?? Infinity) ? "Must be within the vehicle length" : null) }),
+      f({ path: "vehicle.gps_right_m", label: "Antenna right of center", hint: "From the center line; negative = to the left", type: "number", min: -1.75, max: 1.75, step: 0.05, unit: "m",
+        validate: (v) => (Math.abs(v) > (form.get("vehicle.width_m") ?? Infinity) / 2 ? "Must be within the vehicle width" : null) }),
+      h(".hint", { style: { marginTop: "8px" } }, "The GPS position is the antenna, not the middle of the vehicle: the screen draws the icon at the vehicle center, so the antenna point lies ahead of it (and to the side) by these distances at the map scale. The trail follows the center too."))
+    : null;
+
+  root.append(...[
     h(".page-head", null, h("h1", null, "Navigation")),
     orientCard, forceCard, zoomCard,
     h(".grid.g2", null, thrCard, layersCard),
     h(".grid.g2", null, cacheCard, dispCard),
+    vehicleCard ? h(".grid.g2", null, vehicleCard) : null,
     form.bar,
-  );
+  ].filter(Boolean));
   return () => { form.destroy(); offS(); stopStats(); };
 }

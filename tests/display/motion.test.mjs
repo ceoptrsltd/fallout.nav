@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { norm360, wrap180, angleDiff, lerpAngle, approachAngle, springStep } from "../../web/display/map/angles.js";
-import { CompassFilter, MotionModel, ZoomAnimator, OrientationBlend, RotationRig, hudSpeed, vehicleAnchor } from "../../web/display/map/motion.js";
-import { lonLatToMerc, mercDistanceM, moveMerc, mercToLonLat } from "../../web/display/map/mercator.js";
+import { CompassFilter, MotionModel, ZoomAnimator, OrientationBlend, RotationRig, hudSpeed, vehicleAnchor, vehicleCenter } from "../../web/display/map/motion.js";
+import { lonLatToMerc, makeView, mercDistanceM, mercToScreen, metersPerPixel, moveMerc, mercToLonLat } from "../../web/display/map/mercator.js";
 
 const close = (a, b, eps, msg) => assert.ok(Math.abs(a - b) <= eps, `${msg ?? ""} ${a} != ${b} (±${eps})`);
 
@@ -372,4 +372,136 @@ test("CompassFilter: smoothing 0 — сразу; дрожание < 0.3° гас
   assert.ok(vals.size <= 3, `дрожит: ${vals.size} разных значений`);
   g.ingest(null, 3.1);
   assert.equal(g.known, false);
+});
+
+// ── счисление пути в тоннеле ──
+const noFix = (headingDeg = 90) => ({
+  type: "telemetry",
+  gps: { fix: "none", lat: null, lon: null, speed_mps: null, course_deg: null },
+  heading: { deg: headingDeg, source: headingDeg === null ? "none" : "mag" },
+  display: { mode: "map", target_zoom: 16 },
+});
+
+/** Пакеты 10 Гц, кадры 30 Гц; packet(t) — пакет или null (пакетов нет). Возвращает последний результат update. */
+function drive(m, from, to, packet) {
+  let s = null;
+  for (let i = Math.round(from * 30); i < Math.round(to * 30); i++) {
+    const t = i / 30;
+    if (i % 3 === 0) {
+      const p = packet(t);
+      if (p) m.ingest(p, t);
+    }
+    s = m.update(t);
+  }
+  return s;
+}
+
+test("MotionModel: тоннель — машина едет по последней скорости (медленно затухает) и курсу из телеметрии", () => {
+  const m = new MotionModel();
+  m.configure({ drMinMps: 2.5, drWindowS: 90 });
+  let pos = lonLatToMerc(21.0, 52.2);
+  let s = drive(m, 0, 3, () => {
+    const ll = mercToLonLat(pos.x, pos.y);
+    pos = moveMerc(pos.x, pos.y, 90, 25 * 0.1);
+    return tel(ll.lat, ll.lon, 25, 90);
+  });
+  assert.equal(s.dr, false);
+  const a = { x: s.mx, y: s.my };
+  // 10 с без фикса (ядро шлёт speed null): ∫ 25·e^(−t/120) dt ≈ 240 м на восток
+  s = drive(m, 3, 13, () => noFix(90));
+  assert.equal(s.dr, true);
+  assert.equal(s.speed, null, "the speedometer shows \"--\"");
+  close(s.drSpeed, 25 * Math.exp(-10 / 120), 0.2);
+  const d = mercDistanceM(a.x, a.y, s.mx, s.my);
+  close(d, 3000 * (1 - Math.exp(-10 / 120)), 6);
+  close(s.my, a.y, 1e-7); // строго на восток
+  // курс сменился (гироскоп ведёт его и в тоннеле) — машина поворачивает за ним
+  const b = { x: s.mx, y: s.my };
+  s = drive(m, 13, 18, () => noFix(180));
+  assert.ok(s.my > b.y && mercDistanceM(b.x, s.my, b.x, b.y) > 80, "went south");
+  // окно 90 с от последнего фикса прошло — стоп, как раньше
+  s = drive(m, 18, 93.5, () => noFix(180));
+  assert.equal(s.dr, false);
+  const c = { x: s.mx, y: s.my };
+  s = drive(m, 93.5, 98, () => noFix(180));
+  assert.ok(mercDistanceM(c.x, c.y, s.mx, s.my) < 0.5, "frozen after the window");
+  assert.equal(s.drSpeed, null);
+});
+
+test("MotionModel: счисление — только на ходу, только пока идут пакеты, выключается настройкой", () => {
+  const start = (speed, opts = { drMinMps: 2.5, drWindowS: 90 }) => {
+    const m = new MotionModel();
+    m.configure(opts);
+    drive(m, 0, 2, () => tel(52.2, 21.0, speed, 90));
+    return m;
+  };
+  // медленно (ниже map_above_mps) — фикс пропал, машина стоит
+  let m = start(2.0);
+  let s = drive(m, 2, 10, () => noFix(90));
+  assert.equal(s.dr, false);
+  // выключено (nav.dead_reckoning_s = 0)
+  m = start(20, { drMinMps: 2.5, drWindowS: 0 });
+  assert.equal(drive(m, 2, 5, () => noFix(90)).dr, false);
+  // курса нет — ехать некуда
+  m = start(20);
+  assert.equal(drive(m, 2, 5, () => noFix(null)).dr, false);
+  // связь пропала посреди тоннеля — не дальше maxExtrapolateS, дальше замирает
+  m = start(20);
+  s = drive(m, 2, 5, () => noFix(90));
+  assert.equal(s.dr, true);
+  const p = { x: s.mx, y: s.my };
+  s = drive(m, 5, 10, () => null);
+  assert.equal(s.dr, false);
+  assert.ok(mercDistanceM(p.x, p.y, s.mx, s.my) < 21, "≤ 1 s of motion");
+  // фикс вернулся (встали в пробке у начала тоннеля) — машина возвращается к нему
+  m = start(20);
+  drive(m, 2, 12, () => noFix(90));
+  s = drive(m, 12, 18, () => tel(52.2, 21.0, 0, 90));
+  const fixAt = lonLatToMerc(21.0, 52.2);
+  assert.equal(s.dr, false);
+  assert.ok(mercDistanceM(fixAt.x, fixAt.y, s.mx, s.my) < 1.5);
+});
+
+// ── антенна GPS ≠ центр машины ──
+const VEH = { length_m: 6.0, width_m: 2.05, gps_from_front_m: 0.95, gps_right_m: 0.25 };
+
+test("vehicleCenter: центр 2.05 м позади антенны и 0.25 м левее (по курсу иконки)", () => {
+  const ant = lonLatToMerc(21.0, 52.2);
+  const north = vehicleCenter(ant.x, ant.y, 0, VEH);
+  close(mercDistanceM(ant.x, ant.y, ant.x, north.y), 2.05, 1e-3);
+  assert.ok(north.y > ant.y, "behind = south");
+  close(mercDistanceM(ant.x, ant.y, north.x, ant.y), 0.25, 1e-3);
+  assert.ok(north.x < ant.x, "the antenna is right of the center line → the center is to the west");
+  const east = vehicleCenter(ant.x, ant.y, 90, VEH);
+  assert.ok(east.x < ant.x && east.y < ant.y, "heading east: center to the west and north");
+  close(mercDistanceM(ant.x, ant.y, east.x, east.y), Math.hypot(2.05, 0.25), 1e-3);
+  // курс ещё неизвестен или нет настроек — центр = антенна
+  assert.deepEqual(vehicleCenter(ant.x, ant.y, null, VEH), { x: ant.x, y: ant.y });
+  assert.deepEqual(vehicleCenter(ant.x, ant.y, 45, undefined), { x: ant.x, y: ant.y });
+  // антенна ровно в центре — без сдвига
+  assert.deepEqual(vehicleCenter(ant.x, ant.y, 45, { length_m: 4, gps_from_front_m: 2, gps_right_m: 0 }), { x: ant.x, y: ant.y });
+});
+
+test("vehicleCenter: на экране антенна впереди и правее иконки — на метры в пикселях текущего масштаба", () => {
+  const ant = lonLatToMerc(21.0, 52.2);
+  for (const heading of [0, 37, 247.3]) {
+    for (const [zoom, bearing] of [[19, heading], [17, heading], [19, 0]]) {
+      const c = vehicleCenter(ant.x, ant.y, heading, VEH);
+      const view = makeView({ cx: c.x, cy: c.y, zoom, bearing, ax: 384, ay: 386, w: 768, h: 576 });
+      const s = mercToScreen(view, ant.x, ant.y);
+      const mpp = metersPerPixel(52.2, zoom);
+      // в осях иконки на экране (повёрнута на heading − bearing): вперёд = (sin r, −cos r), вправо = (cos r, sin r)
+      const r = ((heading - bearing) * Math.PI) / 180;
+      const dx = s.x - 384, dy = s.y - 386;
+      const fwd = dx * Math.sin(r) - dy * Math.cos(r);
+      const right = dx * Math.cos(r) + dy * Math.sin(r);
+      close(fwd * mpp, 2.05, 0.01, `fwd h${heading} z${zoom}`);
+      close(right * mpp, 0.25, 0.01, `right h${heading} z${zoom}`);
+    }
+  }
+  // heading-up на z19 (52° с.ш.): ~11 px вверх, ~1.4 px вправо
+  const c = vehicleCenter(ant.x, ant.y, 90, VEH);
+  const s = mercToScreen(makeView({ cx: c.x, cy: c.y, zoom: 19, bearing: 90, ax: 384, ay: 386, w: 768, h: 576 }), ant.x, ant.y);
+  assert.ok(386 - s.y > 10 && 386 - s.y < 12.5, String(s.y));
+  assert.ok(s.x - 384 > 1 && s.x - 384 < 2, String(s.x));
 });

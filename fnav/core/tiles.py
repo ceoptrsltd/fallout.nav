@@ -122,6 +122,9 @@ class TileService:
         self._index: dict[Key, _Entry] = {}
         self._total = 0
         self._scan_done = False
+        self._scanning = False
+        self._dropped_in_scan: set[Key] = set()  # удалённые из индекса, пока шёл обход
+        self._clear_gen = 0  # +1 при очистке кэша
         self._inflight: dict[Key, _Fetch] = {}
         self._neg: OrderedDict[Key, float] = OrderedDict()
         self._evict_task: asyncio.Task | None = None
@@ -135,9 +138,13 @@ class TileService:
 
     # ── жизненный цикл ──
     async def start(self, *, background: bool = True) -> None:
-        await self.scan()
-        if background:
-            self._bg.append(asyncio.create_task(self._internet_loop(), name="tiles-internet"))
+        if not background:
+            await self.scan()
+            return
+        # обход кэша (~15 тыс. файлов на eMMC) — в фоне: ядро не ждёт его, чтобы запустить камеру, охрану,
+        # телеметрию и HTTP; до конца обхода тайлы, которых нет в индексе, ищутся на диске (_read_cached)
+        self._bg.append(asyncio.create_task(self.scan(), name="tiles-scan"))
+        self._bg.append(asyncio.create_task(self._internet_loop(), name="tiles-internet"))
 
     async def stop(self) -> None:
         await cancel_tasks(*self._bg, self._evict_task, *(f.task for f in self._inflight.values()))
@@ -156,9 +163,20 @@ class TileService:
 
     # ── индекс ──
     async def scan(self) -> None:
-        found = await asyncio.to_thread(_scan_dir, self.root)
-        for k, e in found.items():
-            self._index.setdefault(k, e)
+        gen = self._clear_gen
+        self._dropped_in_scan.clear()
+        self._scanning = True
+        try:
+            found = await asyncio.to_thread(_scan_dir, self.root)
+        finally:
+            self._scanning = False
+        if gen == self._clear_gen:  # кэш очистили во время обхода — найденного уже нет, индекс и так полон
+            # пока шёл обход, индекс жил своей жизнью: новое и прочитанное с диска — оставить как есть,
+            # вытесненное и пропавшее — не возвращать из устаревшего списка
+            for k, e in found.items():
+                if k not in self._dropped_in_scan:
+                    self._index.setdefault(k, e)
+        self._dropped_in_scan.clear()
         self._total = sum(e.size for e in self._index.values())
         self._scan_done = True
         log.info("tile cache: %d files, %.1f MB", len(self._index), self._total / 1048576)
@@ -180,6 +198,8 @@ class TileService:
         e = self._index.pop(key, None)
         if e:
             self._total -= e.size
+        if self._scanning:
+            self._dropped_in_scan.add(key)
 
     def _maybe_evict(self) -> None:
         if self._total <= self.limit_bytes:
@@ -231,6 +251,7 @@ class TileService:
     async def clear(self) -> None:
         if self._evict_task and not self._evict_task.done():
             self._evict_task.cancel()
+        self._clear_gen += 1
         self._index.clear()
         self._total = 0
         self._neg.clear()

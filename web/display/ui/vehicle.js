@@ -266,16 +266,23 @@ function vehicleSprite() {
   return sprite("vehicle", SW, SH, drawCar, VSS);
 }
 
+const DR_ALPHA = 0.5; // счисление пути (тоннель): тусклая, но ровная — позиция расчётная, не потерянная
+
+/** Прозрачность иконки: с фиксом — 1; без него — мигает; при счислении пути (view.deadReckoning) — ровно тусклая. */
+export function vehicleAlpha(state) {
+  const v = state?.view ?? {};
+  if (v.hasFix !== false) return 1;
+  return v.deadReckoning ? DR_ALPHA : 0.22 + 0.5 * pulse(state?.now ?? 0, 1);
+}
+
 /**
- * Нарисовать машину в (x,y), rotationDeg — поворот на экране (0 = нос вверх).
- * Без GPS-фикса — полупрозрачная и мигает.
+ * Нарисовать машину в (x,y), rotationDeg — поворот на экране (0 = нос вверх). (x,y) — центр машины
+ * (антенна GPS впереди и правее, app.js vehicleCenter). Прозрачность — vehicleAlpha.
  */
 export function drawVehicle(ctx, x, y, rotationDeg, state) {
   const s = vehicleSprite();
   if (!s) return;
-  const v = state?.view ?? {};
-  let alpha = 1;
-  if (v.hasFix === false) alpha = 0.22 + 0.5 * pulse(state.now ?? 0, 1);
+  const alpha = vehicleAlpha(state);
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate((rotationDeg || 0) * DEG);

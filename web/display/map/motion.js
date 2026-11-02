@@ -2,7 +2,7 @@
 // Чистая логика без DOM: время передаётся явно (секунды, монотонные).
 
 import { angleDiff, approachAngle, expAlpha, norm360, springStep } from "./angles.js";
-import { clamp, lonLatToMerc, mercToLonLat, metersPerMercUnit } from "./mercator.js";
+import { clamp, latOfMercY, lonLatToMerc, mercToLonLat, metersPerMercUnit } from "./mercator.js";
 
 const DEG = Math.PI / 180;
 
@@ -19,12 +19,23 @@ export const MOTION_DEFAULTS = {
   headingTauMovingS: 0.15, // сглаживание отображаемого курса в движении
   headingTauStillS: 0.6, // … на стоянке
   speedTauS: 0.3,
+  // счисление пути (тоннель, docs/contracts/display.md): фикс пропал на скорости выше drMinMps — не дольше
+  // drWindowS от последнего фикса машина едет по курсу из телеметрии со скоростью последнего фикса,
+  // медленно затухающей (постоянная drDecayS: к концу 90 с — около половины)
+  drMinMps: 2.5, // = nav.map_above_mps
+  drWindowS: 90, // = nav.dead_reckoning_s; 0 — выключено
+  drDecayS: 120,
 };
 
 export class MotionModel {
   constructor(opts = {}) {
     this.o = { ...MOTION_DEFAULTS, ...opts };
     this.reset();
+  }
+
+  /** Поменять параметры (из настроек: drMinMps, drWindowS); нечисловые значения пропускаются. */
+  configure(opts = {}) {
+    for (const [k, v] of Object.entries(opts)) if (Number.isFinite(v)) this.o[k] = v;
   }
 
   reset() {
@@ -39,6 +50,18 @@ export class MotionModel {
     this.headingKnown = false;
     this.headingSource = "none";
     this.lastUpdate = null;
+    this.fixSpeed = 0; // скорость последнего фикса, м/с (счисление пути)
+    this.fixT = null; // когда он пришёл
+    this.drSpeed = null; // скорость счисления, м/с; null — счисления нет
+  }
+
+  /** Скорость счисления пути в момент now (нет фикса): null — не на ходу, окно прошло или курса нет. */
+  _drSpeed(now, headingDeg) {
+    const o = this.o;
+    if (this.fixT === null || !Number.isFinite(headingDeg) || !(o.drWindowS > 0)) return null;
+    const age = now - this.fixT;
+    if (!(this.fixSpeed > o.drMinMps) || age < 0 || age >= o.drWindowS) return null;
+    return this.fixSpeed * Math.exp(-age / o.drDecayS);
   }
 
   /** Принять пакет телеметрии (как пришёл по WS). now — локальное время приёма, с. */
@@ -49,7 +72,15 @@ export class MotionModel {
     // без фикса скорость неизвестна, даже если в пакете осталась последняя (не «замираем» на ней)
     const speed = hasFix && Number.isFinite(gps.speed_mps) ? gps.speed_mps : null;
     this.speedMeas = speed;
-    const v = speed ?? 0;
+    // фикс пропал на ходу (тоннель): последнюю хорошую скорость помним сами — ядро без фикса шлёт null
+    if (hasFix) {
+      this.fixSpeed = speed ?? 0;
+      this.fixT = now;
+      this.drSpeed = null;
+    } else {
+      this.drSpeed = this._drSpeed(now, hd.deg);
+    }
+    const v = speed ?? this.drSpeed ?? 0;
 
     // ── курс ──
     this.headingSource = hd.source || "none";
@@ -72,7 +103,18 @@ export class MotionModel {
 
     // ── позиция ──
     if (!hasFix) {
-      if (this.meas) this.meas = { ...this.meas, vx: 0, vy: 0 };
+      if (this.meas && this.drSpeed !== null && this.headingTarget !== null) {
+        // счисление: «замер» — сама отображаемая точка (на момент прошлого кадра), скорость — по курсу;
+        // update() везёт машину дальше без коррекции назад
+        const lat = latOfMercY(this.my);
+        const k = this.drSpeed / metersPerMercUnit(lat);
+        const c = this.headingTarget * DEG;
+        const t = this.lastUpdate !== null && now - this.lastUpdate >= 0 && now - this.lastUpdate < 0.25 ? this.lastUpdate : now;
+        this.meas = { mx: this.mx, my: this.my, vx: Math.sin(c) * k, vy: -Math.cos(c) * k, t, lat };
+      } else if (this.meas) {
+        this.drSpeed = null;
+        this.meas = { ...this.meas, vx: 0, vy: 0 };
+      }
       return;
     }
     const m = lonLatToMerc(gps.lon, gps.lat);
@@ -109,7 +151,9 @@ export class MotionModel {
   update(now) {
     const dt = this.lastUpdate === null ? 0 : clamp(now - this.lastUpdate, 0, 0.25);
     this.lastUpdate = now;
-    const v = this.speedMeas ?? 0;
+    // счисление идёт, пока приходят пакеты (связь пропала — машина замирает, как раньше)
+    const dr = this.drSpeed !== null && this.meas !== null && now - this.meas.t < this.o.maxExtrapolateS;
+    const v = this.speedMeas ?? (dr ? this.drSpeed : 0);
     const moving = v >= this.o.stillSpeedMps;
 
     if (this.hasPos && this.meas) {
@@ -151,9 +195,27 @@ export class MotionModel {
       headingTarget: this.headingTarget, // отфильтрованный от шума курс без задержки (вход RotationRig)
       headingKnown: this.headingKnown && this.heading !== null,
       headingSource: this.headingSource,
-      speed: this.speed,
+      speed: this.speed, // null без фикса (спидометр "--"), в том числе при счислении
+      dr, // счисление пути: фикса нет, машина едет по последней скорости и курсу
+      drSpeed: dr ? this.drSpeed : null, // его скорость (поворот карты, заказ тайлов, шаг следа)
     };
   }
+}
+
+/**
+ * Центр машины по точке антенны GPS (merc) и курсу иконки (docs/contracts/display.md «Антенна GPS»):
+ * центр = антенна − вперёд·(length_m/2 − gps_from_front_m) − вправо·gps_right_m. Метры → merc на этой широте,
+ * так что на экране сдвиг — в пикселях текущего масштаба. Курс неизвестен (ещё не было) — центр = антенна.
+ */
+export function vehicleCenter(mx, my, headingDeg, vehicle) {
+  const num = (x) => (Number.isFinite(x) ? x : 0);
+  const back = num(vehicle?.length_m) / 2 - num(vehicle?.gps_from_front_m); // на столько центр позади антенны
+  const right = num(vehicle?.gps_right_m); // антенна правее осевой на столько
+  if (!Number.isFinite(headingDeg) || (!back && !right)) return { x: mx, y: my };
+  const k = 1 / metersPerMercUnit(latOfMercY(my));
+  const s = Math.sin(headingDeg * DEG), c = Math.cos(headingDeg * DEG);
+  // merc (y вниз): вперёд = (sin h, −cos h), вправо = (cos h, sin h)
+  return { x: mx - (back * s + right * c) * k, y: my - (right * s - back * c) * k };
 }
 
 /**

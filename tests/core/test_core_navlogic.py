@@ -115,12 +115,55 @@ def test_zoom_candidate_change_restarts_timer():
 
 
 def test_no_fix_keeps_zoom_and_regains():
-    nl = logic()
+    nl = logic(dead_reckoning_s=0)
     nl.update(0.0, fix(12.0))
     st = nl.update(1.0, NOFIX)
     assert (st.mode, st.reason, st.target_zoom) == ("camera", "no_fix", 17)
     st = nl.update(2.0, fix(12.0))
     assert (st.mode, st.reason) == ("map", "speed")
+
+
+def test_tunnel_keeps_map_by_dead_reckoning():
+    nl = logic()  # dead_reckoning_s = 90
+    nl.update(0.0, fix(20.0))
+    st = run(nl, 0.1, 89.9, NOFIX)
+    assert (st.mode, st.reason, st.target_zoom) == ("map", "dead_reckoning", 16)
+    # окно считается от последнего фикса: дальше — как без фикса
+    st = nl.update(90.0, NOFIX)
+    assert (st.mode, st.reason) == ("camera", "no_fix")
+    assert run(nl, 90.1, 200.0, NOFIX).mode == "camera"
+    # фикс вернулся — по скорости; снова пропал на ходу — снова счисление
+    assert nl.update(201.0, fix(20.0)).mode == "map"
+    st = nl.update(201.1, NOFIX)
+    assert (st.mode, st.reason) == ("map", "dead_reckoning")
+    # вернулся в тоннеле медленно (пробка) — режим по скорости сразу
+    assert nl.update(230.0, fix(0.5)).mode == "camera"
+
+
+def test_dead_reckoning_only_when_moving_on_the_map():
+    # медленно (между порогами) — обычное «нет фикса»
+    nl = logic()
+    nl.update(0.0, fix(10.0))
+    run(nl, 0.1, 5.0, fix(2.2))
+    assert nl.update(5.1, fix(2.2)).mode == "map"
+    assert (nl.update(5.2, NOFIX).reason) == "no_fix"
+    # на камере (только тронулись, выдержка switch_delay_s не прошла) — тоже
+    nl = logic()
+    nl.update(0.0, fix(0.0))
+    nl.update(0.1, fix(5.0))
+    st = nl.update(0.2, NOFIX)
+    assert (st.mode, st.reason) == ("camera", "no_fix")
+    # выключено настройкой
+    nl = logic(dead_reckoning_s=0)
+    nl.update(0.0, fix(20.0))
+    assert nl.update(0.1, NOFIX).reason == "no_fix"
+    # принудительный режим поверх счисления
+    nl = logic()
+    nl.update(0.0, fix(20.0))
+    nl.apply_settings(NavSettings(), DisplaySettings(force_mode="camera"))
+    assert (nl.update(0.1, NOFIX).reason) == "forced"
+    nl.apply_settings(NavSettings(), DisplaySettings())
+    assert (nl.update(0.2, NOFIX).reason) == "dead_reckoning"
 
 
 def test_force_mode():

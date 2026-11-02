@@ -101,6 +101,22 @@ async def test_calibration_finish_saves(data_dir):
         assert (await c.post("/api/gps/configure")).json()["ok"] is True
 
 
+async def test_vehicle_settings(data_dir):
+    """Размеры машины и антенна GPS (display.md «Антенна GPS»): антенна — в пределах кузова, иначе 422."""
+    v = Settings().vehicle
+    assert (v.length_m, v.width_m, v.gps_from_front_m, v.gps_right_m) == (6.0, 2.05, 0.95, 0.25)
+    async with running_app() as c:
+        await login(c)
+        r = await c.patch("/api/settings", json={"vehicle": {"length_m": 5.4, "gps_right_m": -0.3}})
+        assert r.status_code == 200
+        assert r.json()["vehicle"] == {"length_m": 5.4, "width_m": 2.05, "gps_from_front_m": 0.95,
+                                       "gps_right_m": -0.3}
+        for bad in ({"gps_from_front_m": 7.0}, {"gps_right_m": 1.2}, {"length_m": 0.5}, {"width_m": 9}):
+            r = await c.patch("/api/settings", json={"vehicle": bad})
+            assert r.status_code == 422, bad
+        assert (await c.get("/api/settings")).json()["vehicle"]["length_m"] == 5.4
+
+
 async def _drain():
     import asyncio
 

@@ -14,7 +14,8 @@ import { DEFAULT_SETTINGS, deepMerge } from "./map/defaults.js";
 import { TileStore, browserTileLoader } from "./map/tiles.js";
 import { MapRenderer, BG_COLOR } from "./map/renderer.js";
 import { activeLayers, layerLevel, planRequests } from "./map/layers.js";
-import { CompassFilter, MotionModel, OrientationBlend, RotationRig, ZoomAnimator, hudSpeed, vehicleAnchor } from "./map/motion.js";
+import { CompassFilter, MotionModel, OrientationBlend, RotationRig, ZoomAnimator, hudSpeed, vehicleAnchor, vehicleCenter } from "./map/motion.js";
+import { BURNIN_AMP, burnInOffset, insetRect } from "./map/burnin.js";
 import { Trail } from "./map/trail.js";
 import { CameraLayer } from "./map/camera.js";
 import { RearSignal, rearMirror, viewCamera } from "./map/rearview.js";
@@ -24,7 +25,7 @@ import { Link, wsUrl } from "./map/link.js";
 import { REMOTE, appUrl } from "./map/root.js";
 import { ESRI_ATTRIBUTION, esriTileUrl } from "./map/esri.js";
 import { GamesMenu } from "./ui/games-menu.js";
-import { clamp, makeView } from "./map/mercator.js";
+import { clamp, makeView, metersPerPixel } from "./map/mercator.js";
 import * as debugHud from "./map/debug-hud.js";
 
 const W = 768;
@@ -196,6 +197,8 @@ function applySettings(s) {
     mapLagS: ds.map_rotation_lag_s,
     deadbandDeg: ds.map_rotation_deadband_deg,
   });
+  // счисление пути в тоннеле — по тем же порогам, что режим экрана у fnav-core (navlogic.py)
+  motion.configure({ drMinMps: settings.nav.map_above_mps, drWindowS: settings.nav.dead_reckoning_s });
   if (!settings.display.show_trail) trail.clear();
   if (zoomAnim.target !== null) zoomAnim.setTarget(clamp(zoomAnim.target, 1, maxZoom()));
   mapDirty = true;
@@ -336,6 +339,7 @@ let lastState = null;
 let lastPos = { lat: null, lon: null };
 let mapMsEma = 0;
 let hudMsEma = 0;
+let hudShift = { dx: 0, dy: 0 }; // сдвиг HUD от выжигания в этом кадре (map/burnin.js)
 
 /** Тайлы напрямую (демо, удалённо): атрибуция Esri на холсте (условия Esri), мелко, внизу по центру. */
 function drawAttribution(ctx, state) {
@@ -355,9 +359,12 @@ function drawAttribution(ctx, state) {
   ctx.restore();
 }
 
-function needsMapRedraw(view, t, hasFix) {
+// без фикса карта перерисовывается только ради мигающей иконки машины — ей хватает 12 к/с
+const BLINK_REDRAW_S = 1 / 12;
+
+function needsMapRedraw(view, t, blink) {
   const d = lastDraw;
-  if (mapDirty || !hasFix || t - d.t > 0.5) return true;
+  if (mapDirty || t - d.t > 0.5 || (blink && t - d.t >= BLINK_REDRAW_S - 0.002)) return true;
   const px = Math.hypot(view.cx - d.cx, view.cy - d.cy) * view.scale;
   return (
     px > 0.05 ||
@@ -387,11 +394,19 @@ function frame(tms) {
   const f = orient.update(dt);
   const zoom = zoomAnim.update(dt) ?? clamp(tel.display.target_zoom ?? 17, 1, maxZoom());
   const ds = settings.display;
-  const rot = rig.update(dt, m.headingTarget, m.speed ?? 0);
+  const speed = m.speed ?? m.drSpeed ?? 0; // скорость движения (в тоннеле — счисления; спидометр её не показывает)
+  const rot = rig.update(dt, m.headingTarget, speed);
   const compassDeg = compass.update(t);
-  const pose = { ...vehicleAnchor(f, W, H, ds.vehicle_anchor_y ?? 0.67), bearing: rot.bearing, vehicleRot: rot.vehicleRot };
-  const view = makeView({ cx: m.mx, cy: m.my, zoom, bearing: pose.bearing, ax: pose.ax, ay: pose.ay, w: W, h: H });
+  // от выжигания кинескопа HUD и машина раз в несколько минут сдвигаются на 2–3 px (map/burnin.js)
+  const burn = burnInOffset(Date.now());
+  const anchor = vehicleAnchor(f, W, H, ds.vehicle_anchor_y ?? 0.67);
+  const pose = { ax: anchor.ax + burn.dx, ay: anchor.ay + burn.dy, bearing: rot.bearing, vehicleRot: rot.vehicleRot };
+  // GPS-антенна — не центр машины: в точке машины на экране — её центр, антенна — впереди и правее
+  // (settings.vehicle, display.md «Антенна GPS»); курс — тот, с которым нарисована иконка
+  const center = vehicleCenter(m.mx, m.my, rig.vehicle, settings.vehicle);
+  const view = makeView({ cx: center.x, cy: center.y, zoom, bearing: pose.bearing, ax: pose.ax, ay: pose.ay, w: W, h: H });
   const hasFix = !!(tel.gps && tel.gps.fix && tel.gps.fix !== "none" && tel.gps.lat != null);
+  const dr = !hasFix && m.dr; // тоннель: фикса нет, машина едет по счислению
   const connected = link.connected(3);
   const mode = tel.display.mode === "camera" ? "camera" : "map";
   // задний вид: есть ли картинка — без сигнала слой прячет стоп-кадр, HUD пишет REAR и NO SIGNAL
@@ -417,12 +432,14 @@ function frame(tms) {
   }
   frontShown = front;
 
-  if (ds.show_trail && m.hasPos && hasFix) {
-    trail.add(m.mx, m.my, t);
+  if (ds.show_trail && m.hasPos && (hasFix || dr)) {
+    // след — за центром машины; шаг ~2.5 px экрана, но так, чтобы точек хватило на trail_seconds
+    trail.add(center.x, center.y, t, { mpp: metersPerPixel(m.lat, zoom), speed, keepS: ds.trail_seconds ?? 60 });
   }
   trail.prune(t, ds.trail_seconds ?? 60);
 
   const sp = safePct();
+  const safe = { x: W * sp, y: H * sp, w: W * (1 - 2 * sp), h: H * (1 - 2 * sp) };
   const state = {
     now: t,
     telemetry: tel,
@@ -441,6 +458,7 @@ function frame(tms) {
       speedMps: hudSpeed(m.speed, connected), // нет связи — "--", а не последняя скорость
       zoom,
       hasFix,
+      deadReckoning: dr, // тоннель: иконка тусклая, в строке GPS — DR (ui/vehicle.js, ui/status.js)
       connected,
       internet: tel.system?.internet ?? null,
       recording: !!tel.camera?.recording,
@@ -452,10 +470,12 @@ function frame(tms) {
     canvas: {
       w: W,
       h: H,
-      safe: { x: W * sp, y: H * sp, w: W * (1 - 2 * sp), h: H * (1 - 2 * sp) },
+      // HUD сдвигается на ±BURNIN_AMP — его зона безопасности на столько же меньше: плашки из настоящей не выходят
+      safe: insetRect(safe, BURNIN_AMP),
       pxPerMm: W / (ds.screen?.w_mm || 92),
     },
   };
+  hudShift = burn;
 
   lastState = state;
 
@@ -474,7 +494,7 @@ function frame(tms) {
           maxZoom: maxZoom(),
           targetZoom: zoomAnim.target,
           headingDeg: m.heading,
-          speedMps: m.speed ?? 0,
+          speedMps: speed,
           urlFor: tileUrlFor,
           detail,
           failed: (key) => store.isFailed(key),
@@ -486,13 +506,13 @@ function frame(tms) {
     }
   }
   if (!covered && m.hasPos) {
-    if (needsMapRedraw(view, t, hasFix)) {
+    if (needsMapRedraw(view, t, !hasFix && !dr)) {
       const t0 = DEBUG ? performance.now() : 0;
       renderer.draw(mapCtx, view, layers, maxZoom(), PR);
       mapDirty = false;
       mapCtx.setTransform(PR, 0, 0, PR, 0, 0);
       if (ds.show_trail && trail.pts.length) {
-        callUi("drawTrail", mapCtx, trail.project(view, t, { mx: m.mx, my: m.my }), state);
+        callUi("drawTrail", mapCtx, trail.project(view, t, { mx: center.x, my: center.y }), state);
       }
       callUi("drawVehicle", mapCtx, pose.ax, pose.ay, pose.vehicleRot, state);
       lastDraw = { t, cx: view.cx, cy: view.cy, zoom, bearing: view.bearing, ax: view.ax, ay: view.ay };
@@ -521,7 +541,7 @@ function frame(tms) {
   }
   windLayer.end(t, windBox, PR);
   const hrec = hudLayer.begin();
-  hrec.setTransform(PR, 0, 0, PR, 0, 0);
+  hrec.setTransform(PR, 0, 0, PR, burn.dx * PR, burn.dy * PR);
   callUi("drawHud", hrec, state, { wind: !windOwn });
   if (DIRECT_TILES && mode === "map") drawAttribution(hrec, state);
   hudLayer.end(t, FULL, PR);
@@ -534,8 +554,8 @@ function frame(tms) {
       `zoom ${zoom.toFixed(2)} → ${zoomAnim.target ?? "-"}  lvl ${layers.length ? layerLevel(layers[0], zoom, maxZoom(), Math.log2(PR)) : "-"}  pr ${PR}  brg ${pose.bearing.toFixed(1)}  veh ${rot.vehicle.toFixed(1)}  ${rig.tracking ? "trk" : "hold"}`,
       `tiles cache ${store.cache.size}  load ${store.inflight.size}  q ${store.queue.length}  fail ${store.failures.size}`,
       `drawn ${renderer.lastDrawn.tiles}/${renderer.lastDrawn.fallbacks}/${renderer.lastDrawn.missing}  ok ${s.loaded} err ${s.failed} abort ${s.aborted} evict ${s.evicted}`,
-      `pos ${m.lat?.toFixed(5) ?? "-"}, ${m.lon?.toFixed(5) ?? "-"}  v ${(m.speed ?? 0).toFixed(1)}  trail ${trail.pts.length}`,
-      `ws ${connected ? "ok" : "LOST"}  mode ${mode}  cam ${camera.which} ${camera.ok ? "ok" : "-"}${rearSig ? " " + rearSig : ""}  pad ${gamesMenu?.polling ? "poll" : "-"}`,
+      `pos ${m.lat?.toFixed(5) ?? "-"}, ${m.lon?.toFixed(5) ?? "-"}  v ${speed.toFixed(1)}${dr ? " DR" : ""}  trail ${trail.pts.length}  burn ${burn.dx},${burn.dy}`,
+      `ws ${connected ? "ok" : "LOST"}${link.drops ? ` (drop ${link.drops})` : ""}  mode ${mode}  cam ${camera.which} ${camera.ok ? "ok" : "-"}${rearSig ? " " + rearSig : ""}  pad ${gamesMenu?.polling ? "poll" : "-"}`,
       layerStats(),
     ]);
   }
@@ -560,7 +580,7 @@ function verifyFrame(state, windOwn, mode) {
   verify.hud ??= mk();
   verify.wind ??= mk();
   const vh = verify.hud, vw = verify.wind;
-  vh.setTransform(PR, 0, 0, PR, 0, 0);
+  vh.setTransform(PR, 0, 0, PR, hudShift.dx * PR, hudShift.dy * PR);
   vh.clearRect(0, 0, W, H);
   callUi("drawHud", vh, state, { wind: !windOwn });
   if (DIRECT_TILES && mode === "map") drawAttribution(vh, state);

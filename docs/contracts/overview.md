@@ -35,7 +35,7 @@
 | `fnav-core` | `/opt/fnav/venv/bin/python -m fnav.core` | `0.0.0.0:80` (веб, API, WS, тайлы) |
 | `fnav-camera` | `/opt/fnav/venv/bin/python -m fnav.camera` | `127.0.0.1:8081` (статус, MJPEG, управление) |
 | `mediamtx` | `/usr/local/bin/mediamtx /etc/fnav/mediamtx.yml` | RTSP `127.0.0.1:8554`, WebRTC HTTP `127.0.0.1:8889`, WebRTC ICE UDP `:8189` |
-| `fnav-display` | `cage -- chromium --kiosk http://127.0.0.1/display/?pal=1` | — (вывод на HDMI 720×576) |
+| `fnav-display` | `cage -- chromium --kiosk http://127.0.0.1/display/?pal=1&fps=30` | — (вывод на HDMI 720×576) |
 | `gpsd` | системный, устройство `/dev/ttyAMA0` | `127.0.0.1:2947` |
 | `chrony` | системный, refclock от gpsd (SHM) | — |
 

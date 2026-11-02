@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { TileStore, browserTileLoader, isEsriNoData } from "../../web/display/map/tiles.js";
 import { VECTOR_MAX_Z, activeLayers, layerLevel, planRequests } from "../../web/display/map/layers.js";
 import { Trail } from "../../web/display/map/trail.js";
-import { lonLatToMerc, makeView, moveMerc, parentTile, tileKey, visibleTiles } from "../../web/display/map/mercator.js";
+import { lonLatToMerc, makeView, metersPerPixel, moveMerc, parentTile, tileKey, visibleTiles } from "../../web/display/map/mercator.js";
 import { DEFAULT_SETTINGS, deepMerge } from "../../web/display/map/defaults.js";
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -212,11 +212,12 @@ test("Trail: прореживание, возраст, обрезка", () => {
   const tr = new Trail();
   const c = lonLatToMerc(37.5853, 55.7069);
   let p = { ...c };
+  const opts = { mpp: metersPerPixel(55.7069, 16), speed: 10, keepS: 60 }; // шаг 2.5 px ≈ 3.4 м
   for (let i = 0; i < 100; i++) {
-    tr.add(p.x, p.y, i * 0.1);
+    tr.add(p.x, p.y, i * 0.1, opts);
     p = moveMerc(p.x, p.y, 90, 1); // 10 м/с
   }
-  assert.ok(tr.pts.length >= 30 && tr.pts.length <= 51, String(tr.pts.length));
+  assert.ok(tr.pts.length >= 20 && tr.pts.length <= 35, String(tr.pts.length));
   tr.prune(10, 5);
   assert.ok(tr.pts.every((q) => 10 - q.t <= 5));
   const view = makeView({ cx: p.x, cy: p.y, zoom: 18, bearing: 90, ax: 384, ay: 386, w: 768, h: 576 });

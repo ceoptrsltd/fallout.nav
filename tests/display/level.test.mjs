@@ -91,7 +91,7 @@ test("visibility: unknown speed counts as stopped; disabled or no sensor hides",
 test("levelInputs: from the HUD state (km/h, settings.level.show_on_screen default on)", () => {
   const st = (level, settings = {}, speedMps = 0.1) => ({ now: 5, telemetry: { level }, settings, view: { speedMps } });
   const i = levelInputs(st({ sensor_ok: true }));
-  assert.deepEqual({ ...i, speedKmh: Math.round(i.speedKmh * 100) / 100 }, { now: 5, speedKmh: 0.36, enabled: true, sensorOk: true });
+  assert.deepEqual({ ...i, speedKmh: Math.round(i.speedKmh * 100) / 100 }, { now: 5, speedKmh: 0.36, enabled: true, sensorOk: true, dr: false });
   assert.equal(levelInputs(st({ sensor_ok: true }, { level: { show_on_screen: false } })).enabled, false);
   assert.equal(levelInputs(st(null)).sensorOk, false);
   assert.equal(levelInputs(st({ sensor_ok: true }, {}, null)).speedKmh, null);
@@ -105,6 +105,17 @@ test("levelInputs: no link to fnav-core — the level data is stale too, the spe
   const t = newLevelTrack();
   levelVisibility(t, levelInputs(st(false)));
   assert.equal(levelVisibility(t, { ...levelInputs(st(false)), now: 10 }).shown, false);
+});
+
+test("levelInputs: in a tunnel (dead reckoning) the speed is unknown but we are moving — the speedometer stays", () => {
+  const st = (deadReckoning) => ({ now: 5, telemetry: { level: { sensor_ok: true } }, settings: {}, view: { speedMps: null, deadReckoning } });
+  assert.equal(levelInputs(st(true)).dr, true);
+  assert.equal(levelInputs(st(undefined)).dr, false);
+  const t = newLevelTrack();
+  levelVisibility(t, levelInputs(st(true)));
+  assert.equal(levelVisibility(t, { ...levelInputs(st(true)), now: 30 }).shown, false);
+  levelVisibility(t, { ...levelInputs(st(false)), now: 30 });
+  assert.equal(levelVisibility(t, { ...levelInputs(st(false)), now: 33 }).shown, true, "window over, still no speed: as before");
 });
 
 test("LEVEL_BOX: as wide as the speedometer (the radio panel does not move), taller than it", () => {

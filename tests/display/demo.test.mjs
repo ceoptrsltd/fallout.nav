@@ -78,6 +78,22 @@ test("NavLogic: нет фикса, startup grace, forced", () => {
   assert.equal(n.update(8, gps(15)).mode, "map");
 });
 
+test("NavLogic: тоннель — карта по счислению nav.dead_reckoning_s от последнего фикса (как navlogic.py)", () => {
+  const n = new NavLogic(NAV, DISP, { startTime: 0 });
+  n.update(0, gps(20));
+  let d = n.update(50, gps(0, "none"));
+  assert.deepEqual([d.mode, d.reason], ["map", "dead_reckoning"]);
+  d = n.update(89.9, gps(0, "none"));
+  assert.equal(d.reason, "dead_reckoning");
+  d = n.update(90, gps(0, "none"));
+  assert.deepEqual([d.mode, d.reason], ["camera", "no_fix"]);
+  // медленно (между порогами) — сразу как без фикса
+  const slow = new NavLogic(NAV, DISP, { startTime: 0 });
+  slow.update(0, gps(10));
+  slow.update(5, gps(2.2));
+  assert.equal(slow.update(5.1, gps(0, "none")).reason, "no_fix");
+});
+
 // ── симулятор ──
 
 test("LoopRoute: маршрут — замкнутая петля в Лас-Вегасе", () => {

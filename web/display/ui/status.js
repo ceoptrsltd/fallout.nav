@@ -120,11 +120,13 @@ export function drawIndicators(ctx, state, safe) {
   const xr = safe.x + safe.w;
   let y = safe.y + safe.h - ROW_H;
 
-  // GPS: тип фикса, видимые / используемые спутники; ширина постоянная — не «дышит» от числа спутников
+  // GPS: тип фикса, видимые / используемые спутники; ширина постоянная — не «дышит» от числа спутников.
+  // Тоннель (view.deadReckoning: фикса нет, машина едет по счислению) — вместо спутников DR
   const gps = t.gps ?? {};
   const hasFix = v.hasFix !== false && gps.fix !== "none";
-  row(ctx, xr, y, satsText(gps), 26, (x, yy) => iconSat(ctx, x, yy, hasFix), {
-    dim: !hasFix, font: SATS_FONT(), minW: rowWidth(ctx, SATS_WIDEST, 26, SATS_FONT()),
+  const dr = !hasFix && v.deadReckoning === true;
+  row(ctx, xr, y, dr ? "DR" : satsText(gps), 26, (x, yy) => iconSat(ctx, x, yy, hasFix), {
+    dim: !hasFix && !dr, font: dr ? FONT() : SATS_FONT(), minW: rowWidth(ctx, SATS_WIDEST, 26, SATS_FONT()),
   });
   y -= ROW_H + 6;
 
@@ -195,13 +197,13 @@ function warning(ctx, x, y, text, now) {
   }
 }
 
-/** Крупные предупреждения — колонкой слева, начиная с yTop. */
+/** Крупные предупреждения — колонкой слева, начиная с yTop. В тоннеле (счисление пути) NO GPS не мигает: DR в строке GPS. */
 export function drawWarnings(ctx, state, safe, yTop) {
   const v = state?.view ?? {};
   const now = state?.now ?? 0;
   const list = [];
   if (v.connected === false) list.push("NO LINK");
-  if (v.hasFix === false) list.push("NO GPS");
+  if (v.hasFix === false && v.deadReckoning !== true) list.push("NO GPS");
   let y = yTop;
   for (const text of list) {
     warning(ctx, Math.round(safe.x + 3), Math.round(y), text, now);

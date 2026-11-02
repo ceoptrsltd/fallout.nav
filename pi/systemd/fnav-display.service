@@ -40,7 +40,8 @@ Environment=WLR_LIBINPUT_NO_DEVICES=1
 Environment=XCURSOR_PATH=/opt/fnav/app/pi/cursor
 # Optional extra Chromium flags and overrides: /etc/fnav/display.env (FNAV_CHROMIUM_EXTRA=...)
 # Page to show; can be overridden in display.env (e.g. the service test pattern /display/test-pattern.html?mode=bw).
-Environment=FNAV_DISPLAY_URL=http://127.0.0.1/display/?pal=1
+# fps=30: at most 30 frames a second (half the 60 Hz vsync) — a frame per interlaced NTSC picture, half the CPU/GPU.
+Environment=FNAV_DISPLAY_URL=http://127.0.0.1/display/?pal=1&fps=30
 EnvironmentFile=-/etc/fnav/display.env
 
 # Wait for core (up to 120 s); clean up traces of an unclean shutdown in the Chromium profile.

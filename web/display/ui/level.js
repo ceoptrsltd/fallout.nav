@@ -88,10 +88,11 @@ export function newLevelTrack() {
 
 /**
  * Показывать ли виджет: включён и датчик в порядке; скорость < 1 км/ч не меньше 3 с подряд (или скорости нет) —
- * показать; > 3 км/ч — спрятать сразу; между ними — как было. Меняет и возвращает track.
+ * показать; > 3 км/ч — спрятать сразу; между ними — как было. Счисление пути в тоннеле (dr: скорости нет, но
+ * едем) — спрятать. Меняет и возвращает track.
  */
-export function levelVisibility(track, { now, speedKmh, enabled, sensorOk }) {
-  if (!enabled || !sensorOk) {
+export function levelVisibility(track, { now, speedKmh, enabled, sensorOk, dr = false }) {
+  if (!enabled || !sensorOk || dr) {
     track.shown = false;
     track.slowSince = null;
     return track;
@@ -119,6 +120,7 @@ export function levelInputs(state) {
     enabled: setting(state, "level.show_on_screen", true) !== false,
     // нет связи с fnav-core — и уровень, и скорость устарели: остаётся спидометр с "--"
     sensorOk: !!l && l.sensor_ok === true && state?.view?.connected !== false,
+    dr: state?.view?.deadReckoning === true,
   };
 }
 

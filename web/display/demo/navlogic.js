@@ -36,6 +36,9 @@ export class NavLogic {
     this._zoomCand = null;
     this._zoomSince = 0;
     this._lastNow = null;
+    this._lastSpeed = 0; // speed of the last fix
+    this._lastFixT = null;
+    this._dr = false; // fix lost while moving on the map (tunnel): dead reckoning
   }
 
   applySettings(nav, display) {
@@ -52,21 +55,33 @@ export class NavLogic {
     if (this._lastNow !== null && now < this._lastNow) {
       this._switchSince = null;
       this._zoomCand = null;
+      this._dr = false;
     }
     this._lastNow = now;
 
     if (hasFix(gps)) {
       const speed = Math.max(0, gps.speed_mps || 0);
       this._hadFix = true;
+      this._lastSpeed = speed;
+      this._lastFixT = now;
+      this._dr = false;
       this._updateZoom(now, speed);
       this._updateMode(now, speed);
     } else {
+      // the fix has just been lost while moving on the map (tunnel): keep the map for nav.dead_reckoning_s
+      if (this._inSpeedRegime) this._dr = this._mode === "map" && this._lastSpeed > this.nav.map_above_mps;
       this._inSpeedRegime = false;
       this._switchSince = null;
       this._zoomCand = null;
-      this._mode = this.nav.no_fix_mode;
-      const inGrace = !this._hadFix && now - this._t0 < this.startupGraceS;
-      this._reason = inGrace ? "startup" : "no_fix";
+      if (this._dr && this._lastFixT !== null && now - this._lastFixT < (this.nav.dead_reckoning_s ?? 0)) {
+        this._mode = "map";
+        this._reason = "dead_reckoning";
+      } else {
+        this._dr = false;
+        this._mode = this.nav.no_fix_mode;
+        const inGrace = !this._hadFix && now - this._t0 < this.startupGraceS;
+        this._reason = inGrace ? "startup" : "no_fix";
+      }
     }
 
     let mode = this._mode, reason = this._reason;

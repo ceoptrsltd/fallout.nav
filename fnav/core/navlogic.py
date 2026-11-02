@@ -10,6 +10,9 @@
   * нет фикса → `nav.no_fix_mode` сразу (`reason="no_fix"`; до первого фикса в первые
     `startup_grace_s` секунд — `reason="startup"`); после появления фикса режим выбирается
     по скорости сразу, дальше — с гистерезисом;
+  * исключение — тоннель: фикс пропал, когда была карта и последняя скорость выше `map_above_mps`, —
+    ещё `nav.dead_reckoning_s` секунд от последнего фикса карта (`reason="dead_reckoning"`: экран везёт
+    машину по последней скорости и курсу), потом как без фикса;
   * `display.force_mode` ≠ auto → этот режим, `reason="forced"` (авто-логика продолжает
     считаться в фоне, чтобы при возврате в auto не было скачка).
 """
@@ -63,6 +66,9 @@ class NavLogic:
         self._zoom_cand: float | None = None
         self._zoom_since: float = 0.0
         self._last_now: float | None = None
+        self._last_speed = 0.0  # скорость последнего фикса
+        self._last_fix_t: float | None = None  # когда он был
+        self._dr = False  # фикс пропал на ходу: счисление пути (тоннель)
 
     def apply_settings(self, nav: NavSettings, display: DisplaySettings) -> None:
         self.nav = nav
@@ -77,20 +83,31 @@ class NavLogic:
             # время пошло назад — сбрасываем выдержки
             self._switch_since = None
             self._zoom_cand = None
+            self._dr = False
         self._last_now = now
 
         if has_fix(gps):
             speed = max(0.0, gps.speed_mps or 0.0)
             self._had_fix = True
+            self._last_speed = speed
+            self._last_fix_t = now
+            self._dr = False
             self._update_zoom(now, speed)
             self._update_mode(now, speed)
         else:
+            if self._in_speed_regime:
+                # фикс только что пропал: на ходу по карте (тоннель) — счисление пути
+                self._dr = self._mode == "map" and self._last_speed > self.nav.map_above_mps
             self._in_speed_regime = False
             self._switch_since = None
             self._zoom_cand = None
-            self._mode = self.nav.no_fix_mode
-            in_grace = not self._had_fix and (now - self._t0) < self.startup_grace_s
-            self._reason = "startup" if in_grace else "no_fix"
+            if self._dr and self._last_fix_t is not None and now - self._last_fix_t < self.nav.dead_reckoning_s:
+                self._mode, self._reason = "map", "dead_reckoning"
+            else:
+                self._dr = False
+                self._mode = self.nav.no_fix_mode
+                in_grace = not self._had_fix and (now - self._t0) < self.startup_grace_s
+                self._reason = "startup" if in_grace else "no_fix"
 
         mode, reason = self._mode, self._reason
         if self.display.force_mode != "auto":

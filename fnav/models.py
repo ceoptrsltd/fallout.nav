@@ -87,6 +87,9 @@ class NavSettings(_Model):
         ZoomStep(min_mps=25.0, zoom=15),
     ]
     no_fix_mode: Literal["camera", "map"] = "camera"
+    # тоннель: фикс пропал на скорости выше map_above_mps — столько секунд ещё карта, машина едет по последней
+    # скорости и курсу (счисление пути), потом no_fix_mode; 0 — сразу no_fix_mode
+    dead_reckoning_s: float = Field(90.0, ge=0, le=300)
 
 
 class HeadingSettings(_Model):
@@ -406,6 +409,24 @@ class LevelSettings(_Model):
     calibration: LevelCalibration | None = None
 
 
+class VehicleSettings(_Model):
+    """Размеры машины и где на ней антенна GPS: экран ставит иконку центром машины, а не антенной
+    (docs/contracts/display.md «Антенна GPS»). По умолчанию — Peugeot Boxer L3, приёмник у основания лобового стекла."""
+
+    length_m: float = Field(6.0, ge=2, le=20)
+    width_m: float = Field(2.05, ge=1, le=3.5)
+    gps_from_front_m: float = Field(0.95, ge=0, le=20)  # антенна: столько назад от переднего края
+    gps_right_m: float = Field(0.25, ge=-1.75, le=1.75)  # и столько вправо от осевой (минус — влево)
+
+    @model_validator(mode="after")
+    def _antenna_on_vehicle(self):
+        if self.gps_from_front_m > self.length_m:
+            raise ValueError("GPS antenna must be within the vehicle length")
+        if abs(self.gps_right_m) > self.width_m / 2:
+            raise ValueError("GPS antenna must be within the vehicle width")
+        return self
+
+
 class SystemSettings(_Model):
     """Система устройства (fnav/core/timezone.py)."""
 
@@ -434,6 +455,7 @@ class Settings(_Model):
     alarm: AlarmSettings = AlarmSettings()
     level: LevelSettings = LevelSettings()
     system: SystemSettings = SystemSettings()
+    vehicle: VehicleSettings = VehicleSettings()
 
 
 # ───────────────────────────── Датчики ─────────────────────────────
@@ -554,7 +576,8 @@ class CameraStatus(_Model):
 
 class DisplayState(_Model):
     mode: Literal["map", "camera"] = "camera"
-    reason: Literal["speed", "no_fix", "forced", "startup", "rear"] = "startup"
+    # dead_reckoning — фикс пропал на ходу (тоннель): ещё nav.dead_reckoning_s карта, машина едет по счислению
+    reason: Literal["speed", "no_fix", "forced", "startup", "rear", "dead_reckoning"] = "startup"
     # какая камера в режиме camera: rear — задний вид (кнопка «камеры»), поверх авто-логики карта/камера
     camera: CameraId = "front"
     rear_mirror: bool = True  # задний вид на экране — зеркально (rear_camera.mirror)
