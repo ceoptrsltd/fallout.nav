@@ -18,6 +18,10 @@ Alarm, level and push (docs/contracts/alarm.md, level.md) are fake state machine
     POST /api/_mock/push {"status": 503|404|null}  api/push/* answer like a server without push support
 Push subscriptions are kept in memory; nothing is really sent (test → "sent").
 
+A bad connection (the admin's liveness checks and request timeouts, web/admin/js/conn-fmt.js, api.js):
+    POST /api/_mock/ws-freeze {"seconds": 30}   WebSockets stay open but silent (a half-dead tunnel, a locked iPhone)
+    POST /api/_mock/hang {"seconds": 70}         api/* requests wait that long (nginx waiting on a dead tunnel)
+
 Static files go out with Cache-Control: no-store. "A new version is available" (web/admin/js/version-fmt.js) needs
 web/admin/version.json, which only the deploy writes: `bash tools/web-version.sh`, then edit "version" by hand while
 the admin is open (no file — no check).
@@ -77,6 +81,9 @@ STRICT_AUTH = False  # --strict-auth: do not exempt loopback clients from auth
 REMOTE_PREFIX = "/fnadmin"  # remote access through the server (docs/contracts/remote.md)
 OFFLINE = False  # --offline: under /fnadmin/ the device is "not connected"
 TRACK_DOWN = False  # api/tracking/* → 503 (tracking server unreachable)
+WS_FREEZE_UNTIL = 0.0  # POST /api/_mock/ws-freeze: WebSockets silent until then
+HANG_UNTIL = 0.0  # POST /api/_mock/hang: api/* requests wait until then
+video_on = True  # api/display/output: the car monitor (wlr-randr on the device)
 RADIO_DIR_DOWN = False  # api/radio/stations → 503 (radio-browser unreachable)
 # what the server answers itself when the device is offline
 SERVER_PATHS = ("/api/tracking/", "/api/login", "/api/logout", "/api/session", "/api/_mock/")
@@ -562,6 +569,8 @@ async def auth_and_headers(request: Request, call_next):
         return err(404, "Not found")
     if remote and OFFLINE and path.startswith(("/api/", "/tiles/")) and not path.startswith(SERVER_PATHS):
         return err(503, "Device is offline")
+    if path.startswith("/api/") and not path.startswith("/api/_mock/") and time.time() < HANG_UNTIL:
+        await asyncio.sleep(HANG_UNTIL - time.time())
     if path.startswith("/api/") and path not in PUBLIC_API and not authed:
         local_ok = is_local(request) and request.method == "GET" and path in LOOPBACK_OK
         if not local_ok:
@@ -681,6 +690,22 @@ async def display_force(request: Request):
     data["display"]["force_mode"] = mode
     apply_settings(Settings.model_validate(data))
     return {"ok": True, "mode": mode}
+
+
+@app.get("/api/display/output")
+async def video_output_get():
+    return {"output": "Composite-1", "on": video_on}
+
+
+@app.post("/api/display/output")
+async def video_output_set(request: Request):
+    """{"on": bool} or {} (toggle) — like fnav-core: a WS event and a toast."""
+    global video_on
+    b = await request.json() if (await request.body()) else {}
+    video_on = (not video_on) if b.get("on") is None else bool(b.get("on"))
+    push_event({"event": "video_output", "on": video_on})
+    push_event({"event": "toast", "level": "info", "text": f"Video output {'ON' if video_on else 'OFF'}"})
+    return {"ok": True, "on": video_on}
 
 
 # ── tiles ──
@@ -952,6 +977,24 @@ async def mock_tracking_down(request: Request):
     b = await request.json() if (await request.body()) else {}
     TRACK_DOWN = bool(b.get("down", not TRACK_DOWN))
     return {"ok": True, "down": TRACK_DOWN}
+
+
+@app.post("/api/_mock/ws-freeze")
+async def mock_ws_freeze(request: Request):
+    """{"seconds": 30} — open WebSockets stay open but send nothing (a half-dead tunnel, an iPhone after the lock screen)."""
+    global WS_FREEZE_UNTIL
+    b = await request.json() if (await request.body()) else {}
+    WS_FREEZE_UNTIL = time.time() + float(b.get("seconds", 30))
+    return {"ok": True, "until": WS_FREEZE_UNTIL}
+
+
+@app.post("/api/_mock/hang")
+async def mock_hang(request: Request):
+    """{"seconds": 70} — every other api/* request waits that long before answering (nginx waiting on a dead tunnel)."""
+    global HANG_UNTIL
+    b = await request.json() if (await request.body()) else {}
+    HANG_UNTIL = time.time() + float(b.get("seconds", 70))
+    return {"ok": True, "until": HANG_UNTIL}
 
 
 # ── radio and Bluetooth (docs/contracts/radio.md): fake directory, fake player, fake BlueZ ──
@@ -2184,6 +2227,7 @@ async def ws_endpoint(ws: WebSocket):
     ver = -1
     last_ev = events[-1]["id"] if events else 0
     last_nmea = 0.0
+    pongs = [0]  # pings to answer (fnav/core/ws.py answers {"type": "pong"})
 
     async def reader():
         try:
@@ -2193,12 +2237,23 @@ async def ws_endpoint(ws: WebSocket):
                     topics.update(m.get("topics", []))
                 elif m.get("type") == "unsubscribe":
                     topics.difference_update(m.get("topics", []))
+                elif m.get("type") == "ping":
+                    pongs[0] += 1
         except (WebSocketDisconnect, RuntimeError):
             pass
 
     rtask = asyncio.create_task(reader())
     try:
         while not rtask.done():
+            if is_remote(ws) and OFFLINE:
+                break  # the device dropped off: its tunnel goes
+            if time.time() < WS_FREEZE_UNTIL:
+                pongs[0] = 0  # silent, but open
+                await asyncio.sleep(0.1)
+                continue
+            for _ in range(pongs[0]):
+                await ws.send_text('{"type":"pong"}')
+            pongs[0] = 0
             if settings_version != ver:
                 ver = settings_version
                 await ws.send_text(json.dumps({"type": "settings", "settings": settings_json()}))

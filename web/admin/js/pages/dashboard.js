@@ -1,10 +1,13 @@
 // Dashboard: the alarm first (state, Arm / Disarm / Stop siren & lights, camera watch, problems), the latest alarm
-// events, then the van at a glance (position, camera, system, level, radio). Live data from telemetry; api/alarm
-// (camera watch, events) is polled slowly and fetched at once on a new event (telemetry alarm.seq) or state change.
+// events, then the van at a glance (position, camera, quick actions, system, level, radio). Live data from telemetry;
+// api/alarm (camera watch, events) is polled slowly and fetched at once on a new event (telemetry alarm.seq) or state
+// change. Device unreachable: the last known data (this session's, or kept in localStorage — store.js keep) greyed out
+// with "Last seen …"; remotely the position may come from the server's journal (api/tracking/last).
 import { h, icon, clear, isNum } from "../dom.js";
-import { api, errText } from "../api.js";
-import { store, on } from "../store.js";
-import { toast, banner } from "../ui.js";
+import { api, errText, REMOTE } from "../api.js";
+import { store, on, keep, kept, lastTelemetry } from "../store.js";
+import { toast, banner, segmented, confirmDialog } from "../ui.js";
+import { lastSeenText } from "../conn-fmt.js";
 import { alarmStateText, armLeft, kindInfo } from "../alarm-fmt.js";
 import { recLink } from "../rec-play.js";
 import { eventThumb } from "../snap-view.js";
@@ -13,11 +16,14 @@ import {
   EVENTS_N, ACT_COOL_MS, pollDelay, alarmLive, alarmActions, actCooldown, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
   recentEvents, recentKey, eventExtras, eventCamera, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
+  newerAlarm, serverPos, videoAction, SCREEN_MODES, screenNowText, quickConfirm, protectedText,
 } from "../dash-fmt.js";
 
 const nowS = () => Date.now() / 1000;
 const EXPECT_MS = 2500; // after an action, its answer beats telemetry packets already on the way
 const EXTRAS_MS = 4000; // snapshot and kept recording are attached to an event a moment after it
+const SERVER_POS_MS = 60000; // offline, remote: the server's last point of the van, at most this often
+const NOTE_MS = 6000; // a quick action's note next to its button
 
 /** Set text / class only when they change (telemetry comes 2…10 times a second). */
 function put(el, text) {
@@ -35,6 +41,9 @@ export function mount(root) {
   let st = null; // AlarmStatus (GET api/alarm)
   let stAt = 0;
   let stErr = null;
+  let stLive = false; // st was fetched by this page (not the copy kept from an earlier visit)
+  const stKept = kept("alarm");
+  if (stKept) { st = stKept.v; stAt = stKept.at; }
   let busy = null; // alarm action in flight
   let doneAt = null; // Date.now() of the last action's answer: then the buttons are inert for ACT_COOL_MS
   let coolTimer = null;
@@ -53,8 +62,13 @@ export function mount(root) {
 
   function live() {
     const t = store.online && store.telemetry ? store.telemetry.alarm : null;
+    if (!t) {
+      // no live telemetry: the newest known state — api/alarm or the last telemetry (this session's or kept)
+      const lt = lastTelemetry();
+      return newerAlarm(lt && lt.t.alarm, lt ? lt.at : 0, st, stAt);
+    }
     const fromSt = alarmLive(null, st, 0, stAt);
-    if (t && expect) {
+    if (expect) {
       const same = t.state === expect.state && !!t.siren === expect.siren && !!t.hazard === expect.hazard;
       if (same || Date.now() > expect.until) expect = null;
       else if (fromSt) return { ...fromSt, seq: isNum(t.seq) ? t.seq : null };
@@ -117,7 +131,7 @@ export function mount(root) {
     if (!l) {
       cls(heroWord, "al-word db-word");
       put(heroWord, "—");
-      put(heroSub, stErr || (store.online ? "Loading…" : "No connection to the device"));
+      put(heroSub, stErr || (store.online ? "Loading…" : store.online === null ? "Connecting…" : "No connection to the device"));
       cls(hero, "card db-hero");
       clear(btns);
       btnSig = "";
@@ -128,7 +142,8 @@ export function mount(root) {
     }
     const s = alarmStateText(l.state);
     const k = s.kind || "off";
-    const stale = !store.online && !!stErr; // no telemetry and the last api/alarm failed: the last known state
+    // no telemetry, and api/alarm failed or was not asked yet (a kept copy): the last known state
+    const stale = !store.online && (!!stErr || !stLive);
     cls(hero, `card db-hero s-${l.state}${stale ? " stale" : ""}`);
     cls(heroWord, `al-word db-word ${k}${l.state === "triggered" ? " blink" : ""}`);
     put(heroWord, alarmWord(l.state));
@@ -152,7 +167,7 @@ export function mount(root) {
       sub = last ? `${last.title || kindInfo(last.kind).label} · ${eventAgo(last.ts, now)}` : "Something happened";
     } else if (l.state === "armed") sub = (st && armedFor(st.armed_at, now)) || "Watching the van";
     else if (l.state === "off") sub = "Not watching the van";
-    if (stale) sub = "No connection to the device — last known state";
+    if (stale) sub = "No connection · last known state" + (l.at > 0 ? ", " + eventAgo(l.at / 1000, now) : "");
     put(heroSub, sub);
     cls(heroSub, "db-sub" + (l.state === "arming" ? " amber mono" : ""));
     heroBanner.hidden = l.state !== "triggered" || stale;
@@ -168,8 +183,8 @@ export function mount(root) {
       heroLive.hidden = !l.siren && !l.hazard;
     }
 
-    armBar.hidden = l.state !== "arming";
-    if (l.state === "arming") {
+    armBar.hidden = l.state !== "arming" || stale; // an old countdown would run on
+    if (l.state === "arming" && !stale) {
       const total = (alarmCfg() && alarmCfg().arm_delay_s) || l.armIn || 1;
       armBar.firstChild.style.width = armProgress(left ?? total, total) * 100 + "%";
     }
@@ -180,6 +195,7 @@ export function mount(root) {
     // right after an answer the new buttons are inert (dimmed) for a moment: Disarm takes Arm's place
     const nowMs = Date.now();
     const cool = !busy && actCooldown(doneAt, nowMs) > 0;
+    const inert = cool || store.offline; // the server answers for the device: nothing to arm or disarm there
     // while an action is in flight the (disabled) buttons stay as they are until its answer
     if (sig !== btnSig && !(busy && btnSig.endsWith("|" + busy))) {
       btnSig = sig;
@@ -190,12 +206,12 @@ export function mount(root) {
       }
       clear(btns);
       for (const a of acts) {
-        btns.append(h(`button.btn.al-big.${a.cls}`, { type: "button", disabled: !!busy || cool, title: a.title, onclick: () => act(a.what) },
+        btns.append(h(`button.btn.al-big.${a.cls}`, { type: "button", disabled: !!busy || inert, title: a.title, onclick: () => act(a.what) },
           busy === a.what ? h("span.spin") : icon(a.icon), a.label));
       }
     }
     // the cool-down ends: the same buttons come alive (not rebuilt under the finger)
-    if (!busy) for (const b of btns.children) if (b.disabled !== cool) b.disabled = cool;
+    if (!busy) for (const b of btns.children) if (b.disabled !== inert) b.disabled = inert;
     put(heroHint, l.state === "off" ? armHint(alarmCfg() ? alarmCfg().arm_delay_s : null) : "");
     heroHint.hidden = l.state !== "off";
 
@@ -221,6 +237,7 @@ export function mount(root) {
     evList);
 
   function renderEvents() {
+    evCard.classList.toggle("stale", !store.online && (!!stErr || !stLive));
     if (!st) {
       if (evSig !== "none") {
         evSig = "none";
@@ -270,6 +287,9 @@ export function mount(root) {
 
   // ───── the van ─────
   const errBox = h("div");
+  const seenEl = h(".db-seen", { hidden: true, role: "status" }); // offline: "Last seen 12 min ago"
+  let srvLast = null; // api/tracking/last (remote, offline): where the server last heard of the van
+  let srvAt = 0;
   const tile = (href, ic, label, ...body) => h("a.db-tile", { href }, h(".db-tl", null, icon(ic), h("span", null, label), h("span.db-go", null, "›")), ...body);
 
   const posTxt = h("span", null, "—");
@@ -398,27 +418,191 @@ export function mount(root) {
     }
   }
 
-  const tiles = h(".db-tiles", null, posTile, camTile, sysTile, lvTile, radioTile);
+  // ───── quick actions: protect the recording, the car monitor on / off, what the car screen shows ─────
+  const qBusy = { protect: false, video: false, screen: false };
+  const qDone = { protect: null, video: null }; // the answer's Date.now(): a double tap must not repeat it (actCooldown)
+  let qTimer = null;
+  let noteTimer = null;
+  let vidOn = null; // api/display/output: true / false / null — not known
+  let vidErr = null;
+  let vidMissing = false; // an older device without the endpoint: the row is hidden
+  let modeExpect = null; // {mode, until}: the mode just set, until settings over WS show it
+  const protBtn = h("button.btn.db-qbtn", { type: "button", title: "Keep the current recording (both cameras) from being overwritten", onclick: () => protect() },
+    icon("lock"), h("span", null, "Protect recording"));
+  const protNote = h("span.db-qnote.green", { hidden: true });
+  const vidState = h("b.db-qstate", null, "—");
+  const vidBtn = h("button.btn.db-qbtn", { type: "button", onclick: () => toggleVideo() }, icon("screen"), h("span", null, "On / off"));
+  const vidRow = h(".db-qrow", null, h("span.db-qlbl", null, "Car monitor", vidState), vidBtn);
+  const modeSeg = segmented({ name: "db-scrmode", options: SCREEN_MODES, value: forceMode(), onchange: (v) => setMode(v) });
+  modeSeg.classList.add("db-qseg");
+  const modeNow = h("span.db-qnow");
+  const quickTile = h(".db-tile.wide.db-quick", null,
+    h(".db-tl", null, icon("keys"), h("span", null, "Quick actions")),
+    h(".db-qrow", null, protBtn, protNote),
+    vidRow,
+    h(".db-qrow", null, h("span.db-qlbl", null, "Car screen", modeNow), modeSeg));
+
+  function forceMode() {
+    const s = (store.settings && store.settings.display && store.settings.display.force_mode) || "auto";
+    if (modeExpect && (modeExpect.mode === s || Date.now() > modeExpect.until)) modeExpect = null;
+    return modeExpect ? modeExpect.mode : s;
+  }
+  const qCool = (k) => actCooldown(qDone[k], Date.now()) > 0;
+  function qFinish(k) {
+    qBusy[k] = false;
+    if (k in qDone) qDone[k] = Date.now();
+    if (stopped) return;
+    clearTimeout(qTimer);
+    qTimer = setTimeout(() => { if (!stopped) renderQuick(); }, ACT_COOL_MS + 20);
+    renderQuick();
+  }
+  const movingNow = () => {
+    const t = store.online && store.telemetry;
+    return !!t && motionInfo(t.gps, t.heading).moving;
+  };
+
+  async function protect() {
+    if (qBusy.protect || qCool("protect")) return;
+    qBusy.protect = true;
+    renderQuick();
+    try {
+      const r = await api.post("/api/recordings/protect-current");
+      if (stopped) return;
+      // the device also tells it over WS (toasts); the note stays next to the button for a moment
+      put(protNote, protectedText(r));
+      protNote.hidden = false;
+      clearTimeout(noteTimer);
+      noteTimer = setTimeout(() => { protNote.hidden = true; }, NOTE_MS);
+    } catch (e) {
+      toast("error", "Protect recording: " + errText(e));
+    } finally {
+      qFinish("protect");
+    }
+  }
+
+  async function toggleVideo() {
+    if (qBusy.video || qCool("video")) return;
+    const a = videoAction(vidOn);
+    const ask = quickConfirm("video", { to: a.to });
+    if (ask && !(await confirmDialog(ask))) return;
+    if (stopped || qBusy.video) return;
+    qBusy.video = true;
+    renderQuick();
+    try {
+      const r = await api.post("/api/display/output", a.to === null ? {} : { on: a.to });
+      if (stopped) return;
+      if (r && typeof r.on === "boolean") vidOn = r.on;
+      vidErr = null;
+    } catch (e) {
+      toast("error", "Car monitor: " + errText(e));
+    } finally {
+      qFinish("video");
+    }
+  }
+
+  async function setMode(v) {
+    const before = forceMode();
+    if (v === before) return;
+    const ask = quickConfirm("screen", { mode: v, moving: movingNow() });
+    if (ask && !(await confirmDialog(ask))) { modeSeg.set(forceMode()); return; }
+    if (stopped) return;
+    qBusy.screen = true;
+    renderQuick();
+    try {
+      await api.post("/api/display/force", { mode: v });
+      if (stopped) return;
+      modeExpect = { mode: v, until: Date.now() + 4 * EXPECT_MS }; // settings come over WS (later through the tunnel)
+    } catch (e) {
+      toast("error", "Car screen: " + errText(e));
+    } finally {
+      qFinish("screen");
+    }
+  }
+
+  async function loadVideo() {
+    try {
+      const r = await api.get("/api/display/output");
+      if (stopped) return;
+      vidOn = r && typeof r.on === "boolean" ? r.on : null;
+      vidErr = null;
+      vidMissing = false;
+    } catch (e) {
+      if (stopped) return;
+      if (e.status === 404) vidMissing = true;
+      else vidErr = errText(e);
+    }
+    renderQuick();
+  }
+
+  /** The spinner in place of the button's icon while its request runs. */
+  function busyIcon(btn, busy, ic) {
+    const spinning = !!btn.querySelector(".spin");
+    if (busy !== spinning) btn.firstChild.replaceWith(busy ? h("span.spin") : icon(ic));
+  }
+
+  function renderQuick() {
+    const off = store.offline; // the server answered for the device: nothing to switch
+    const offTitle = "The device is offline";
+    busyIcon(protBtn, qBusy.protect, "lock");
+    protBtn.disabled = off || qBusy.protect || qCool("protect");
+    vidRow.hidden = vidMissing;
+    const a = videoAction(vidOn);
+    put(vidState, a.state);
+    cls(vidState, "db-qstate " + kindCls(a.kind));
+    put(vidBtn.lastChild, a.label);
+    vidBtn.title = off ? offTitle : vidErr ? "Car monitor: " + vidErr : a.title;
+    busyIcon(vidBtn, qBusy.video, "screen");
+    vidBtn.disabled = off || qBusy.video || qCool("video");
+    if (!qBusy.screen) modeSeg.set(forceMode());
+    modeSeg.classList.toggle("busy", off || qBusy.screen);
+    const t = store.online && store.telemetry;
+    put(modeNow, t ? screenNowText(t.display) : "");
+  }
+
+  const tiles = h(".db-tiles", null, posTile, camTile, quickTile, sysTile, lvTile, radioTile);
   const install = installEntry("button.db-install", "Install app"); // hides itself in the installed app
-  const van = h(".db-van", null, errBox, tiles, h(".db-foot", null, install));
+  const van = h(".db-van", null, seenEl, errBox, tiles, h(".db-foot", null, install));
+
+  /** Offline: since when the shown values are (live this session, or kept from an earlier one). */
+  function renderSeen() {
+    const lt = lastTelemetry();
+    const show = store.online === false || (store.online === null && !!lt);
+    seenEl.hidden = !show;
+    if (!show) return;
+    put(seenEl, lt ? lastSeenText(lt.at, Date.now()) + (store.online === null ? " — connecting…" : " — no connection to the device")
+      : "No connection to the device");
+  }
+
+  async function loadServerPos() {
+    srvAt = Date.now();
+    try {
+      const l = await api.get("/api/tracking/last");
+      if (!stopped) { srvLast = l; renderVan(); }
+    } catch { /* the server is unreachable too: the kept telemetry stays */ }
+  }
 
   function renderVan() {
-    const t = store.telemetry;
+    const lt = lastTelemetry();
+    const t = lt && lt.t;
     van.classList.toggle("stale", !store.online);
+    renderSeen();
     if (!t) return;
     const g = t.gps || {}, cam = t.camera || {}, sys = t.system || {};
 
-    const m = motionInfo(g, t.heading);
-    const lim = m.moving ? limitText(t.speed_limit) : null;
+    // offline: the server's last point when it is newer than the last telemetry seen here
+    const sp = !store.online ? serverPos(srvLast, lt.at) : null;
+    const pg = sp ? { fix: "3d", speed_mps: sp.speed_mps, lat: sp.lat, lon: sp.lon } : g;
+    const m = motionInfo(pg, sp ? { deg: sp.course_deg } : t.heading);
+    const lim = m.moving && !sp ? limitText(t.speed_limit) : null;
     put(posTxt, m.text);
     put(posLim, lim || "");
     posLim.hidden = !lim;
     cls(posV, "db-tv" + (m.moving ? " green" : ""));
-    const fx = fixInfo(g);
+    const fx = sp ? { text: "From the server · " + eventAgo(sp.ts, nowS()), kind: "" } : fixInfo(g);
     put(posFix, fx.text);
     cls(posFix, "db-ts " + kindCls(fx.kind));
-    put(posLL, fmtLatLon(g.lat, g.lon) || "");
-    posLL.hidden = !fmtLatLon(g.lat, g.lon);
+    put(posLL, fmtLatLon(pg.lat, pg.lon) || "");
+    posLL.hidden = !fmtLatLon(pg.lat, pg.lon);
 
     const c = camInfo(cam);
     put(camV.lastChild, c.text);
@@ -474,8 +658,9 @@ export function mount(root) {
   }
 
   function renderRadio(force) {
-    const r = store.telemetry ? store.telemetry.radio : null;
-    radioTile.hidden = !r && !!store.telemetry; // a device without the radio
+    const lt = lastTelemetry();
+    const r = lt ? lt.t.radio : null;
+    radioTile.hidden = !r && !!lt; // a device without the radio
     const ri = radioInfo(r);
     put(rTitle, ri.title);
     cls(rTitle, "db-station" + (ri.off ? " off" : ""));
@@ -514,6 +699,8 @@ export function mount(root) {
     st = s;
     stAt = Date.now();
     stErr = null;
+    stLive = true;
+    keep("alarm", s, stAt); // the offline view of the next visit
     renderHero();
     renderEvents();
   }
@@ -541,7 +728,10 @@ export function mount(root) {
     if (stopped) return;
     const l = live();
     pollTimer = setTimeout(async () => {
-      if (!document.hidden) await load();
+      if (!document.hidden) {
+        if (!store.online && REMOTE && Date.now() - srvAt > SERVER_POS_MS) loadServerPos();
+        await load();
+      }
       schedule();
     }, pollDelay(store.online, l && l.state));
   }
@@ -560,7 +750,9 @@ export function mount(root) {
   renderHero();
   renderEvents();
   renderVan();
+  renderQuick();
   fetchNow();
+  loadVideo();
 
   const offTel = on("telemetry", () => {
     renderVan();
@@ -581,10 +773,27 @@ export function mount(root) {
     if (fresh) fetchNow();
   });
   // the device dropped off or came back: ask now (offline the poll gets faster and tells why)
-  const offConn = on("conn", () => { renderVan(); renderHero(); fetchNow(); });
-  const offSet = on("settings", () => { btnSig = ""; renderHero(); renderVan(); });
-  // countdown, "armed for" and "x min ago" between packets
-  const tick = setInterval(() => { renderHero(); renderWhens(); }, 1000);
+  let wasOnline = store.online;
+  const offConn = on("conn", (o) => {
+    renderVan();
+    renderHero();
+    renderEvents();
+    renderQuick();
+    fetchNow();
+    if (o && !wasOnline) loadVideo(); // the monitor may have been switched by a key meanwhile
+    if (!o && REMOTE && Date.now() - srvAt > SERVER_POS_MS) loadServerPos();
+    wasOnline = o;
+  });
+  const offSet = on("settings", () => { btnSig = ""; renderHero(); renderVan(); renderQuick(); });
+  // the car monitor switched elsewhere (a key, another phone): fnav-core tells it over WS
+  const offEv = on("event", (m) => {
+    if (m.event === "video_output" && typeof m.on === "boolean") {
+      vidOn = m.on;
+      renderQuick();
+    }
+  });
+  // countdown, "armed for", "x min ago" and "Last seen" between packets
+  const tick = setInterval(() => { renderHero(); renderWhens(); renderSeen(); renderQuick(); }, 1000);
   const onVis = () => { if (!document.hidden) fetchNow(); };
   document.addEventListener("visibilitychange", onVis);
 
@@ -593,11 +802,14 @@ export function mount(root) {
     clearTimeout(pollTimer);
     clearTimeout(extrasTimer);
     clearTimeout(coolTimer);
+    clearTimeout(qTimer);
+    clearTimeout(noteTimer);
     clearInterval(tick);
     document.removeEventListener("visibilitychange", onVis);
     offTel();
     offConn();
     offSet();
+    offEv();
     install.dispose();
   };
 }

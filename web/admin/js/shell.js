@@ -1,12 +1,13 @@
-// Shell: menu, status bar, routing, notifications from WS events. Phones (<= 760 px, css "phone shell"): a bottom
-// tab bar with the most used pages and a More sheet with the rest, a one-line status bar; "Install app" in the
+// Shell: menu, status bar, routing, notifications from WS events. Phones (<= 760 px or sideways, css "phone shell"): a
+// bottom tab bar with the most used pages and a More sheet with the rest, a one-line status bar; "Install app" in the
 // More sheet and the sidebar (install.js). After a deploy: "A new version is available" with Reload (version-fmt.js);
 // the installed app has no browser Reload, so it is also in the More sheet and in the page error banner.
 import { h, icon, clear, fmt, kmh, isNum, compassWord } from "./dom.js";
 import { api, goLogin, errText, ROOT, appUrl } from "./api.js";
-import { registerSw } from "./push.js";
-import { store, start, on } from "./store.js";
-import { toast, banner, modal } from "./ui.js";
+import { registerSw, unsubscribeOnLogout } from "./push.js";
+import { store, start, on, setOffline, forgetKept } from "./store.js";
+import { toast, banner, modal, closeModals, navigate } from "./ui.js";
+import { linkBanner } from "./conn-fmt.js";
 import { openPreview } from "./preview.js";
 import { installEntry } from "./install.js";
 import { needsAppLogin, clearAppLogin } from "./app-login.js";
@@ -102,7 +103,7 @@ async function route() {
   const token = ++routeToken;
   for (const a of navEl.children) a.classList.toggle("active", a.dataset.id === page.id);
   markTabs(page.id);
-  if (moreSheet) moreSheet.close();
+  closeModals(); // the More sheet, a player, a snapshot: nothing stays over the new page
   document.title = page.title + " — fallout.nav";
   if (cleanup) {
     try { cleanup(); } catch (e) { console.error("cleanup", e); }
@@ -159,7 +160,8 @@ function setSt(el, text, cls, blink, short) {
 function renderStatus() {
   const t = store.telemetry;
   const online = store.online;
-  setSt(S.link, online ? "online" : store.wsOpen ? "no data" : "offline", online ? "ok" : "bad");
+  setSt(S.link, online ? "online" : online === null ? "connecting…" : store.wsOpen ? "no data" : "offline",
+    online ? "ok" : online === null ? "warn" : "bad");
   if (!t || !online) {
     for (const k of ["gps", "speed", "head", "rec", "disk", "cpu"]) setSt(S[k], "—", "");
     return;
@@ -202,22 +204,24 @@ on("conn", (o) => {
 // ───── logout ─────
 async function logout() {
   clearAppLogin();
-  try { await api.post("/api/logout", {}, { noRedirect: true }); } catch { /* */ }
+  forgetKept(); // the last position and alarm state must not stay on this phone
+  await unsubscribeOnLogout(); // no alarm texts to a logged-out phone (needs the session: before api/logout)
+  try { await api.post("/api/logout", {}, { noRedirect: true, timeout: 8000 }); } catch { /* */ }
   goLogin();
 }
 document.getElementById("logout").addEventListener("click", logout);
 
-// ───── device offline (remote access, docs/contracts/remote.md) ─────
-const offlineBanner = banner("warn", "Device is offline — showing data from the server");
+// ───── device offline (remote access, docs/contracts/remote.md) or the link lost: follows the connection ─────
+const offlineBanner = banner("warn", "");
 offlineBanner.classList.add("offline-banner");
 offlineBanner.hidden = true;
 view.before(offlineBanner);
-function setOffline(v) {
-  store.offline = v;
-  offlineBanner.hidden = !v;
+function renderLinkBanner() {
+  const b = linkBanner({ offline: store.offline, online: store.online });
+  offlineBanner.hidden = !b;
+  if (b && offlineBanner.lastChild.textContent !== b.text) offlineBanner.lastChild.textContent = b.text;
 }
-// the device came back (WS delivers telemetry again) — hide the banner
-on("conn", (o) => { if (o && store.offline) setOffline(false); });
+on("conn", renderLinkBanner);
 
 // ───── new version after a deploy (web/admin/version.json, version-fmt.js) ─────
 // the modules loaded at startup stay old until the page reloads: the installed app has no browser Reload button
@@ -276,9 +280,9 @@ if (window.isSecureContext && "serviceWorker" in navigator) {
     try { u = new URL(m.url, location.href); } catch { return; }
     if (u.origin !== location.origin || !u.pathname.startsWith(ROOT + "admin/")) return;
     const isIndex = (p) => p === ROOT + "admin/" || p === ROOT + "admin/index.html";
-    if (isIndex(u.pathname) && isIndex(location.pathname)) {
-      if (location.hash !== u.hash) location.hash = u.hash;
-    } else location.href = u.href;
+    // the open dialogs close (a player must not keep playing over the alarm page)
+    if (isIndex(u.pathname) && isIndex(location.pathname)) navigate(u.hash);
+    else location.href = u.href;
   });
 }
 

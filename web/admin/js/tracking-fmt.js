@@ -149,3 +149,8 @@ export async function isEsriNoData(blob) {
 export function googleMapsUrl(lat, lon) {
   return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(`${(+lat).toFixed(6)},${(+lon).toFixed(6)}`);
 }
+
+/** The answer to request number `no` is stale once a newer one (`latest`) was made: only the newest is shown. */
+export function isStale(no, latest) {
+  return no !== latest;
+}

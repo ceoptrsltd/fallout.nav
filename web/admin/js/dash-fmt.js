@@ -35,6 +35,16 @@ export function alarmLive(t, st, telAt, stAt) {
   return null;
 }
 
+/**
+ * No live telemetry (offline): the newest known alarm state — the last telemetry's (tAlarm at telAt: this session's
+ * or kept from an earlier one) or the api/alarm status (st at stAt), whichever is newer. Same shape as alarmLive.
+ */
+export function newerAlarm(tAlarm, telAt, st, stAt) {
+  const tOk = !!(tAlarm && typeof tAlarm === "object" && tAlarm.state);
+  const useT = tOk && (!st || (num(telAt) ? telAt : 0) > (num(stAt) ? stAt : 0));
+  return useT ? alarmLive(tAlarm, null, telAt, 0) : alarmLive(null, st, 0, stAt);
+}
+
 /** Buttons of the alarm card: [{what, label, icon, cls, title}] — what is the api/alarm/<what> action. */
 export function alarmActions({ state, siren, hazard, hazardEnabled }) {
   if (!state) return [];
@@ -370,4 +380,74 @@ export function radioInfo(r) {
 export function speakerInfo(r) {
   if (!r || !r.output) return { text: "No speaker", connected: false, kind: "" };
   return r.output_connected ? { text: r.output, connected: true, kind: "ok" } : { text: r.output, connected: false, kind: "warn" };
+}
+
+// ───── offline: the last known data ─────
+
+/**
+ * The server's last point of the van (api/tracking/last, remote — fnav-relay keeps it while the device is away) when it
+ * is newer than the last telemetry this phone saw (keptAt, Date.now() ms): {lat, lon, speed_mps, course_deg, ts} or null.
+ */
+export function serverPos(last, keptAt) {
+  if (!last || !num(last.lat) || !num(last.lon)) return null;
+  const ts = num(last.ts) ? last.ts : num(last.received_ts) ? last.received_ts : null;
+  if (ts === null || (num(keptAt) && keptAt > 0 && ts * 1000 <= keptAt)) return null;
+  return { lat: last.lat, lon: last.lon, speed_mps: num(last.speed_mps) ? last.speed_mps : null,
+    course_deg: num(last.course_deg) ? last.course_deg : null, ts };
+}
+
+// ───── quick actions: protect the recording, the car monitor, the car screen ─────
+
+/** The car monitor (api/display/output): state word and the button — {to, label, state, kind, title}; on: bool / null. */
+export function videoAction(on) {
+  if (on === true) return { to: false, label: "Turn off", state: "On", kind: "ok", title: "Turn the picture on the car monitor off (like the video key)" };
+  if (on === false) return { to: true, label: "Turn on", state: "Off", kind: "warn", title: "Turn the picture on the car monitor back on" };
+  return { to: null, label: "On / off", state: "—", kind: "", title: "Switch the picture on the car monitor on or off" };
+}
+
+/** Car screen modes (api/display/force, settings.display.force_mode). */
+export const SCREEN_MODES = [
+  { value: "auto", label: "Auto" },
+  { value: "map", label: "Map" },
+  { value: "camera", label: "Camera" },
+];
+
+/** What the car screen shows now (telemetry display): "Showing the map · by speed"; "" — not reported. */
+export function screenNowText(d) {
+  if (!d || (d.mode !== "map" && d.mode !== "camera")) return "";
+  if (d.mode === "camera" && d.camera === "rear") return "Showing the rear camera";
+  const why = { speed: "by speed", no_fix: "no GPS fix", forced: "forced", startup: "starting" }[d.reason];
+  return `Showing ${d.mode === "map" ? "the map" : "the camera"}${why ? " · " + why : ""}`;
+}
+
+/**
+ * Confirmation for a quick action ({title, text, okText, danger}) or null when it is not disruptive: the car monitor
+ * going dark always asks (also a toggle of an unknown state, which may turn it off); forcing the map or the camera
+ * asks while the van is moving — the driver's screen changes under them.
+ */
+export function quickConfirm(kind, { to = null, mode = null, moving = false } = {}) {
+  if (kind === "video" && to !== true) {
+    return {
+      title: to === false ? "Turn the car monitor off?" : "Switch the car monitor?",
+      text: (to === false ? "The car monitor goes dark" : "If the car monitor is on, it goes dark")
+        + " — no map and no camera for the driver until it is turned back on here or with the video key.",
+      okText: to === false ? "Turn off" : "Switch", danger: true,
+    };
+  }
+  if (kind === "screen" && moving && (mode === "map" || mode === "camera")) {
+    return {
+      title: mode === "map" ? "Always show the map?" : "Always show the camera?",
+      text: `The van is moving: the driver's screen switches to the ${mode} and stays there until set back to Auto.`,
+      okText: mode === "map" ? "Show the map" : "Show the camera", danger: false,
+    };
+  }
+  return null;
+}
+
+/** Note after api/recordings/protect-current ({segment, segment_rear}): "Front and rear recordings protected". */
+export function protectedText(r) {
+  const f = !!(r && r.segment), b = !!(r && r.segment_rear);
+  if (f && b) return "Front and rear recordings protected";
+  if (b) return "Rear recording protected";
+  return f ? "Recording protected" : "Protected";
 }

@@ -801,11 +801,29 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 /* ───── phone shell: bottom tab bar, More sheet, one-line status bar, safe areas ───── */
 .tabbar, .sb-brand, .st .short { display: none; }
 .side-install { width: 100%; }
+/* the notch / Dynamic Island / home indicator (viewport-fit=cover) outside the phone shell too — an iPad, a phone
+   turned sideways on a wide screen; the phone shell below has its own */
+.side { padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) env(safe-area-inset-left); }
+#app { grid-template-columns: calc(220px + env(safe-area-inset-left)) minmax(0, 1fr); }
+.statusbar { padding-top: max(8px, env(safe-area-inset-top)); padding-right: max(18px, env(safe-area-inset-right)); }
+#view { padding-right: max(22px, env(safe-area-inset-right)); padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+#toasts { right: max(18px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom)); }
+.overlay { padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); }
 @media (max-width: 1279px) { /* the narrow icon sidebar */
   .brand { font-size: 9.5px; letter-spacing: 0; }
   .side-install span { display: none; }
+  #app { grid-template-columns: calc(64px + env(safe-area-inset-left)) minmax(0, 1fr); }
+  #view { padding-right: max(14px, env(safe-area-inset-right)); }
 }
-@media (max-width: 760px) {
+/* a touch screen of any width: finger-sized small buttons, 16 px text in fields (iOS zooms into smaller ones) */
+@media (pointer: coarse) {
+  .btn.sm, .btn.icon { min-height: 40px; }
+  .btn.icon { min-width: 40px; }
+  .seg label { min-height: 40px; }
+  input[type=text], input[type=password], input[type=number], select, textarea { min-height: 40px; font-size: 16px; }
+}
+/* phones: up to 760 px wide, and turned sideways (844–932 px wide but under 500 px high) */
+@media (max-width: 760px), (max-height: 500px) and (pointer: coarse) {
   /* pinned to the real window, not 100dvh: an installed app opened right after the keyboard (sign-in) could
      keep a stale, taller dvh and push the tab bar below the screen */
   #app { grid-template-columns: minmax(0, 1fr); position: fixed; inset: 0; height: auto; }
@@ -852,7 +870,7 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 }
 @keyframes sheet-in { from { transform: translateY(24px); opacity: .4; } }
 /* the pages on a phone: one column, nothing wider than the screen (CSS only, the page scripts stay as they are) */
-@media (max-width: 760px) {
+@media (max-width: 760px), (max-height: 500px) and (pointer: coarse) {
   .page .grid { grid-template-columns: minmax(0, 1fr) !important; } /* also grids with inline columns (GPS) */
   .card-head { flex-wrap: wrap; }
   .field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
@@ -1122,9 +1140,10 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
 .rec-map .leaflet-control-attribution { background: rgba(10, 12, 10, .78); color: var(--dim); }
 .rec-map .leaflet-control-attribution a { color: var(--amber); }
 /* phones: the player is a bottom sheet — video and the event strip take its full width, markers easier to tap */
-@media (max-width: 760px) {
+@media (max-width: 760px), (max-height: 500px) and (pointer: coarse) {
   .rec-video, .rec-marks, .rec-gps { width: 100%; }
   .rec-map { height: 200px; }
+  .rec-video { max-height: 62vh; } /* sideways: the whole picture, not a scrolled sheet */
   .rec-evs { max-width: none; }
   .rec-marks { height: 16px; margin-top: 10px; }
   .rec-mark { top: -5px; width: 14px; height: 24px; margin-left: -7px; }
@@ -1132,7 +1151,7 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
 }
 /* Tracking on phones: title and period in one line, the map fills the screen down to the tab bar,
    Fit / Vehicle / Follow / Track line as round buttons over the map */
-@media (max-width: 760px) {
+@media (max-width: 760px), (max-height: 500px) and (pointer: coarse) {
   #view:has(> .trk-page) { padding-bottom: 10px; }
   .trk-page { height: 100%; gap: 8px; }
   .trk-page .page-head { flex-wrap: nowrap; gap: 10px; }
@@ -1247,3 +1266,26 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
 @media (max-width: 600px) { .db-onscr { display: none; } } /* a half tile: the amber "Back to front" button says it */
 .db-snapcam + .db-snapcam { margin-top: 12px; }
 .db-snaplbl { margin-bottom: 4px; color: var(--dim); font-family: var(--f-label); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; }
+
+/* ───── dashboard: quick actions, the last known data while the device is away ───── */
+.db-quick { gap: 0; }
+.db-qrow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 7px 0; }
+.db-qrow + .db-qrow { border-top: 1px dashed var(--line2); }
+.db-qrow:last-child { padding-bottom: 0; }
+.db-qlbl { flex: 1 1 140px; min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 10px; color: var(--dim); font-size: 13px; }
+.db-qstate { font-family: var(--f-num); font-size: 17px; font-weight: 500; letter-spacing: .02em; color: var(--ink); }
+.db-qstate.green { color: var(--green); }
+.db-qstate.amber { color: var(--amber); }
+.db-qnow { font-size: 12.5px; color: var(--faint); }
+.db-qnote { flex: 1 1 160px; font-size: 13px; }
+.db-qbtn { min-height: 40px; gap: 7px; }
+.db-qseg label { font-family: var(--f-label); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; padding: 6px 14px; }
+.db-qseg.busy { opacity: .6; pointer-events: none; }
+.db-van.stale .db-tile.db-quick { opacity: 1; } /* controls: they still work while the telemetry is away */
+.db-seen { display: flex; align-items: center; gap: 8px; padding: 2px 2px 0; color: var(--amber); font-family: var(--f-num); font-size: 15px; letter-spacing: .02em; }
+.db-events.stale .db-evlist { opacity: .55; }
+@media (max-width: 600px) {
+  .db-qrow > .db-qbtn { flex: 1 1 auto; }
+  .db-qseg { flex: 1 1 100%; flex-wrap: nowrap; }
+  .db-qseg label { flex: 1 1 0; justify-content: center; }
+}

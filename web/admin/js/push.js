@@ -96,6 +96,28 @@ export async function unsubscribe(reg) {
   await api.post("/api/push/unsubscribe", { endpoint }, { noRedirect: true });
 }
 
+/**
+ * Log out: a logged-out phone must not keep getting alarm texts. Removes this browser's subscription in the browser and
+ * on the server (that needs the session — call before api/logout). Never throws, never takes longer than timeoutMs.
+ */
+export async function unsubscribeOnLogout(timeoutMs = 5000) {
+  storeId(null);
+  const env = pushEnv();
+  if (!env.secure || !env.sw || !env.push) return; // the device's own http page: no push here
+  const work = (async () => {
+    const reg = await navigator.serviceWorker.getRegistration("./");
+    const sub = await currentSub(reg);
+    if (!sub) return;
+    const endpoint = sub.endpoint;
+    // both at once: the browser side works offline too, the server side tells the relay to stop sending
+    await Promise.allSettled([
+      api.post("/api/push/unsubscribe", { endpoint }, { noRedirect: true, timeout: timeoutMs }),
+      sub.unsubscribe(),
+    ]);
+  })().catch((e) => console.warn("push unsubscribe", e));
+  await Promise.race([work, new Promise((r) => setTimeout(r, timeoutMs + 500))]);
+}
+
 /** Forget the stored id (the subscription was deleted from the list). */
 export const forgetId = () => storeId(null);
 

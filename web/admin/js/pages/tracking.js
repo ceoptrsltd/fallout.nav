@@ -8,7 +8,7 @@ import { modal, segmented, switchEl, banner, poll } from "../ui.js";
 import { loadVendorCss, loadVendorScript } from "../vendor.js";
 import {
   RANGES, rangeQuery, fmtStay, fmtVisit, fmtWhen, agoText, sortVisits, esriTemplates, googleMapsUrl,
-  tileZoomLimits, tileUrlFrom, parentTileCrop, isEsriNoData,
+  tileZoomLimits, tileUrlFrom, parentTileCrop, isEsriNoData, isStale,
 } from "../tracking-fmt.js";
 
 const OPTS_KEY = "fnav.tracking.opts";
@@ -254,14 +254,19 @@ export async function mount(root) {
       : banner("bad", "Could not load the journal: " + detail));
   }
 
+  let reqNo = 0; // refresh() calls: only the newest one's answer is shown
   async function refresh() {
     const q = rangeQuery(opts.range, nowS());
+    const no = ++reqNo;
+    // a newer request (another period, the line switched) was made meanwhile: this answer is stale — "7 days" coming
+    // after "24 h" must not draw a week under "24 h" or use up fitPending
+    const stale = () => destroyed || isStale(no, reqNo);
     try {
       const [pl, tr] = await Promise.all([
         api.get("/api/tracking/places" + q),
         opts.line ? api.get("/api/tracking/track" + q) : Promise.resolve(null),
       ]);
-      if (destroyed) return;
+      if (stale()) return;
       places = Array.isArray(pl && pl.places) ? pl.places : [];
       renderPlaces();
       renderLine(tr && tr.points);
@@ -269,7 +274,7 @@ export async function mount(root) {
       updEl.textContent = "updated " + fmtWhen(nowS(), nowS()).replace("today ", "");
       if (fitPending) { fitPending = false; fitAll(); }
     } catch (e) {
-      if (destroyed) return;
+      if (stale()) return;
       showError(e);
     }
     if (!loaded) {
@@ -281,7 +286,7 @@ export async function mount(root) {
     if (!liveFresh()) {
       try {
         const l = await api.get("/api/tracking/last");
-        if (destroyed) return;
+        if (stale()) return;
         lastSeen = l && isNum(l.lat) && isNum(l.lon) ? l : null;
       } catch { /* the error banner above already tells the story */ }
       showVehicle();
