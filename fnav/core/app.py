@@ -298,17 +298,44 @@ def _register_ws(app: FastAPI, core: Core) -> None:
 # ───────────────────────── тайлы ─────────────────────────
 
 
+async def _client_gone(request: Request) -> None:
+    """Вернуться, когда клиент закроет соединение (для GET без тела — других сообщений нет)."""
+    while (await request.receive())["type"] != "http.disconnect":
+        pass
+
+
+async def _unless_client_gone(request: Request, aw):
+    """Дождаться aw; если клиент ушёл раньше — отменить и вернуть None.
+
+    Сам Starlette обработчик при обрыве не отменяет: брошенный экраном тайл качался бы до конца
+    и держал соединение пула Esri (TileService.get отпускает загрузку, когда её никто не ждёт)."""
+    job = asyncio.ensure_future(aw)
+    gone = asyncio.ensure_future(_client_gone(request))
+    try:
+        await asyncio.wait((job, gone), return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        gone.cancel()
+        if not job.done():
+            job.cancel()
+    return job.result() if job.done() else None
+
+
 def _register_tiles(app: FastAPI, core: Core) -> None:
     @app.get("/tiles/{layer}/{z}/{x}/{y}")
-    async def tile(layer: str, z: str, x: str, y: str):
+    async def tile(request: Request, layer: str, z: str, x: str, y: str):
         try:
             zi, xi, yi = int(z), int(x), int(y.split(".", 1)[0])
         except ValueError:
             return _err(400, "Invalid tile coordinates")
         try:
-            t = await core.tiles.get(layer, zi, xi, yi)
+            t = await _unless_client_gone(request, core.tiles.get(layer, zi, xi, yi))
         except TileError as e:
-            return JSONResponse({"detail": e.detail}, status_code=e.status, headers={"Cache-Control": "no-store"})
+            headers = {"Cache-Control": "no-store"}
+            if e.retry_after:
+                headers["Retry-After"] = str(e.retry_after)
+            return JSONResponse({"detail": e.detail}, status_code=e.status, headers=headers)
+        if t is None:
+            return Response(status_code=499, headers={"Cache-Control": "no-store"})  # ответ никто не прочтёт
         return Response(t.data, media_type=t.content_type,
                         headers={"Cache-Control": "max-age=86400", "X-Cache": "HIT" if t.cached else "MISS"})
 

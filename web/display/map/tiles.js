@@ -7,6 +7,7 @@ export class TileStore {
    * @param {object} o
    * @param {(url: string, signal: AbortSignal) => Promise<any>} o.loader — вернуть изображение
    *        (с методом close(), если есть); при ошибке — throw с полем status (404 и т.п.)
+   *        и, если сервер прислал Retry-After, retryAfter (с)
    * @param {() => number} o.now — время, с
    */
   constructor({ loader, now, capacity = 300, maxConcurrent = 6, graceS = 1.0, onChange = null } = {}) {
@@ -150,10 +151,13 @@ export class TileStore {
     const status = err && err.status ? err.status : 0;
     const prev = this.failures.get(key);
     const count = (prev ? prev.count : 0) + 1;
-    // 404 (нет в кэше и нет сети) — повтор не раньше чем через 15 с … 5 мин; прочее — 2 с … 60 с
-    const base = status === 404 ? 15 : 2;
-    const cap = status === 404 ? 300 : 60;
-    const delay = Math.min(cap, base * Math.pow(2, count - 1));
+    // 404 — такого тайла у Esri нет: повтор не раньше чем через 15 с … 5 мин;
+    // 503 — временно (прокси занят, Esri не ответил, нет интернета): скоро, 2 … 15 с, но не раньше Retry-After;
+    // прочее — 2 с … 60 с
+    const [base, cap] = status === 404 ? [15, 300] : status === 503 ? [2, 15] : [2, 60];
+    let delay = Math.min(cap, base * Math.pow(2, count - 1));
+    const ra = err && err.retryAfter;
+    if (ra > 0) delay = Math.max(delay, Math.min(ra, 300));
     this.failures.delete(key);
     this.failures.set(key, { count, status, retryAt: this.now() + delay });
     if (this.failures.size > 4000) {
@@ -198,6 +202,8 @@ export async function browserTileLoader(url, signal) {
   if (!r.ok) {
     const e = new Error("HTTP " + r.status);
     e.status = r.status;
+    const ra = Number(r.headers.get("Retry-After")); // у 503 — через сколько секунд спросить снова
+    if (ra > 0) e.retryAfter = ra;
     throw e;
   }
   const blob = await r.blob();

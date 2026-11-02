@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { TileStore, isEsriNoData } from "../../web/display/map/tiles.js";
+import { TileStore, browserTileLoader, isEsriNoData } from "../../web/display/map/tiles.js";
 import { VECTOR_MAX_Z, activeLayers, layerLevel, planRequests } from "../../web/display/map/layers.js";
 import { Trail } from "../../web/display/map/trail.js";
 import { lonLatToMerc, makeView, moveMerc, parentTile, tileKey, visibleTiles } from "../../web/display/map/mercator.js";
@@ -100,6 +100,66 @@ test("TileStore: 404 → backoff, без повторных запросов", a
   await tick();
   assert.equal(s.isFailed("q"), false);
   assert.ok(s.get("q"));
+});
+
+const err503 = (retryAfter) => Object.assign(new Error("HTTP 503"), { status: 503, retryAfter });
+
+test("TileStore: 503 (прокси занят, Esri не ответил) → скорый повтор 2 → 4 → 8 → 15 с", async () => {
+  const { calls, loader } = fakeLoader();
+  let now = 0;
+  const s = new TileStore({ loader, now: () => now });
+  s.want([req("b")]);
+  let t0 = 0;
+  for (const [i, delay] of [2, 4, 8, 15, 15].entries()) {
+    calls[i].reject(err503(i === 0 ? 2 : undefined));
+    await tick();
+    assert.ok(s.isFailed("b"));
+    now = t0 + delay - 0.1;
+    s.want([req("b")]);
+    assert.equal(calls.length, i + 1, `повтор раньше ${delay} с`);
+    now = t0 + delay + 0.1;
+    s.want([req("b")]);
+    assert.equal(calls.length, i + 2, `нет повтора через ${delay} с`);
+    t0 = now;
+  }
+  calls[5].resolve(img("ok"));
+  await tick();
+  assert.equal(s.isFailed("b"), false);
+  assert.ok(s.get("b"));
+});
+
+test("TileStore: 503 с Retry-After (нет интернета) — не раньше указанного", async () => {
+  const { calls, loader } = fakeLoader();
+  let now = 0;
+  const s = new TileStore({ loader, now: () => now });
+  s.want([req("c")]);
+  calls[0].reject(err503(15));
+  await tick();
+  now = 14.9;
+  s.want([req("c")]);
+  assert.equal(calls.length, 1);
+  now = 15.1;
+  s.want([req("c")]);
+  assert.equal(calls.length, 2);
+  calls[1].reject(err503(15));
+  await tick();
+  s.resetFailures(); // интернет вернулся — спрашиваем сразу
+  s.want([req("c")]);
+  assert.equal(calls.length, 3);
+});
+
+test("browserTileLoader: статус и Retry-After из ответа", async () => {
+  const orig = globalThis.fetch;
+  const signal = new AbortController().signal;
+  try {
+    globalThis.fetch = async () =>
+      new Response('{"detail":"Tile proxy busy"}', { status: 503, headers: { "Retry-After": "2" } });
+    await assert.rejects(browserTileLoader("/tiles/imagery/1/0/0", signal), (e) => e.status === 503 && e.retryAfter === 2);
+    globalThis.fetch = async () => new Response("{}", { status: 404 });
+    await assert.rejects(browserTileLoader("/tiles/imagery/1/0/0", signal), (e) => e.status === 404 && e.retryAfter === undefined);
+  } finally {
+    globalThis.fetch = orig;
+  }
 });
 
 test("TileStore: результат отменённой загрузки закрывается и не попадает в кэш", async () => {

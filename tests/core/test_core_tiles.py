@@ -2,13 +2,14 @@ import asyncio
 import hashlib
 import os
 import time
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
 from core_helpers import FakeUpstream, login, make_opts, running_app, tiny_jpeg
 
 from fnav.core import tiles as tmod
-from fnav.core.tiles import TileError, TileService
+from fnav.core.tiles import ORPHANS_MAX, POOL_SIZE, TileError, TileService
 from fnav.models import Settings
 
 
@@ -27,6 +28,67 @@ class AsyncUpstream(FakeUpstream):
     async def __call__(self, request):  # type: ignore[override]
         self.requests.append(request)
         return await self.handler(request)
+
+
+class SlowUpstream:
+    """Медленный «Esri»: тайлы z=15 отвечают сразу, остальные — через delay с; считает отменённые."""
+
+    def __init__(self, delay: float = 10.0):
+        self.delay = delay
+        self.started = 0
+        self.cancelled = 0
+        self.data = tiny_jpeg()
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        if "/tile/15/" not in request.url.path:
+            self.started += 1
+            try:
+                await asyncio.sleep(self.delay)
+            except asyncio.CancelledError:
+                self.cancelled += 1
+                raise
+        return httpx.Response(200, content=self.data, headers={"content-type": "image/jpeg"})
+
+
+@asynccontextmanager
+async def slow_esri(delay: float):
+    """Настоящий HTTP-сервер на 127.0.0.1 (без внешней сети): GET тайла — через delay с, HEAD — сразу.
+    Отдаёт шаблон URL для TileSettings."""
+    data = tiny_jpeg()
+    handlers: set[asyncio.Task] = set()
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        handlers.add(asyncio.current_task())
+        try:
+            while line := await reader.readline():
+                method = line.split()[0]
+                while (await reader.readline()) not in (b"\r\n", b""):
+                    pass
+                if method == b"GET":
+                    await asyncio.sleep(delay)
+                head = b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(data)
+                writer.write(head + (data if method == b"GET" else b""))
+                await writer.drain()
+        except (ConnectionError, asyncio.CancelledError):
+            pass
+        finally:
+            writer.close()
+
+    srv = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    try:
+        yield f"http://127.0.0.1:{port}/tile/{{z}}/{{y}}/{{x}}"
+    finally:
+        srv.close()
+        for h in handlers:
+            h.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)
+
+
+async def cancel_all(tasks) -> None:
+    for x in tasks:
+        x.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def svc(tmp_path, up, **settings_kw) -> TileService:
@@ -115,20 +177,23 @@ async def test_errors_and_offline(tmp_path):
     await t.start(background=False)
     with pytest.raises(TileError) as e:
         await t.get("imagery", 5, 1, 1)
-    assert e.value.status == 404
+    assert e.value.status == 404 and e.value.retry_after is None
     n = len(up.requests)
     with pytest.raises(TileError):  # отрицательный кэш — повторно не ходим
         await t.get("imagery", 5, 1, 1)
     assert len(up.requests) == n
-    with pytest.raises(TileError):  # не картинка → не кэшируем
+    with pytest.raises(TileError) as e:  # не картинка → не кэшируем
         await t.get("imagery", 6, 1, 1)
+    assert e.value.status == 502
     assert not list((tmp_path / "tiles").rglob("*.jpg"))
-    with pytest.raises(TileError):
+    with pytest.raises(TileError) as e:  # нет связи — временно, а не «тайла нет»
         await t.get("imagery", 7, 1, 1)
+    assert (e.value.status, e.value.retry_after) == (503, 2)
     assert await t.check_internet() is False
     n = len(up.requests)
-    with pytest.raises(TileError):  # офлайн — без сетевых попыток
+    with pytest.raises(TileError) as e:  # офлайн — без сетевых попыток
         await t.get("imagery", 8, 1, 1)
+    assert (e.value.status, e.value.retry_after) == (503, 15)
     assert len(up.requests) == n
     with pytest.raises(TileError) as e:
         await t.get("imagery", 3, 9, 0)  # x ≥ 2^z
@@ -136,6 +201,104 @@ async def test_errors_and_offline(tmp_path):
     with pytest.raises(TileError):
         await t.get("bogus", 3, 1, 1)
     await t.stop()
+
+
+async def test_transient_upstream_errors_are_503(tmp_path):
+    def h(req):
+        z = int(req.url.path.split("/tile/")[1].split("/")[0])
+        if z == 2:
+            raise httpx.PoolTimeout("all connections busy")
+        if z == 3:
+            raise httpx.ReadTimeout("slow", request=req)
+        if z in (4, 5, 6):
+            return httpx.Response({4: 500, 5: 503, 6: 429}[z])
+        if z == 7:
+            return httpx.Response(403)  # например, неверный токен — не «тайла нет»
+        return httpx.Response(404)
+
+    up = FakeUpstream(h)
+    t = TileService(Settings(), root=tmp_path / "tiles", transport=up.transport)
+    await t.start(background=False)
+
+    async def status(z: int) -> tuple[int, int | None]:
+        with pytest.raises(TileError) as e:
+            await t.get("imagery", z, 1, 1)
+        return e.value.status, e.value.retry_after
+
+    assert await status(2) == (503, 2)
+    assert not t._check_now.is_set()  # пул занят — это очередь, интернет не перепроверяем
+    assert await status(3) == (503, 2)
+    assert t._check_now.is_set()
+    for z in (4, 5, 6):
+        assert await status(z) == (503, 2)
+        n = len(up.requests)
+        assert await status(z) == (503, 2)  # временное не запоминаем — спрашиваем Esri снова
+        assert len(up.requests) == n + 1
+    assert await status(7) == (502, None)
+    assert await status(8) == (404, None)
+    await t.stop()
+
+
+async def test_abandoned_fetches_cancelled(tmp_path):
+    up = SlowUpstream()
+    t = svc(tmp_path, up)
+    await t.start(background=False)
+    wave = [asyncio.create_task(t.get("imagery", 12, i, 0)) for i in range(10)]
+    await asyncio.sleep(0.05)
+    assert up.started == 10
+    await cancel_all(wave)  # экран бросил все запросы
+    await asyncio.sleep(0.05)
+    assert up.cancelled == 10 - ORPHANS_MAX
+    assert len(t._inflight) == ORPHANS_MAX  # пара брошенных докачивается в кэш
+    # нужный тайл не ждёт брошенных
+    assert not (await asyncio.wait_for(t.get("imagery", 15, 1, 1), 1.0)).cached
+    # докачиваемый тайл снова нужен — та же загрузка, без нового запроса к Esri
+    layer, z, x, y = next(iter(t._inflight))
+    again = asyncio.create_task(t.get(layer, z, x, y))
+    await asyncio.sleep(0.05)
+    assert up.started == 10 and not again.done()
+    await cancel_all([again])
+    await t.stop()
+    assert not t._inflight
+
+
+async def test_new_tile_preempts_abandoned(tmp_path):
+    up = SlowUpstream()
+    t = svc(tmp_path, up)
+    await t.start(background=False)
+    gone = [asyncio.create_task(t.get("imagery", 12, i, 0)) for i in range(ORPHANS_MAX)]
+    await asyncio.sleep(0.05)
+    await cancel_all(gone)
+    assert len(t._orphans()) == ORPHANS_MAX and up.cancelled == 0
+    # пул заполняют нужные тайлы — брошенные уступают им соединения
+    wanted = [asyncio.create_task(t.get("imagery", 13, i, 0)) for i in range(POOL_SIZE - 1)]
+    await asyncio.sleep(0.05)
+    assert len(t._inflight) == POOL_SIZE
+    assert len(t._orphans()) == ORPHANS_MAX - 1 and up.cancelled == 1
+    await cancel_all(wanted)
+    await t.stop()
+
+
+async def test_slow_network_abandoned_wave(tmp_path):
+    """Регрессия: медленная сеть, экран бросил волну запросов. Раньше брошенные загрузки докачивались
+    и держали пул: нужный тайл получал 404 через 5 с, а проверка интернета — «нет сети»."""
+    async with slow_esri(1.5) as url:
+        t = TileService(Settings(tiles={"imagery_url": url}), root=tmp_path / "tiles")
+        await t.start(background=False)
+        wave = [asyncio.create_task(t.get("imagery", 15, 100 + i, 200)) for i in range(24)]
+        await asyncio.sleep(0.3)
+        await cancel_all(wave)
+        t0 = time.monotonic()
+        tile = await t.get("imagery", 15, 5000, 200)
+        assert not tile.cached and time.monotonic() - t0 < 3.5
+        # проверка интернета — своим соединением, даже когда пул тайлов занят целиком
+        busy = [asyncio.create_task(t.get("imagery", 16, i, 0)) for i in range(2 * POOL_SIZE)]
+        await asyncio.sleep(0.2)
+        t0 = time.monotonic()
+        assert await t.check_internet() is True
+        assert time.monotonic() - t0 < 1.0
+        await cancel_all(busy)
+        await t.stop()
 
 
 async def test_lru_eviction(tmp_path):
@@ -199,3 +362,41 @@ async def test_tiles_http(data_dir):
         assert st["count"] == 1 and st["limit_mb"] == 1024 and st["hit_rate"] == 0.5
         assert (await c.delete("/api/tiles")).json() == {"ok": True}
         assert (await c.get("/api/tiles/stats")).json()["count"] == 0
+
+
+async def test_tiles_http_errors(data_dir):
+    def h(req):
+        if "/tile/5/" in req.url.path:
+            return httpx.Response(404)
+        raise httpx.ConnectError("offline", request=req)
+
+    async with running_app(make_opts(tile_transport=FakeUpstream(h).transport)) as c:
+        await login(c)
+        r = await c.get("/tiles/imagery/5/1/1")
+        assert r.status_code == 404 and "retry-after" not in r.headers
+        r = await c.get("/tiles/imagery/6/1/1")  # временно — экран спросит снова через 2 с
+        assert r.status_code == 503 and r.headers["retry-after"] == "2"
+        assert r.headers["cache-control"] == "no-store"
+
+
+async def test_tiles_http_client_gone_cancels_fetch(live_server):
+    """Настоящий uvicorn: экран закрыл соединение — загрузка с Esri отменяется (кроме ORPHANS_MAX)."""
+    up = SlowUpstream()
+    srv = live_server(tile_transport=httpx.MockTransport(up), background=False)
+
+    async def abandon(path: str) -> None:
+        _r, w = await asyncio.open_connection("127.0.0.1", srv.port)
+        w.write(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode())
+        await w.drain()
+        await asyncio.sleep(0.3)
+        w.close()
+
+    n = ORPHANS_MAX + 3
+    await asyncio.gather(*[abandon(f"/tiles/imagery/12/{i}/0") for i in range(n)])
+    for _ in range(100):
+        if up.cancelled >= n - ORPHANS_MAX:
+            break
+        await asyncio.sleep(0.05)
+    assert up.started == n and up.cancelled == n - ORPHANS_MAX
+    async with httpx.AsyncClient(base_url=srv.url) as c:  # с 127.0.0.1 — без входа
+        assert (await c.get("/tiles/imagery/15/1/1")).status_code == 200

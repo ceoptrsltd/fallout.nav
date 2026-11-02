@@ -5,6 +5,11 @@
 размеров файлов; при превышении лимита фоновая задача удаляет самые давно использованные
 тайлы до 90 % лимита. Время доступа переживает перезапуск: при попадании mtime файла
 обновляется не чаще раза в час.
+
+Ошибки: 404 — только «такого тайла у Esri нет»; временные (пул занят, таймаут, обрыв, 5xx, нет
+интернета) — 503 с Retry-After, экран спросит снова через пару секунд. Загрузку, которую никто больше
+не ждёт (экран отменил запрос), отменяем; докачиваем в кэш не больше ORPHANS_MAX таких. Проверка
+интернета идёт своим соединением, а не через пул тайлов.
 """
 
 from __future__ import annotations
@@ -31,6 +36,10 @@ log = logging.getLogger("fnav.core.tiles")
 LAYERS = ("imagery", "transport", "places", "street")
 USER_AGENT = f"Mozilla/5.0 (X11; Linux aarch64) fallout.nav/{__version__} (+http://fnav.local)"
 FETCH_TIMEOUT_S = 5.0
+CHECK_TIMEOUT_S = 4.0
+POOL_SIZE = 8  # соединений к Esri для тайлов
+ORPHANS_MAX = 2  # брошенных клиентом загрузок, которые всё же докачиваем в кэш
+RETRY_SOON_S = 2  # Retry-After для временных ошибок (503)
 MAX_Z = 23
 EVICT_TO = 0.9
 UTIME_EVERY_S = 3600.0
@@ -52,10 +61,16 @@ _CT_BY_EXT = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 
 
 class TileError(Exception):
-    def __init__(self, status: int, detail: str):
+    def __init__(self, status: int, detail: str, retry_after: int | None = None):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.retry_after = retry_after  # с: когда спросить снова (заголовок Retry-After у 503)
+
+
+def _retry_soon(detail: str, after: float = RETRY_SOON_S) -> TileError:
+    """Временная ошибка (503): тайл, скорее всего, есть — клиенту стоит повторить скоро."""
+    return TileError(503, detail, int(after))
 
 
 @dataclass
@@ -76,22 +91,38 @@ class _Entry:
 Key = tuple[str, int, int, int]
 
 
+@dataclass
+class _Fetch:
+    task: asyncio.Task
+    waiters: int = 0  # сколько запросов ждут результат; 0 — загрузку бросили
+
+
 class TileService:
     def __init__(self, settings: Settings, *, root: Path | None = None,
                  transport: httpx.AsyncBaseTransport | None = None):
         self.settings = settings
         self.root = root or paths.tiles_dir()
+        headers = {"User-Agent": USER_AGENT, "Accept": "image/*,*/*;q=0.5"}
         self._client = httpx.AsyncClient(
             transport=transport,
             timeout=httpx.Timeout(FETCH_TIMEOUT_S),
-            headers={"User-Agent": USER_AGENT, "Accept": "image/*,*/*;q=0.5"},
-            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+            headers=headers,
+            limits=httpx.Limits(max_connections=POOL_SIZE, max_keepalive_connections=4),
+            follow_redirects=True,
+        )
+        # проверка интернета — своим соединением: на медленной сети пул занят тайлами,
+        # и ожидание свободного слота не должно выглядеть как «нет интернета»
+        self._check_client = httpx.AsyncClient(
+            transport=transport,
+            timeout=httpx.Timeout(CHECK_TIMEOUT_S),
+            headers=headers,
+            limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
             follow_redirects=True,
         )
         self._index: dict[Key, _Entry] = {}
         self._total = 0
         self._scan_done = False
-        self._inflight: dict[Key, asyncio.Task] = {}
+        self._inflight: dict[Key, _Fetch] = {}
         self._neg: OrderedDict[Key, float] = OrderedDict()
         self._evict_task: asyncio.Task | None = None
         self._bg: list[asyncio.Task] = []
@@ -109,9 +140,11 @@ class TileService:
             self._bg.append(asyncio.create_task(self._internet_loop(), name="tiles-internet"))
 
     async def stop(self) -> None:
-        await cancel_tasks(*self._bg, self._evict_task)
+        await cancel_tasks(*self._bg, self._evict_task, *(f.task for f in self._inflight.values()))
         self._bg.clear()
+        self._inflight.clear()
         await self._client.aclose()
+        await self._check_client.aclose()
 
     def apply_settings(self, settings: Settings) -> None:
         self.settings = settings
@@ -235,19 +268,50 @@ class TileService:
         if neg and time.monotonic() - neg < NEG_TTL_S:
             raise TileError(404, "Tile not available from Esri")
         if self.internet is False and time.monotonic() - self._last_check < CHECK_OFFLINE_S:
-            raise TileError(404, "No internet and tile not cached")
+            raise _retry_soon("No internet and tile not cached", CHECK_OFFLINE_S)
 
-        task = self._inflight.get(key)
-        if task is None:
-            task = asyncio.get_running_loop().create_task(self._fetch_and_store(key))
-            self._inflight[key] = task
+        f = self._inflight.get(key)
+        if f is None:
+            self._make_room()
+            task = asyncio.get_running_loop().create_task(self._fetch_and_store(key),
+                                                          name=f"tile-{layer}/{z}/{x}/{y}")
+            f = self._inflight[key] = _Fetch(task)
             task.add_done_callback(lambda t, k=key: self._inflight_done(k, t))
-        return await asyncio.shield(task)
+        f.waiters += 1
+        try:
+            return await asyncio.shield(f.task)
+        finally:
+            f.waiters -= 1
+            if not f.waiters and not f.task.done():
+                self._abandoned(key)
 
     def _inflight_done(self, key: Key, task: asyncio.Task) -> None:
-        self._inflight.pop(key, None)
+        f = self._inflight.get(key)
+        if f is not None and f.task is task:
+            del self._inflight[key]
         if not task.cancelled():
             task.exception()  # помечаем как полученное: клиент мог уйти раньше
+
+    def _orphans(self) -> list[Key]:
+        """Загрузки, которые никто не ждёт (от старых к новым)."""
+        return [k for k, f in self._inflight.items() if not f.waiters]
+
+    def _abandoned(self, key: Key) -> None:
+        """Последний ждавший ушёл (экран отменил запрос): докачиваем в кэш не больше ORPHANS_MAX
+        брошенных загрузок, остальные отменяем — иначе они держат пул, а нужные тайлы ждут слота."""
+        if len(self._orphans()) > ORPHANS_MAX:
+            self._cancel_fetch(key)
+
+    def _make_room(self) -> None:
+        """Нужный тайл важнее докачки брошенных: пул полон — отменяем брошенные, сначала свежие."""
+        orphans = self._orphans()
+        while orphans and len(self._inflight) >= POOL_SIZE:
+            self._cancel_fetch(orphans.pop())
+
+    def _cancel_fetch(self, key: Key) -> None:
+        f = self._inflight.pop(key, None)
+        if f is not None:
+            f.task.cancel()
 
     async def _read_cached(self, key: Key) -> Tile | None:
         e = self._index.get(key)
@@ -280,22 +344,30 @@ class TileService:
         url = self.url_for(layer, z, x, y)
         try:
             r = await self._client.get(url)
-        except httpx.HTTPError as e:
-            log.debug("tile %s: %s", key, e)
+        except httpx.PoolTimeout:
+            # все соединения заняты другими тайлами — очередь, а не «нет сети»
+            raise _retry_soon("Tile proxy busy") from None
+        except httpx.TransportError as e:  # таймаут, обрыв, нет соединения
+            log.debug("tile %s: %r", key, e)
             self._check_now.set()
-            raise TileError(404, "Tile server unreachable") from None
+            raise _retry_soon("Tile server unreachable") from None
+        except httpx.HTTPError as e:
+            log.debug("tile %s: %r", key, e)
+            raise TileError(502, "Tile server error") from None
         self._last_ok_fetch = time.monotonic()
         self.internet = True
         if r.status_code == 404 or r.status_code == 400:
             self._remember_missing(key)
             raise TileError(404, "Tile not available from Esri")
+        if r.status_code == 429 or r.status_code >= 500:
+            raise _retry_soon(f"Tile server returned {r.status_code}")
         if r.status_code != 200:
-            raise TileError(404, f"Tile server returned {r.status_code}")
+            raise TileError(502, f"Tile server returned {r.status_code}")
         ct = r.headers.get("content-type", "").split(";")[0].strip().lower()
         ext = _EXT_BY_CT.get(ct)
         if not ext or not r.content:
             # Esri при ошибке токена отдаёт JSON с кодом 200
-            raise TileError(404, "Tile server did not return an image")
+            raise TileError(502, "Tile server did not return an image")
         data = r.content
         if is_esri_no_data(data):
             self._remember_missing(key)
@@ -318,12 +390,15 @@ class TileService:
     async def check_internet(self) -> bool:
         # HEAD — без тела: раздача с телефона, трафик экономим
         url = self.url_for("imagery", 1, 0, 0)
+        started = time.monotonic()
         try:
-            r = await self._client.head(url, timeout=4.0)
+            r = await self._check_client.head(url)
             ok = r.status_code < 500
         except Exception as e:  # noqa: BLE001 — любая ошибка = нет связи
-            log.debug("internet check (%s): %s", urlsplit(url).netloc, e)
+            log.debug("internet check (%s): %r", urlsplit(url).netloc, e)
             ok = False
+        if not ok and self._last_ok_fetch > started:
+            ok = True  # пока ждали HEAD, пришёл тайл — сеть есть, просто медленная
         self.internet = ok
         self._last_check = time.monotonic()
         return ok
