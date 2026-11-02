@@ -48,6 +48,18 @@ export function alarmActions({ state, siren, hazard, hazardEnabled }) {
   return out;
 }
 
+// After an action's answer the new alarm buttons ignore taps for a moment: Disarm appears right where Arm was (Arm
+// where Disarm was, Disarm where Stop siren was), and on the van's Wi-Fi the answer takes ~50 ms — a double tap or a
+// second "did it register?" tap would hit it. Dashboard and Alarm page.
+export const ACT_COOL_MS = 1500;
+
+/** ms the alarm buttons stay inert after the last action's answer at doneAt (Date.now()); 0 — they take taps. */
+export function actCooldown(doneAt, now, ms = ACT_COOL_MS) {
+  if (!num(doneAt) || !num(now)) return 0;
+  const left = doneAt + ms - now;
+  return left > 0 && left <= ms ? left : 0; // the clock went back: not stuck
+}
+
 // the car screen's alarm banner words (web/display/ui/alarm.js BANNER_WORD; the admin does not import display modules)
 const BANNER_WORD = { impact: "IMPACT", tilt: "TILTED", move: "MOVING", approach: "PERSON", face: "FACE", loiter: "PERSON",
   video_lost: "CAMERA" };

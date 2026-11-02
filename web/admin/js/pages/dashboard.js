@@ -10,7 +10,7 @@ import { recLink } from "../rec-play.js";
 import { eventThumb } from "../snap-view.js";
 import { installEntry } from "../install.js";
 import {
-  EVENTS_N, pollDelay, alarmLive, alarmActions, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
+  EVENTS_N, ACT_COOL_MS, pollDelay, alarmLive, alarmActions, actCooldown, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
   recentEvents, recentKey, eventExtras, eventCamera, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
 } from "../dash-fmt.js";
@@ -36,6 +36,8 @@ export function mount(root) {
   let stAt = 0;
   let stErr = null;
   let busy = null; // alarm action in flight
+  let doneAt = null; // Date.now() of the last action's answer: then the buttons are inert for ACT_COOL_MS
+  let coolTimer = null;
   let expect = null; // {state, siren, hazard, until}: the answer of the last action
   let lastSeq = null;
   let lastState = null;
@@ -97,8 +99,17 @@ export function mount(root) {
       toast("error", errText(e));
     } finally {
       busy = null;
-      if (!stopped) renderHero();
+      doneAt = Date.now(); // a double tap must not hit the button that takes this one's place
+      if (!stopped) {
+        coolSoon();
+        renderHero();
+      }
     }
+  }
+  // the cool-down ends: the buttons come alive
+  function coolSoon() {
+    clearTimeout(coolTimer);
+    coolTimer = setTimeout(() => { if (!stopped) renderHero(); }, ACT_COOL_MS + 20);
   }
 
   function renderHero() {
@@ -166,15 +177,25 @@ export function mount(root) {
     // buttons: rebuilt only when the set changes (not with the countdown) — a button must not vanish under the finger
     const acts = alarmActions({ state: l.state, siren: l.siren, hazard: l.hazard, hazardEnabled: hzOn() });
     const sig = acts.map((a) => a.what + ":" + a.label).join("|") + "|" + busy;
+    // right after an answer the new buttons are inert (dimmed) for a moment: Disarm takes Arm's place
+    const nowMs = Date.now();
+    const cool = !busy && actCooldown(doneAt, nowMs) > 0;
     // while an action is in flight the (disabled) buttons stay as they are until its answer
     if (sig !== btnSig && !(busy && btnSig.endsWith("|" + busy))) {
       btnSig = sig;
+      // the set changed again during the cool-down (telemetry caught up): it counts from this swap
+      if (cool) {
+        doneAt = nowMs;
+        coolSoon();
+      }
       clear(btns);
       for (const a of acts) {
-        btns.append(h(`button.btn.al-big.${a.cls}`, { type: "button", disabled: !!busy, title: a.title, onclick: () => act(a.what) },
+        btns.append(h(`button.btn.al-big.${a.cls}`, { type: "button", disabled: !!busy || cool, title: a.title, onclick: () => act(a.what) },
           busy === a.what ? h("span.spin") : icon(a.icon), a.label));
       }
     }
+    // the cool-down ends: the same buttons come alive (not rebuilt under the finger)
+    if (!busy) for (const b of btns.children) if (b.disabled !== cool) b.disabled = cool;
     put(heroHint, l.state === "off" ? armHint(alarmCfg() ? alarmCfg().arm_delay_s : null) : "");
     heroHint.hidden = l.state !== "off";
 
@@ -571,6 +592,7 @@ export function mount(root) {
     stopped = true;
     clearTimeout(pollTimer);
     clearTimeout(extrasTimer);
+    clearTimeout(coolTimer);
     clearInterval(tick);
     document.removeEventListener("visibilitychange", onVis);
     offTel();

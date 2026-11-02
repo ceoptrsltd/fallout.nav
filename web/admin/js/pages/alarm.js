@@ -15,7 +15,7 @@ import {
   camerasText, eventMoment,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
-import { eventCamera, eventExtras } from "../dash-fmt.js";
+import { eventCamera, eventExtras, actCooldown, ACT_COOL_MS } from "../dash-fmt.js";
 import { eventThumb } from "../snap-view.js";
 import { openPlayer, soundUrl } from "./recordings.js";
 import * as push from "../push.js";
@@ -30,6 +30,8 @@ export function mount(root) {
   let st = null; // AlarmStatus (GET api/alarm)
   let stAt = 0; // Date.now() when st arrived
   let busy = null; // action in flight
+  let doneAt = null; // Date.now() of the last action's answer: then the buttons are inert for ACT_COOL_MS
+  let coolTimer = null;
   let peak = null; // {g, at}
   let lastSeq = null;
   let evKey = null;
@@ -73,8 +75,17 @@ export function mount(root) {
       toast("error", errText(e));
     } finally {
       busy = null;
-      if (!stopped) renderState(true);
+      doneAt = Date.now(); // a double tap must not hit the button that takes this one's place
+      if (!stopped) {
+        coolSoon();
+        renderState(true);
+      }
     }
+  }
+  // the cool-down ends: the buttons come alive
+  function coolSoon() {
+    clearTimeout(coolTimer);
+    coolTimer = setTimeout(() => { if (!stopped) renderState(true); }, ACT_COOL_MS + 20);
   }
 
   function renderState(force) {
@@ -115,10 +126,18 @@ export function mount(root) {
 
     // buttons: rebuilt only when the set changes (not every countdown tick): a tap must not miss them
     const btnSig = [l.state === "off", l.siren || l.hazard, busy, silenceLabel({ siren: l.siren, hazard: l.hazard, hazardEnabled: hzOn })].join("|");
+    // right after an answer the buttons are inert (dimmed) for a moment: Disarm takes Arm's place
+    const nowMs = Date.now();
+    const cool = !busy && actCooldown(doneAt, nowMs) > 0;
     if (btnSig !== lastBtnSig) {
       lastBtnSig = btnSig;
+      // telemetry brings the new state a few hundred ms after the answer: the cool-down counts from this swap
+      if (cool) {
+        doneAt = nowMs;
+        coolSoon();
+      }
       clear(btns);
-      const b = (what, cls, ic, text, title) => h("button.btn" + cls, { type: "button", disabled: !!busy, title, onclick: () => act(what) },
+      const b = (what, cls, ic, text, title) => h("button.btn" + cls, { type: "button", disabled: !!busy || cool, title, onclick: () => act(what) },
         busy === what ? h("span.spin") : icon(ic), text);
       if (l.state === "off") btns.append(b("arm", ".primary.al-big", "lock", "Arm", "Turn the alarm on"));
       else {
@@ -129,6 +148,8 @@ export function mount(root) {
         btns.append(b("disarm", ".danger.al-big", "unlock", "Disarm", "Turn the alarm off"));
       }
     }
+    // the cool-down ends: the same buttons come alive (not rebuilt under the finger)
+    if (!busy) for (const x of btns.children) if (x.disabled !== cool) x.disabled = cool;
     const delay = settings() ? settings().arm_delay_s : null;
     stHint.textContent = l.state === "off"
       ? (delay === 0 ? "The alarm arms at once." : isNum(delay) ? `The alarm arms ${delay} s after you press Arm — time to close the doors and walk away.` : "")
@@ -995,6 +1016,7 @@ export function mount(root) {
     stopPoll();
     clearInterval(tick);
     clearTimeout(saveTimer);
+    clearTimeout(coolTimer);
     offTel();
     offConn();
     offSet();
