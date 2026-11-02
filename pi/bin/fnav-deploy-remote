@@ -39,6 +39,9 @@ chmod 0755 "$APP"/pi/install.sh "$APP"/pi/deploy.sh "$APP"/pi/bin/* 2>/dev/null 
 changed="$(mktemp)"
 trap 'rm -f "$changed"' EXIT
 
+TUNNEL_UNIT=/etc/systemd/system/fnav-tunnel.service
+tunnel_before="$(sha256sum "$TUNNEL_UNIT" 2>/dev/null || true)"
+
 echo "==> System files (units, sudoers, ...)"
 bash "$APP/pi/bin/fnav-sync-system" --from "$APP" --changed-file "$changed"
 
@@ -60,6 +63,16 @@ fi
 for s in $RESTART; do
     if systemctl restart "$s"; then echo "  $s restarted"; else echo "  WARNING: $s failed to restart" >&2; fi
 done
+
+# The tunnel's unit changed: restart it a few seconds after this deploy ends (the deploy itself may be running through
+# the tunnel — tools/remote.sh deploy — and would be cut off midway).
+if [ "$(sha256sum "$TUNNEL_UNIT" 2>/dev/null || true)" != "$tunnel_before" ] && systemctl is-active --quiet fnav-tunnel; then
+    if systemd-run --quiet --on-active=5 --unit="fnav-tunnel-restart-$(date +%s)" systemctl restart fnav-tunnel.service; then
+        echo "  fnav-tunnel restarts in 5 s (an ssh session through it drops; it is back in ~15 s)"
+    else
+        echo "  WARNING: could not schedule the fnav-tunnel restart: sudo systemctl restart fnav-tunnel" >&2
+    fi
+fi
 
 # Wait for core to answer (it serves /api/session without authentication).
 ok=0

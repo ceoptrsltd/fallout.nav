@@ -13,6 +13,8 @@ User=fnav
 Group=fnav
 EnvironmentFile=/etc/fnav/remote.env
 # -R: the server's nginx reaches fnav-core's remote listener (127.0.0.1:8090, no localhost trust).
+# -R 18022: the device's sshd on the server's loopback — maintenance from anywhere (tools/remote.sh ssh / deploy;
+#    still key-only login to the device, and only from the server itself).
 # -L: fnav-core reaches fnav-relay on the server (position log) at 127.0.0.1:18095.
 # Keepalives detect a dead link in ~45 s; the server drops stale sessions in ~90 s, and ExitOnForwardFailure
 # makes a retry wait until the old -R listener is gone. Idle traffic is only the keepalives.
@@ -22,6 +24,7 @@ ExecStart=/usr/bin/ssh -N -T -F none \
     -o BatchMode=yes -o ExitOnForwardFailure=yes -o ConnectTimeout=20 \
     -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o TCPKeepAlive=no \
     -R 127.0.0.1:18080:127.0.0.1:8090 \
+    -R 127.0.0.1:18022:127.0.0.1:22 \
     -L 127.0.0.1:18095:127.0.0.1:8095 \
     -p ${FNAV_TUNNEL_PORT} ${FNAV_TUNNEL_USER}@${FNAV_TUNNEL_HOST}
 Restart=always

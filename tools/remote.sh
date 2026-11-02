@@ -9,6 +9,10 @@
 #   tools/remote.sh relay    reinstall the fnav-relay code on the server
 #   tools/remote.sh nginx    reinstall the nginx snippet
 #   tools/remote.sh status   tunnel and relay state
+#   tools/remote.sh ssh [cmd]      ssh to the device through the server (its tunnel forwards the device's sshd
+#                                  to 127.0.0.1:18022 on the server): works wherever the van is online
+#   tools/remote.sh deploy [args]  pi/deploy.sh through the same way (args as for pi/deploy.sh)
+#   tools/remote.sh ssh-server     allow that forward for the tunnel user on the server (setup does it too)
 #
 # Server and device details live in tools/.remote.env (not in git), see tools/remote.env.example.
 set -euo pipefail
@@ -24,6 +28,7 @@ ENV_FILE="$ROOT/tools/.remote.env"
 FNAV_HOST="${FNAV_HOST:-fnav}"
 TUN_USER="${REMOTE_TUNNEL_USER:-fnavtun}"
 TUN_PORT="${REMOTE_TUNNEL_PORT:-22}"
+DEV_SSH_PORT=18022  # the device's sshd on the server's loopback (fnav-tunnel.service -R)
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15)
 srv() { ssh "${SSH_OPTS[@]}" -o IdentitiesOnly=yes ${REMOTE_SSH_KEY:+-i "$REMOTE_SSH_KEY"} "$REMOTE_SSH" "$@"; }
@@ -106,9 +111,9 @@ if ! id "$TUN_USER" >/dev/null 2>&1; then
 fi
 h="$(getent passwd "$TUN_USER" | cut -d: -f6)"
 install -d -m 0700 -o "$TUN_USER" -g "$TUN_USER" "$h/.ssh"
-# only the two forwards of fnav-tunnel.service: no shell, no pty, no other ports
-printf 'restrict,port-forwarding,permitlisten="127.0.0.1:18080",permitopen="127.0.0.1:8095" %s\n' "$PUB" \
-    > "$h/.ssh/authorized_keys"
+# only the forwards of fnav-tunnel.service: no shell, no pty, no other ports
+printf 'restrict,port-forwarding,permitlisten="127.0.0.1:18080",permitlisten="127.0.0.1:18022",permitopen="127.0.0.1:8095" %s\n' \
+    "$PUB" > "$h/.ssh/authorized_keys"
 chown "$TUN_USER:$TUN_USER" "$h/.ssh/authorized_keys"; chmod 0600 "$h/.ssh/authorized_keys"
 echo "  $TUN_USER: key installed"
 EOF
@@ -129,12 +134,69 @@ EOF
          sudo systemctl restart fnav-tunnel.service fnav-core.service && echo "  fnav-tunnel and fnav-core restarted"'
 }
 
+do_ssh_server() {
+    say "server: the tunnel user may forward the device's sshd to 127.0.0.1:$DEV_SSH_PORT"
+    srv "TUN_USER='$TUN_USER' bash -s" <<'EOF'
+set -e
+f="$(getent passwd "$TUN_USER" | cut -d: -f6)/.ssh/authorized_keys"
+[ -f "$f" ] || { echo "no $f: run 'tools/remote.sh setup' first" >&2; exit 1; }
+if grep -q 'permitlisten="127.0.0.1:18022"' "$f"; then echo "  already allowed"; exit 0; fi
+sed -i 's/permitlisten="127.0.0.1:18080",/permitlisten="127.0.0.1:18080",permitlisten="127.0.0.1:18022",/' "$f"
+grep -q 'permitlisten="127.0.0.1:18022"' "$f" && echo "  allowed" || { echo "could not update $f" >&2; exit 1; }
+EOF
+}
+
+# ssh config for the device through the server: Host fnav-remote = 127.0.0.1:18022 on the server (ProxyJump).
+# The device's host key is checked under the name ssh already knows it by (FNAV_HOST resolved by ssh -G).
+SSH_CONF=""
+ssh_conf() {
+    [ -n "$SSH_CONF" ] && return
+    SSH_CONF="$(mktemp)"
+    trap 'rm -f "$SSH_CONF"' EXIT
+    local alias g
+    g="$(ssh -G "$FNAV_HOST" 2>/dev/null || true)"  # the device alias's own settings: its name and key
+    alias="${FNAV_HOST_KEY_ALIAS:-$(awk '$1 == "hostname" {print $2; exit}' <<<"$g")}"
+    {
+        echo "Host fnav-jump"
+        echo "    HostName ${REMOTE_SSH#*@}"
+        [ "$REMOTE_SSH" != "${REMOTE_SSH#*@}" ] && echo "    User ${REMOTE_SSH%@*}"
+        [ -n "${REMOTE_SSH_KEY:-}" ] && printf '    IdentityFile %s\n    IdentitiesOnly yes\n' "$REMOTE_SSH_KEY"
+        echo "Host fnav-remote"
+        echo "    HostName 127.0.0.1"
+        echo "    Port $DEV_SSH_PORT"
+        echo "    User ${FNAV_USER:-falloutnav}"
+        echo "    HostKeyAlias ${alias:-$FNAV_HOST}"
+        awk '$1 == "identityfile" {print "    IdentityFile " $2} $1 == "identitiesonly" {print "    IdentitiesOnly " $2}' <<<"$g"
+        echo "    ProxyJump fnav-jump"
+        echo "    ServerAliveInterval 15"
+        echo "    ConnectTimeout 20"
+    } > "$SSH_CONF"
+}
+
+do_ssh() {
+    ssh_conf
+    if [ $# -eq 0 ]; then ssh -t -F "$SSH_CONF" fnav-remote; else ssh -F "$SSH_CONF" -o BatchMode=yes fnav-remote "$@"; fi
+}
+
+do_deploy() {
+    ssh_conf
+    FNAV_HOST=fnav-remote FNAV_SSH_OPTS="-F $SSH_CONF -o BatchMode=yes -o ServerAliveInterval=15" \
+        bash "$ROOT/pi/deploy.sh" "$@"
+}
+
 do_status() {
     say "device"
     dev 'printf "  fnav-tunnel: %s\n" "$(systemctl is-active fnav-tunnel)"; journalctl -u fnav-tunnel -n 3 --no-pager -o cat | sed "s/^/  /"
          curl -s -m 5 http://127.0.0.1/api/remote/status 2>/dev/null | head -c 300; echo' || true
     say "server"
-    srv 'printf "  fnav-relay: %s\n" "$(systemctl is-active fnav-relay)"; ss -ltn | grep -E "127.0.0.1:(18080|8095) " | sed "s/^/  /"' || true
+    srv 'printf "  fnav-relay: %s\n" "$(systemctl is-active fnav-relay)"; ss -ltn | grep -E "127.0.0.1:(18080|18022|8095) " | sed "s/^/  /"' || true
+    say "ssh through the server"
+    ssh_conf
+    if out="$(ssh -F "$SSH_CONF" -o BatchMode=yes fnav-remote 'echo "  $(hostname): ssh ok"' 2>&1)"; then echo "$out"
+    elif ! srv "ss -ltn | grep -q '127.0.0.1:$DEV_SSH_PORT '" 2>/dev/null; then
+        echo "  no 127.0.0.1:$DEV_SSH_PORT on the server: the device's tunnel has no ssh forward yet (deploy the"
+        echo "  current code once from the local network) or the device is offline"
+    else echo "  not reachable: ${out##*$'\n'}"; fi
     say "public"
     curl -s -m 10 -o /dev/null -w "  https://$REMOTE_SITE/fnadmin/admin/ -> %{http_code}\n" "https://$REMOTE_SITE/fnadmin/admin/" || true
     curl -s -m 10 "https://$REMOTE_SITE/fnadmin/api/session" | sed 's/^/  session: /'; echo
@@ -147,5 +209,8 @@ case "${1:-}" in
     nginx) do_nginx ;;
     tunnel) do_tunnel ;;
     status) do_status ;;
+    ssh) shift; do_ssh "$@" ;;
+    deploy) shift; do_deploy "$@" ;;
+    ssh-server) do_ssh_server ;;
     *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
