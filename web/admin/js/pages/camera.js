@@ -437,6 +437,17 @@ export function mount(root) {
     form.bar,
   );
 
+  // impact while driving (settings.impact, docs/contracts/camera.md «Удар на ходу»): its own form — saving it does not
+  // touch the recording; an older device without the section — no card
+  const iform = new SettingsForm();
+  const impactCard = store.settings?.impact !== undefined ? section("Impact while driving",
+    h("p.dim", { style: { margin: "0 0 8px", fontSize: "13px" } }, "A hit while the van is moving (or stopped less than a minute ago) protects the current recordings of both cameras — the neighbouring segment too near a segment boundary — beeps and marks the moment on the recording timeline. Parked, the alarm watches for impacts instead."),
+    iform.add({ path: "impact.enabled", label: "Protect recordings on impact", type: "switch" }),
+    iform.add({ path: "impact.threshold_g", label: "Threshold", hint: "Strength of a hit after filtering out braking, turns and body roll", type: "number", min: 0.5, max: 3, step: 0.1, unit: "g", help: "Potholes and speed bumps give 0.3–0.8 g; 1.5 g leaves a safe margin. The sensor measures up to 2 g per axis: a hit that reaches it counts as at least 2 g." }),
+    iform.add({ path: "impact.cooldown_s", label: "Pause after an impact", hint: "The next impact is not watched before", type: "number", min: 5, max: 600, step: 5, unit: "s" }),
+    iform.bar,
+  ) : null;
+
   const frontPane = h(".cam-pane", null,
     h(".cam-layout", null,
       h("div", null,
@@ -448,6 +459,7 @@ export function mount(root) {
       h("div", { style: { display: "flex", flexDirection: "column", gap: "14px" } }, statusCard),
     ),
     settingsCard,
+    impactCard,
   );
 
   // ═════ rear camera: an IP camera over RTSP (settings.rear_camera; telemetry camera_rear, null while it is off) ═════
@@ -791,6 +803,7 @@ export function mount(root) {
     document.removeEventListener("visibilitychange", onVis);
     form.destroy();
     rform.destroy();
+    iform.destroy();
     front.stop();
     rear.stop();
     if (snapUrl) URL.revokeObjectURL(snapUrl);

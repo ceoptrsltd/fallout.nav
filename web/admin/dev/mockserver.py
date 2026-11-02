@@ -161,7 +161,11 @@ def build_recordings() -> list[dict]:
         base = (now - timedelta(days=day)).replace(hour=18, minute=30, second=0)
         for i in range(n):
             st = base - timedelta(minutes=10 * (i + (1 if day == 0 else 0)) + 10 * (day == 0))
-            out.append(_rec(st, 600 if i != 2 else 412, protected=(i == 1 and day == 1)))
+            r = _rec(st, 600 if i != 2 else 412, protected=(i == 1 and day == 1))
+            if i == 1 and day == 1:  # an impact while driving protected this one (fnav/core/impact.py)
+                r["marks"] = [{"kind": "impact", "ts": r["start_ts"] + 95.0, "offset_s": 95.0, "dur_s": 0.0,
+                               "peak_g": 1.84}]
+            out.append(r)
     out.append({"path": "nosync/boot-3fa9c2d1_0001.ts", "date": "nosync", "start": None, "size_bytes": 212_000_000, "duration_s": 600.0, "protected": False, "in_progress": False})
     seen, uniq = set(), []
     for r in out:
@@ -790,6 +794,33 @@ async def recording_hls(path: str):
     uri = "../../file/" + "/".join(quote(x) for x in rel.split("/"))
     return Response(hls_playlist(chunks(idx, live=False), uri, live=False),
                     media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/recordings/gps/{path:path}")
+async def recording_gps(path: str, format: str = "json"):
+    """A made-up drive for every dated recording, ~1 point/s from its start_ts, half a minute without a fix in the
+    middle (docs/contracts/camera.md «Трек GPS записи»); ?format=gpx — the file."""
+    from fnav.camera.gpstrack import make_sample, to_gpx
+
+    r = _find(path)
+    t0 = r.get("start_ts")
+    samples: list[dict] = []
+    if isinstance(t0, (int, float)):
+        dur = r["duration_s"] or max(0.0, time.time() - t0)
+        rng = random.Random(int(t0))
+        lat, lon, course = 52.2297 + rng.uniform(-0.05, 0.05), 21.0122 + rng.uniform(-0.08, 0.08), rng.uniform(0, 360)
+        for i in range(int(dur)):
+            speed = max(0.0, 13 + 9 * math.sin(i / 41 + t0 % 7))  # m/s, stops at lights now and then
+            course = (course + 4 * math.sin(i / 23)) % 360
+            lat += speed * math.cos(math.radians(course)) / 111_320
+            lon += speed * math.sin(math.radians(course)) / (111_320 * math.cos(math.radians(lat)))
+            if not 200 <= i < 230:  # a tunnel
+                samples.append(make_sample(t0 + i + 0.3, lat, lon, alt=110.0, speed=speed, course=course))
+    if format == "gpx":
+        name = ("rear-" if path.startswith("rear/") else "") + path.split("/")[-1].removesuffix(".ts") + ".gpx"
+        return Response(to_gpx(samples, path), media_type="application/gpx+xml",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+    return {"path": path, "samples": samples}
 
 
 @app.post("/api/recordings/protect")

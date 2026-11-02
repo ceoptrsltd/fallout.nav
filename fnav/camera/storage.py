@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .gpstrack import gps_path
 from .tsindex import sidecar_path
 from .tsmux import repair_ts
 
@@ -35,11 +36,12 @@ def is_protected(ts: Path) -> bool:
 
 
 def remove_sidecar(ts: Path) -> None:
-    """Индекс ключевых кадров удаляется вместе с записью."""
-    try:
-        sidecar_path(ts).unlink()
-    except OSError:
-        pass
+    """Индекс ключевых кадров и трек GPS (его пишет fnav-core) удаляются вместе с записью."""
+    for p in (sidecar_path(ts), gps_path(ts)):
+        try:
+            p.unlink()
+        except OSError:
+            pass
 
 
 def list_recordings(root: Path, exclude: tuple[str, ...] = ()) -> list[Path]:

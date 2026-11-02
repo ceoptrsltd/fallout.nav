@@ -78,9 +78,10 @@
 ## Записи
 
 Файлы: `{recordings_dir}/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS.ts` (задняя камера — `{recordings_dir}/rear/YYYY-MM-DD/…`, путь
-записи `rear/ДАТА/ИМЯ.ts`), защищено = рядом `…ts.lock`, индекс ключевых кадров — `…ts.idx`. Подробно — `camera.md`.
+записи `rear/ДАТА/ИМЯ.ts`), защищено = рядом `…ts.lock`, индекс ключевых кадров — `…ts.idx`, трек GPS — `…ts.gps`.
+Подробно — `camera.md`.
 
-- `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","camera":"front"|"rear","date":"2026-10-20","start":"2026-10-20T16:40:00","start_ts":1792507200.123|null,"size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool,"events":[…],"marks":[{"kind":"motion"|"vehicle"|"person","ts":..,"offset_s":..,"dur_s":..}]}]` (обе камеры, новые сверху; `events` — события охраны (кроме `test`, `armed`, `disarmed`), `marks` — отметки движения без тревоги своей камеры, [vision.md](vision.md) «Отметки»).
+- `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","camera":"front"|"rear","date":"2026-10-20","start":"2026-10-20T16:40:00","start_ts":1792507200.123|null,"size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool,"events":[…],"marks":[{"kind":"motion"|"vehicle"|"person"|"sound"|"impact","ts":..,"offset_s":..,"dur_s":..}]}]` (обе камеры, новые сверху; `events` — события охраны (кроме `test`, `armed`, `disarmed`), `marks` — отметки движения без тревоги своей камеры, [vision.md](vision.md) «Отметки», и удары на ходу — `"kind":"impact"` с `peak_g`, у записей обеих камер, camera.md «Удар на ходу»).
   `start` — местное время устройства из имени файла (как в имени, без пояса); `start_ts` — истинное начало (unix, UTC)
   из `.ts.idx` регистратора (camera.md), `null` — записи до этой версии и `nosync/`. Пояс устройства меняется в дороге
   («Часовой пояс»), поэтому начало записи — `start_ts`, а без него — `start` в поясе устройства (не браузера!):
@@ -91,6 +92,12 @@
 - `GET /api/recordings/item/{path}` — одна запись в том же виде, что в списке (с `events` и `marks`), без обхода всех
   каталогов: плеер на странице охраны (кнопка Play у события, с 5 с до него); 404 — записи нет, 400 — плохой путь.
 - `GET /api/recordings/file/{path}` — отдача файла с поддержкой `Range` (`video/mp2t`).
+- `GET /api/recordings/gps/{path}` — трек GPS записи (`…ts.gps`, camera.md «Трек GPS записи»): `{"path": …, "samples":
+  [{"t": unix, "lat", "lon", "alt": м|null, "speed": м/с|null, "course": °|null, "fix": "2d"|"3d"}]}` по времени (~1 в
+  секунду; нет трека — `[]`; 404 — нет записи, 400 — плохой путь). Плеер ищет точку по unix-времени: начало записи
+  (`start_ts`, без него — как выше) + позиция воспроизведения (`web/admin/js/rec-drive.js`). `?format=gpx` — файл GPX
+  1.1 (`application/gpx+xml`, вложение `ИМЯ.gpx`, задняя — `rear-ИМЯ.gpx`; скорость и курс — Garmin
+  TrackPointExtension v2, перерыв > 10 с — новый `trkseg`).
 - `GET /api/recordings/hls/{path}.m3u8` (`…/2026-10-20/2026-10-20_16-40-00.ts.m3u8`) — плейлист HLS по записи
   (`application/vnd.apple.mpegurl`, `Cache-Control: no-cache`) для перемотки в любое место без докачки:
   `EXT-X-VERSION:4`, `PLAYLIST-TYPE:EVENT`, `EXT-X-START:TIME-OFFSET=0`; куски ~3 с (≤ 3 МБ) —
@@ -104,7 +111,9 @@
 - `in_progress` (и «идёт запись» у HLS и `DELETE`) — `current_segment` передней **или задней** из статусов их сервисов,
   либо файл менялся меньше 3 с назад (camera.md «Хранилище» у задней).
 - `DELETE /api/recordings/file/{path}` — запрещено для `in_progress` (`409`) и защищённых без `?force=1`;
-  вместе с записью удаляются `.lock` и индекс `.ts.idx`.
+  вместе с записью удаляются `.lock`, индекс `.ts.idx` и трек `.ts.gps`.
+- Удар на ходу (MPU-6050, `settings.impact`) защищает текущие записи обеих камер, как `protect-current`, и оставляет
+  метку `impact` — camera.md «Удар на ходу».
 - Защита от выхода за каталог (`..`, абсолютные пути) обязательна.
 
 ## Камера (прокси к fnav-camera `127.0.0.1:8081`, задняя — fnav-camera-rear `127.0.0.1:8083`)

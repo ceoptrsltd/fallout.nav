@@ -1108,9 +1108,23 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
 .rec-ev.k-bad svg { color: var(--red); }
 .rec-ev.k-warn svg { color: var(--amber); }
 .rec-evbadge { cursor: pointer; border: 0; font: inherit; }
+/* recordings: speed and place at the playback moment (the GPS track), the map with the track */
+.rec-gps { width: min(900px, 82vw); margin-top: 8px; }
+.rec-gps-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 13px; }
+.rec-gps-row > svg { color: var(--amber); }
+.rec-gps-spd { font-family: var(--mono); font-size: 16px; color: var(--amber); font-variant-numeric: tabular-nums; min-width: 72px; }
+.rec-gps.nofix .rec-gps-spd { color: var(--dim); font-size: 13px; }
+.rec-gps-pos { font-variant-numeric: tabular-nums; }
+.rec-gps-row .btn.on { color: var(--amber); border-color: var(--amber); }
+.rec-map { position: relative; isolation: isolate; /* Leaflet panes stay inside the modal */ height: 240px; margin-top: 8px; border: 1px solid var(--line2); border-radius: var(--radius); overflow: hidden; background: #0b0f0b; }
+.rec-map.leaflet-container { font: 12px/1.4 var(--sans); }
+.rec-map .overlay-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); font-family: var(--mono); }
+.rec-map .leaflet-control-attribution { background: rgba(10, 12, 10, .78); color: var(--dim); }
+.rec-map .leaflet-control-attribution a { color: var(--amber); }
 /* phones: the player is a bottom sheet — video and the event strip take its full width, markers easier to tap */
 @media (max-width: 760px) {
-  .rec-video, .rec-marks { width: 100%; }
+  .rec-video, .rec-marks, .rec-gps { width: 100%; }
+  .rec-map { height: 200px; }
   .rec-evs { max-width: none; }
   .rec-marks { height: 16px; margin-top: 10px; }
   .rec-mark { top: -5px; width: 14px; height: 24px; margin-left: -7px; }

@@ -161,6 +161,15 @@ class StorageSettings(_Model):
     max_recordings_gb: float = Field(10.0, ge=1)  # все записи вместе (с защищёнными); старые удаляются
 
 
+class ImpactSettings(_Model):
+    """Удар на ходу (fnav/core/impact.py, docs/contracts/camera.md «Удар на ходу»): MPU-6050 → защитить текущие
+    записи обеих камер, сигнал, метка на шкале записи."""
+
+    enabled: bool = True
+    threshold_g: float = Field(1.5, ge=0.5, le=3.0)  # порог по ускорению после ФВЧ ~3 Гц, g (ямы — 0,3–0,8 g)
+    cooldown_s: int = Field(30, ge=5, le=600)  # следующий удар — не раньше, с
+
+
 class TileSettings(_Model):
     esri_api_key: str = ""  # пусто = старые адреса без ключа
     max_zoom: int = Field(21, ge=10, le=23)  # самый подробный уровень снимков (у Esri в Варшаве есть z20–z21)
@@ -446,6 +455,7 @@ class Settings(_Model):
     camera: CameraSettings = CameraSettings()
     rear_camera: RearCameraSettings = RearCameraSettings()
     storage: StorageSettings = StorageSettings()
+    impact: ImpactSettings = ImpactSettings()
     tiles: TileSettings = TileSettings()
     gps: GpsSettings = GpsSettings()
     compass: CompassSettings = CompassSettings()

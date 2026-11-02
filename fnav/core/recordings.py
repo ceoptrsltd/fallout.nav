@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fnav import paths
+from fnav.camera.gpstrack import gps_path, read_track
 from fnav.camera.tsindex import KeyIndex, chunks, read_start, sidecar_path, update_index
 from fnav.camera.tsmux import has_audio_track
 
@@ -338,6 +339,11 @@ class Recordings:
     async def hls(self, rel: str, current: str | None = None) -> str:
         return await asyncio.to_thread(self._hls, rel, current)
 
+    async def gps(self, rel: str) -> list[dict]:
+        """Трек GPS записи (боковой .ts.gps, fnav/camera/gpstrack.py); нет трека — пусто, нет записи — 404."""
+        p = self.file(rel)
+        return await asyncio.to_thread(read_track, p)
+
     async def protect(self, rel: str, protected: bool) -> bool:
         p = self.file(rel)
         lk = lock_path(p)
@@ -365,7 +371,7 @@ class Recordings:
 
         def _do() -> None:
             p.unlink()
-            for extra in (lk, sidecar_path(p)):
+            for extra in (lk, sidecar_path(p), gps_path(p)):
                 try:
                     extra.unlink()
                 except FileNotFoundError:
@@ -435,7 +441,8 @@ def attach_events(items: list[dict], events: Iterable[Any], now: float | None = 
 
 def attach_marks(items: list[dict], between: Callable[[float, float, str | None], list[dict]],
                  now: float | None = None) -> list[dict]:
-    """Отметки движения без тревоги (fnav/core/marks.py) — только своей камеры: {kind, ts, offset_s, dur_s}."""
+    """Отметки движения без тревоги (fnav/core/marks.py) — только своей камеры: {kind, ts, offset_s, dur_s};
+    удары на ходу (fnav/core/impact.py) — kind "impact" и peak_g, у записей обеих камер."""
     now = time.time() if now is None else now
     for it in items:
         out: list[dict] = []
@@ -448,6 +455,8 @@ def attach_marks(items: list[dict], between: Callable[[float, float, str | None]
                 if m.get("clip"):  # громкий звук: клип и где он начинается на шкале этой записи
                     e.update(clip=m["clip"], clip_offset_s=round(m["clip_start"] - t0, 2),
                              clip_dur_s=m.get("clip_dur_s"), peak_db=m.get("peak_db"))
+                if m.get("peak_g") is not None:  # удар на ходу (fnav/core/impact.py): сила, g
+                    e["peak_g"] = m["peak_g"]
                 out.append(e)
         it["marks"] = out
     return items

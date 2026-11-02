@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from starlette.staticfiles import StaticFiles
 
 from fnav import __version__, paths, tz
+from fnav.camera.gpstrack import to_gpx
 from fnav.core import secretsfile as sf
 from fnav.core.auth import COOKIE_NAME, SESSION_TTL_S, AuthMiddleware
 from fnav.core.bluetooth import BluetoothError
@@ -359,13 +360,13 @@ def _register_recordings(app: FastAPI, core: Core) -> None:
     async def rec_list():
         """Записи + метки событий охраны в них (переход к моменту срабатывания) и отметки движения без тревоги."""
         items = attach_events(await core.recordings.list(core.current_segment()), core.alarm.events)
-        return attach_marks(items, core.marks.between)
+        return attach_marks(items, core.rec_marks)
 
     @app.get("/api/recordings/item/{path:path}")
     async def rec_item(path: str):
         """Одна запись с метками событий и отметками — плееру со страницы охраны (кнопка Play у события)."""
         items = attach_events([await core.recordings.item(path, core.current_segment())], core.alarm.events)
-        return attach_marks(items, core.marks.between)[0]
+        return attach_marks(items, core.rec_marks)[0]
 
     @app.api_route("/api/recordings/file/{path:path}", methods=["GET", "HEAD"])
     async def rec_file(path: str, request: Request, download: int = 0):
@@ -387,6 +388,18 @@ def _register_recordings(app: FastAPI, core: Core) -> None:
             return Response(b"", status_code=status, headers=headers, media_type="video/mp2t")
         return StreamingResponse(iter_file(f, start, length), status_code=status, headers=headers,
                                  media_type="video/mp2t")
+
+    @app.get("/api/recordings/gps/{path:path}")
+    async def rec_gps(path: str, format: Literal["json", "gpx"] = "json"):
+        """Трек GPS записи (боковой .ts.gps): плееру — скорость и место в момент воспроизведения; ?format=gpx — файл."""
+        samples = await core.recordings.gps(path)
+        if format == "json":
+            return {"path": path, "samples": samples}
+        name = path.rsplit("/", 1)[-1].removesuffix(".ts") + ".gpx"
+        name = ("rear-" + name) if path.startswith("rear/") else name
+        return Response(to_gpx(samples, path), media_type="application/gpx+xml", headers={
+            "Content-Disposition": f"attachment; filename=\"{name}\"; filename*=UTF-8''{quote(name)}",
+            "Cache-Control": "no-cache"})
 
     # HLS по записи: куски EXT-X-BYTERANGE от ключевого кадра → перемотка в любое место без докачки
     @app.get("/api/recordings/hls/{path:path}")

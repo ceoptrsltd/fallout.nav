@@ -30,12 +30,14 @@ from fnav.core.camera import (
 )
 from fnav.core.config import SettingsStore
 from fnav.core.games import GamesService
+from fnav.core.impact import ImpactService
 from fnav.core.imu import ImuService
 from fnav.core.keypad import KeypadService
 from fnav.core.level import LevelService
 from fnav.core.marks import MarkLog
 from fnav.core.navlogic import NavLogic
 from fnav.core.radio import MOCK_STATION, Player, create_radio
+from fnav.core.recgps import RecGps
 from fnav.core.recordings import Recordings
 from fnav.core.speedlimit import SpeedLimitService
 from fnav.core.system import SystemService, run
@@ -194,6 +196,11 @@ class Core:
         self.alarm.vision_status = self.vision.status
         self.level = LevelService(self.imu, lambda: self.store.get().level, self._save_level_calibration,
                                   get_fix=lambda: self.hub.snapshot().gps)
+        # удар на ходу: защитить текущие записи обеих камер, сигнал, метка на шкале записей; трек GPS к записям
+        self.impact = ImpactService(paths.data_dir() / "impacts.jsonl", lambda: self.store.get().impact, self.imu,
+                                    get_fix=lambda: self.hub.snapshot().gps, protect=self.protect_current,
+                                    beep=self._beep)
+        self.recgps = RecGps(paths.recordings_dir, lambda: self.hub.snapshot().gps, (self.camera, self.camera_rear))
         self.keypad = KeypadService({
             "station_prev": lambda: self.radio.step(-1),
             "station_next": lambda: self.radio.step(1),
@@ -264,7 +271,7 @@ class Core:
             log.exception("radio/bluetooth start")
         # охрана, отметки, fnav-watch, уровень, датчик — каждый сам по себе: сбой одного не оставит без остальных
         for name, start in (("alarm", self.alarm.start), ("marks", self.marks.start), ("vision", self.vision.start),
-                            ("level", self.level.start)):
+                            ("level", self.level.start), ("impact", self.impact.start)):
             try:
                 await start(background=bg)
             except Exception:
@@ -285,6 +292,7 @@ class Core:
             self.speedlimits.start()
             self.games.start()
             self.keypad.start()
+            self.recgps.start()
         self.started = True
         log.info("fnav-core started (mock=%s)", self.mock)
 
@@ -293,6 +301,7 @@ class Core:
         self._tasks.clear()
         for closer in (self.imu.stop, self.vision.stop, self.marks.stop, self.alarm.stop, self.level.stop, self.speedlimits.stop, self.weather.stop,
                        self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop,
+                       self.impact.stop, self.recgps.stop,
                        self.hub.stop, self.camera.stop, self.camera_rear.stop, self.tiles.stop):
             try:
                 await closer()
@@ -706,6 +715,10 @@ class Core:
             self.view_camera = want
             log.info("rear view %s (reversing)", "on" if want == "rear" else "off")
             self.ws.event("camera_view", camera=want, auto=True)
+
+    def rec_marks(self, t0: float, t1: float, camera: str | None = None) -> list[dict]:
+        """Метки на шкале записей: отметки движения с камер и удары на ходу (recordings.attach_marks)."""
+        return sorted(self.marks.between(t0, t1, camera) + self.impact.between(t0, t1, camera), key=lambda m: m["ts"])
 
     def _on_mark(self, data: dict, ts: float) -> None:
         """Отметка движения от fnav-watch (без тревоги) — в журнал отметок, если они включены."""
