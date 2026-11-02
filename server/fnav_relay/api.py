@@ -218,6 +218,10 @@ class Handler(BaseHTTPRequestHandler):
             if role is not None:
                 out["guest"] = role == "guest"
             return self._send(200, out)
+        m = _PUSH_SNAP_RE.match(path)
+        if m:  # картинка уведомления: браузер грузит её без cookie — неугадываемая ссылка с ограниченным сроком
+            self._method(method, "GET")
+            return self._push_snap(m.group(1))
         if path in ("/api/tracking", "/api/push") or path.startswith(("/api/tracking/", "/api/push/")):
             role = "device" if self._has_device_token() else self._role()
             if role is None:
@@ -226,10 +230,6 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(403, GUEST_DENIED)
         if path == "/api/tracking" or path.startswith("/api/tracking/"):
             return self._tracking(method, path, qs)
-        m = _PUSH_SNAP_RE.match(path)
-        if m:  # картинка уведомления: браузер грузит её без cookie — неугадываемая ссылка с ограниченным сроком
-            self._method(method, "GET")
-            return self._push_snap(m.group(1))
         if path == "/api/push" or path.startswith("/api/push/"):
             try:
                 return self._push(method, path)
