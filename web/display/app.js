@@ -14,7 +14,7 @@ import { DEFAULT_SETTINGS, deepMerge } from "./map/defaults.js";
 import { TileStore, browserTileLoader } from "./map/tiles.js";
 import { MapRenderer, BG_COLOR } from "./map/renderer.js";
 import { activeLayers, layerLevel, planRequests } from "./map/layers.js";
-import { CompassFilter, MotionModel, OrientationBlend, RotationRig, ZoomAnimator, vehicleAnchor } from "./map/motion.js";
+import { CompassFilter, MotionModel, OrientationBlend, RotationRig, ZoomAnimator, hudSpeed, vehicleAnchor } from "./map/motion.js";
 import { Trail } from "./map/trail.js";
 import { CameraLayer } from "./map/camera.js";
 import { RearSignal, rearMirror, viewCamera } from "./map/rearview.js";
@@ -438,7 +438,7 @@ function frame(tms) {
       vehicleHeadingDeg: m.headingKnown ? rot.vehicle : null,
       compassHeadingDeg: compass.known ? compassDeg : null,
       headingSource: tel.heading?.source || "none",
-      speedMps: m.speed,
+      speedMps: hudSpeed(m.speed, connected), // нет связи — "--", а не последняя скорость
       zoom,
       hasFix,
       connected,

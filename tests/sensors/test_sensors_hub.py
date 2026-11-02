@@ -240,3 +240,23 @@ async def test_autoconfigure_only_when_receiving() -> None:
     hub._maybe_autoconfigure()
     await asyncio.sleep(0.05)
     assert calls == [1]  # уже на нужной скорости
+
+
+def test_snapshot_drops_speed_when_gpsd_goes_silent() -> None:
+    """gpsd перезапущен «Reconfigure module» / упал / отошёл провод UART: TPV больше не приходят — в снимке нет
+    ни скорости, ни курса (раньше там навсегда оставались последние 90 км/ч)."""
+    from fnav.sensors.gpsd import GpsState
+
+    clk = FakeClock()
+    hub = RealSensorHub(Settings(), gpsd_port=1, enable_compass=False, enable_gpio=False)
+    hub.gps = GpsState(clock=clk)
+    hub.gps.handle(json.loads(tpv(25.0, 45.0)))
+    hub._still.moving = True  # без секунды подтверждения «едем»
+    hub._fuse_once()
+    s = hub.snapshot()
+    assert s.gps.fix == "3d" and s.gps.speed_mps == 25.0 and s.heading.gps_course_deg == 45.0
+    clk.t += GpsState.STALE_S + 1
+    hub._fuse_once()
+    s = hub.snapshot()
+    assert s.gps.fix == "none" and s.gps.speed_mps is None and s.gps.course_deg is None
+    assert s.heading.gps_course_deg is None

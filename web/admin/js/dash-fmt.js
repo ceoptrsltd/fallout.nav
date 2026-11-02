@@ -217,12 +217,14 @@ export function fmtLatLon(lat, lon) {
 /** Position tile value: {text, moving}: "54 km/h NE" / "Parked" / "No position". */
 export function motionInfo(g, heading) {
   const gps = g || {};
+  const fixed = gps.fix === "2d" || gps.fix === "3d";
   const v = gps.speed_mps;
-  if (num(v) && v >= MOVING_MPS) {
+  // without a fix the speed is unknown, even if a packet still carries the last one
+  if (fixed && num(v) && v >= MOVING_MPS) {
     const deg = heading && num(heading.deg) ? heading.deg : null;
     return { text: `${Math.round(v * 3.6)} km/h${deg !== null ? " " + compassWord(deg) : ""}`, moving: true };
   }
-  if (gps.fix === "2d" || gps.fix === "3d") return { text: "Parked", moving: false };
+  if (fixed) return { text: "Parked", moving: false };
   return { text: "No position", moving: false };
 }
 

@@ -66,6 +66,8 @@
 ## Данные
 
 - B подключается к `ws(s)://<host>/ws`, переподключение с backoff 0.5→5 с, при обрыве > 3 с — индикатор "NO LINK".
+  Пока "NO LINK", последняя телеметрия устарела: скорости нет (`view.speedMps = null`, `map/motion.js` `hudSpeed`), а не
+  последняя перед обрывом; без фикса скорость тоже не берётся, даже если она осталась в пакете (старое ядро).
 - Настройки — из сообщения `{"type":"settings"}` (и `GET /api/settings` при старте).
 - Между пакетами телеметрии (10 Гц) B интерполирует позицию и курс для плавности 30–60 fps.
 - Геймпад (меню игр, `ui/games-menu.js`): `navigator.getGamepads()` — только пока `telemetry.display.gamepad`
@@ -90,7 +92,7 @@ state = {
     vehicleHeadingDeg: 247.3 | null, // курс иконки машины (быстрое сглаживание)
     compassHeadingDeg: 247.3 | null, // курс для КОМПАСА: минимальное сглаживание (display.compass_smoothing_s ≈ 0.1 с), без задержек
     headingSource: "gps"|"mag"|"blend"|"none",
-    speedMps: 12.3 | null,
+    speedMps: 12.3 | null,        // null — нет фикса или нет связи ("NO LINK"): спидометр "--", знак ограничения не мигает
     zoom: 17.42,                  // текущий анимированный зум
     hasFix: true,
     connected: true,              // есть ли связь с fnav-core

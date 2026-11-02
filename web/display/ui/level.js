@@ -117,7 +117,8 @@ export function levelInputs(state) {
     now: state?.now ?? 0,
     speedKmh: Number.isFinite(mps) ? mps * 3.6 : null,
     enabled: setting(state, "level.show_on_screen", true) !== false,
-    sensorOk: !!l && l.sensor_ok === true,
+    // нет связи с fnav-core — и уровень, и скорость устарели: остаётся спидометр с "--"
+    sensorOk: !!l && l.sensor_ok === true && state?.view?.connected !== false,
   };
 }
 

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { norm360, wrap180, angleDiff, lerpAngle, approachAngle, springStep } from "../../web/display/map/angles.js";
-import { CompassFilter, MotionModel, ZoomAnimator, OrientationBlend, RotationRig, vehicleAnchor } from "../../web/display/map/motion.js";
+import { CompassFilter, MotionModel, ZoomAnimator, OrientationBlend, RotationRig, hudSpeed, vehicleAnchor } from "../../web/display/map/motion.js";
 import { lonLatToMerc, mercDistanceM, moveMerc, mercToLonLat } from "../../web/display/map/mercator.js";
 
 const close = (a, b, eps, msg) => assert.ok(Math.abs(a - b) <= eps, `${msg ?? ""} ${a} != ${b} (±${eps})`);
@@ -292,6 +292,27 @@ test("MotionModel: без пакетов дольше 1 с не уезжает",
   const start = lonLatToMerc(37.5, 55.7);
   const d = mercDistanceM(start.x, start.y, s.mx, s.my);
   assert.ok(d < 25, `уехали на ${d} м`); // ≤ 20 м/с × 1 с + коррекция
+});
+
+test("MotionModel: фикс пропал — скорости нет, даже если в пакете осталась последняя", () => {
+  const m = new MotionModel();
+  m.ingest(tel(55.7, 37.5, 25, 45), 0);
+  close(m.update(0).speed, 25, 1e-9);
+  // старое ядро / gpsd замолчал: fix "none", а speed_mps — последние 90 км/ч
+  m.ingest({ ...tel(55.7, 37.5, 25, 45), gps: { fix: "none", lat: 55.7, lon: 37.5, speed_mps: 25, course_deg: 45 } }, 0.1);
+  assert.equal(m.update(0.1).speed, null);
+  m.ingest({ ...tel(null, null, null, null), gps: { fix: "none", lat: null, lon: null, speed_mps: null, course_deg: null } }, 0.2);
+  assert.equal(m.update(0.2).speed, null);
+  m.ingest(tel(55.7, 37.5, 3, 45), 0.3); // фикс вернулся
+  close(m.update(0.3).speed, 3, 1e-9);
+});
+
+test("hudSpeed: нет связи с fnav-core — скорость неизвестна (спидометр \"--\", знак не мигает)", () => {
+  assert.equal(hudSpeed(25, true), 25);
+  assert.equal(hudSpeed(0, true), 0);
+  assert.equal(hudSpeed(25, false), null, "NO LINK: not the last speed before the link dropped");
+  assert.equal(hudSpeed(null, true), null);
+  assert.equal(hudSpeed(NaN, true), null);
 });
 
 // ── компас: минимальная задержка ──

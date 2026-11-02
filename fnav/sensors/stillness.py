@@ -22,9 +22,12 @@ class StillnessFilter:
         self._above_since = None
 
     def apply(self, now: float, fix: GpsFix, cfg: GpsSettings) -> GpsFix:
-        """Вернуть копию fix с отфильтрованной скоростью (0 на стоянке) и курсом (None на стоянке)."""
+        """Вернуть копию fix с отфильтрованной скоростью (0 на стоянке) и курсом (None на стоянке).
+        Без фикса скорость и курс неизвестны — None, даже если в fix остались последние значения."""
         if fix.fix == "none" or fix.speed_mps is None:
             self.reset()
+            if fix.fix == "none" and (fix.speed_mps is not None or fix.course_deg is not None):
+                return fix.model_copy(update={"speed_mps": None, "course_deg": None})
             return fix
         k = 2.0 if (fix.hdop is not None and fix.hdop > POOR_HDOP) else 1.0
         stop_below = cfg.stationary_below_mps * k

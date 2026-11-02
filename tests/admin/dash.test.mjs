@@ -155,6 +155,10 @@ test("position: fix, coordinates, moving or parked, speed limit sign", () => {
   assert.deepEqual(motionInfo({ fix: "3d", speed_mps: 0 }), { text: "Parked", moving: false });
   assert.deepEqual(motionInfo({ fix: "3d", speed_mps: 0.6 }), { text: "Parked", moving: false });
   assert.deepEqual(motionInfo({ fix: "none" }), { text: "No position", moving: false });
+  // fix lost (gpsd silent, older core): the last speed in the packet is not "90 km/h NE" forever
+  assert.deepEqual(motionInfo({ fix: "none", lat: 52.2, lon: 21.0, speed_mps: 25, course_deg: 45 }, { deg: 45 }),
+    { text: "No position", moving: false });
+  assert.deepEqual(motionInfo({ fix: "3d", speed_mps: null }, { deg: 45 }), { text: "Parked", moving: false });
   assert.equal(limitText({ kmh: 50, src: "osm" }), "50");
   assert.equal(limitText(null), null);
   assert.equal(limitText({ kmh: 0 }), null);

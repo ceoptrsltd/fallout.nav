@@ -97,6 +97,16 @@ test("levelInputs: from the HUD state (km/h, settings.level.show_on_screen defau
   assert.equal(levelInputs(st({ sensor_ok: true }, {}, null)).speedKmh, null);
 });
 
+test("levelInputs: no link to fnav-core — the level data is stale too, the speedometer stays (with \"--\")", () => {
+  const st = (connected) => ({ now: 5, telemetry: { level: { sensor_ok: true } }, settings: {}, view: { speedMps: null, connected } });
+  assert.equal(levelInputs(st(true)).sensorOk, true);
+  assert.equal(levelInputs(st(undefined)).sensorOk, true, "gallery / older states without the flag");
+  assert.equal(levelInputs(st(false)).sensorOk, false);
+  const t = newLevelTrack();
+  levelVisibility(t, levelInputs(st(false)));
+  assert.equal(levelVisibility(t, { ...levelInputs(st(false)), now: 10 }).shown, false);
+});
+
 test("LEVEL_BOX: as wide as the speedometer (the radio panel does not move), taller than it", () => {
   assert.equal(LEVEL_BOX.w, SPEED_BOX.w);
   assert.ok(LEVEL_BOX.h > SPEED_BOX.h && LEVEL_BOX.h > RADIO_H);

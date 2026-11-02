@@ -198,14 +198,16 @@ class GpsState:
             self.version = msg.get("release")
 
     def current(self) -> GpsFix:
-        """Фикс с актуальным age_s; если TPV давно не было — fix='none'."""
+        """Фикс с актуальным age_s; если TPV давно не было (gpsd перезапущен/упал, обрыв UART) — fix='none'
+        без скорости и курса: они устарели, иначе экран «замирает» на последней скорости. Позиция остаётся —
+        как последняя известная (при fix='none' её никто не считает текущей)."""
         self._commit_sky()
         if self.last_tpv is None:
             return self.fix.model_copy(update={"age_s": None})
         age = self.clock() - self.last_tpv
         upd: dict[str, Any] = {"age_s": round(age, 2)}
         if age > self.STALE_S:
-            upd["fix"] = "none"
+            upd.update(fix="none", speed_mps=None, course_deg=None)
         return self.fix.model_copy(update=upd)
 
     def problem(self) -> str | None:

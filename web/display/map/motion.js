@@ -45,10 +45,11 @@ export class MotionModel {
   ingest(tel, now) {
     const gps = tel.gps || {};
     const hd = tel.heading || {};
-    const speed = Number.isFinite(gps.speed_mps) ? gps.speed_mps : null;
+    const hasFix = gps.fix && gps.fix !== "none" && Number.isFinite(gps.lat) && Number.isFinite(gps.lon);
+    // без фикса скорость неизвестна, даже если в пакете осталась последняя (не «замираем» на ней)
+    const speed = hasFix && Number.isFinite(gps.speed_mps) ? gps.speed_mps : null;
     this.speedMeas = speed;
     const v = speed ?? 0;
-    const hasFix = gps.fix && gps.fix !== "none" && Number.isFinite(gps.lat) && Number.isFinite(gps.lon);
 
     // ── курс ──
     this.headingSource = hd.source || "none";
@@ -153,6 +154,14 @@ export class MotionModel {
       speed: this.speed,
     };
   }
+}
+
+/**
+ * Скорость для HUD (view.speedMps): нет связи с fnav-core ("NO LINK") — последний пакет устарел, скорость
+ * неизвестна (спидометр "--", знак ограничения не мигает), а не последняя перед обрывом.
+ */
+export function hudSpeed(speed, connected) {
+  return connected && Number.isFinite(speed) ? speed : null;
 }
 
 /** Плавный зум: критически демпфированная пружина к цели (~1.5 с до установления). */

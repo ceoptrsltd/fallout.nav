@@ -81,6 +81,30 @@ def test_state_sequence_and_staleness() -> None:
     assert "no data" in st.problem()
 
 
+def test_stale_fix_has_no_speed_or_course() -> None:
+    """gpsd перестал слать TPV (перезапуск, падение, обрыв UART) — скорость и курс не «замирают» на последних."""
+    clk = Clock()
+    st = GpsState(clock=clk)
+    for m in msgs():
+        st.handle(m)
+    f = st.current()
+    assert f.fix == "3d" and f.speed_mps == 12.345 and f.course_deg == 359.5
+    clk.t += GpsState.STALE_S - 0.5
+    assert st.current().speed_mps == 12.345  # короткая пауза — ещё актуально
+    clk.t += 1.0
+    f = st.current()
+    assert f.fix == "none" and f.speed_mps is None and f.course_deg is None
+    # последняя позиция остаётся, но как «нет фикса»
+    assert f.lat == 55.706900123 and f.lon == 37.585300456
+    clk.t += 3600
+    assert st.current().speed_mps is None  # и через час — тоже
+    # приёмник вернулся
+    st.handle({"class": "TPV", "mode": 3, "time": "2026-10-20T17:40:01.000Z", "lat": 55.7, "lon": 37.6,
+               "speed": 3.0, "track": 90.0})
+    f = st.current()
+    assert f.fix == "3d" and f.speed_mps == 3.0 and f.course_deg == 90.0
+
+
 def test_state_reports_not_connected() -> None:
     clk = Clock()
     st = GpsState(clock=clk)

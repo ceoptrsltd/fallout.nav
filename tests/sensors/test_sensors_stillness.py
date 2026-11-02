@@ -37,6 +37,20 @@ def test_no_fix_passthrough():
     assert f.apply(0, nf, cfg) is nf
 
 
+def test_no_fix_drops_last_speed_and_course():
+    """Фикс пропал, а в нём осталась последняя скорость (90 км/ч) — дальше она не идёт."""
+    f, cfg = StillnessFilter(), GpsSettings()
+    for i in range(15):
+        f.apply(i * 0.1, fix(25.0), cfg)
+    assert f.moving
+    stale = GpsFix(fix="none", lat=52.0, lon=21.0, speed_mps=25.0, course_deg=45.0, hdop=1.0)
+    out = f.apply(2.0, stale, cfg)
+    assert out.fix == "none" and out.speed_mps is None and out.course_deg is None
+    assert out.lat == 52.0 and out.lon == 21.0
+    assert not f.moving  # фикс вернётся — «едем» снова только после подтверждения
+    assert f.apply(2.1, fix(25.0), cfg).speed_mps == 0.0
+
+
 def test_cfg_nav5_static_hold_payload():
     m = ubx.parse_frame(ubx.cfg_nav5_static_hold(50, 20))
     p = m.payload if hasattr(m, "payload") else m[2]

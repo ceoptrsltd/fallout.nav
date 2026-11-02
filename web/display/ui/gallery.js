@@ -279,8 +279,8 @@ function stepSim(dt) {
 
 const COND = {
   ok: {},
-  nofix: { hasFix: false, fix: "none", sats: 2, headingSource: "mag" },
-  noconn: { connected: false },
+  nofix: { hasFix: false, fix: "none", sats: 2, headingSource: "mag", speedMps: null }, // без фикса скорости нет
+  noconn: { connected: false, speedMps: null }, // нет связи — спидометр "--" (map/motion.js hudSpeed)
   nohead: { headingDeg: null, headingSource: "none" },
   offline: { internet: false },
   norec: { recording: false },
