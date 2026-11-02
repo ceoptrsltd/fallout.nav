@@ -696,7 +696,8 @@ class BtState(_Model):
 # ───────────────────────────── Охрана и уровень (MPU-6050) ─────────────────────────────
 
 AlarmStateName = Literal["off", "arming", "armed", "triggered"]
-AlarmKind = Literal["impact", "tilt", "move", "approach", "face", "loiter", "video_lost", "video_back", "test"]
+AlarmKind = Literal["impact", "tilt", "move", "approach", "face", "loiter", "video_lost", "video_back", "test",
+                    "armed", "disarmed"]  # armed / disarmed — не тревога: поставили / сняли с охраны (data.source)
 
 
 class AlarmEvent(_Model):
@@ -772,6 +773,7 @@ class AlarmStatus(_Model):
     hazard: AlarmHazard = AlarmHazard()
     vision: AlarmVision = AlarmVision()
     cameras: list[AlarmCameraVideo] = []
+    storage_error: str | None = None  # журнал / состояние / outbox не пишутся на карту (охрана работает)
 
 
 class AlarmLast(_Model):

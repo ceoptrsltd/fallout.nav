@@ -172,6 +172,11 @@ export function mount(root) {
       }, cams.text)));
     }
     stKv.append(h("span.k", null, "Server"), h("span.v", null, st ? h("span." + (rel.kind === "ok" ? "green" : "amber"), null, rel.text) : "—"));
+    if (st && st.storage_error) { // the card is full or read-only: the alarm still works, the log is not saved
+      stKv.append(h("span.k", null, "Storage"), h("span.v", null, h("span.red", {
+        title: "The alarm still works — siren, hazard lights and notifications go out — but what is not saved is lost on restart",
+      }, st.storage_error)));
+    }
     clear(sensorWarn);
     if (sen && !sen.ok) {
       sensorWarn.append(banner("warn", h("div", null, h("b", null, "Shock sensor not responding. "),

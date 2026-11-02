@@ -162,7 +162,12 @@ const KINDS = {
   video_lost: { label: "Camera lost", icon: "cam", kind: "bad" },
   video_back: { label: "Camera back", icon: "cam", kind: "" },
   test: { label: "Test", icon: "info", kind: "" },
+  // armed / disarmed from the app or the keypad (data.source): a note in the log, not an alarm
+  armed: { label: "Armed", icon: "lock", kind: "" },
+  disarmed: { label: "Disarmed", icon: "unlock", kind: "" },
 };
+// where the alarm was armed / disarmed from (data.source)
+const SOURCES = { keypad: "keypad", web: "app" };
 
 /** Event kind for the log: {label, icon, kind}. */
 // events of the rear camera (data.camera === "rear")
@@ -239,7 +244,7 @@ export function marksSummary(counts) {
 }
 
 /** The one figure worth showing next to an event's time (the title already says what it was): "0.18 g", "3.2°",
- *  "120 m", "8 s"; "" — nothing to add. */
+ *  "120 m", "8 s"; armed / disarmed — where from ("keypad", "app · during the alarm"); "" — nothing to add. */
 export function eventDetail(ev) {
   const d = ev && ev.data && typeof ev.data === "object" ? ev.data : {};
   const n = (v) => typeof v === "number" && Number.isFinite(v);
@@ -248,6 +253,11 @@ export function eventDetail(ev) {
   if (ev.kind === "move" && n(d.distance_m)) return `${Math.round(d.distance_m)} m`;
   if (ev.kind === "loiter" && n(d.held_s)) return `${Math.round(d.held_s)} s`;
   if (ev.kind === "video_back" && n(d.lost_s)) return `off ${gapText(d.lost_s)}`;
+  if (ev.kind === "armed" || ev.kind === "disarmed") {
+    const src = SOURCES[d.source] || "";
+    const during = ev.kind === "disarmed" && d.was === "triggered" ? "during the alarm" : "";
+    return [src, during].filter(Boolean).join(" · ");
+  }
   return "";
 }
 

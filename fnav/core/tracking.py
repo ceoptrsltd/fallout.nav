@@ -100,10 +100,14 @@ class Outbox:
         if self._db is None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
-            db.execute("PRAGMA journal_mode=WAL")
-            db.execute("PRAGMA synchronous=FULL")
-            db.execute("CREATE TABLE IF NOT EXISTS outbox("
-                       "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, body TEXT NOT NULL)")
+            try:
+                db.execute("PRAGMA journal_mode=WAL")
+                db.execute("PRAGMA synchronous=FULL")
+                db.execute("CREATE TABLE IF NOT EXISTS outbox("
+                           "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, body TEXT NOT NULL)")
+            except BaseException:
+                db.close()  # битый файл не держим открытым: его можно убрать в сторону
+                raise
             self._db = db
         return self._db
 

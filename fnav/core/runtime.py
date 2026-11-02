@@ -257,15 +257,18 @@ class Core:
             await self.radio.start(demo=MOCK_STATION if self.mock else None)
         except Exception:
             log.exception("radio/bluetooth start")
-        try:
-            await self.alarm.start(background=bg)
-            await self.marks.start(background=bg)
-            await self.vision.start(background=bg)
-            await self.level.start(background=bg)
-            if bg:
+        # охрана, отметки, fnav-watch, уровень, датчик — каждый сам по себе: сбой одного не оставит без остальных
+        for name, start in (("alarm", self.alarm.start), ("marks", self.marks.start), ("vision", self.vision.start),
+                            ("level", self.level.start)):
+            try:
+                await start(background=bg)
+            except Exception:
+                log.exception("%s start", name)
+        if bg:
+            try:
                 self.imu.start()
-        except Exception:
-            log.exception("alarm/level start")
+            except Exception:
+                log.exception("imu start")
         await self._refresh_slow()
         if bg:
             self._tasks += [
@@ -596,9 +599,9 @@ class Core:
             await self.radio.resume()
 
     async def _keypad_alarm(self) -> None:
-        """Клавиша «Alarm on/off»: off → arming/armed, иначе → off (и сирена молчит). Экран показывает вспышку
-        ALARM ON / ALARM OFF по смене Telemetry.alarm.state."""
-        on = await self.alarm.toggle()
+        """Клавиша «Alarm on/off»: off → arming/armed, иначе → off (и сирена молчит); в журнал и push хозяину. Экран
+        показывает вспышку ALARM ON / ALARM OFF по смене Telemetry.alarm.state."""
+        on = await self.alarm.toggle(source="keypad")
         self._beep("short" if on else "double")
 
     async def _keypad_volume(self, direction: int) -> None:

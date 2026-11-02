@@ -16,6 +16,8 @@ import logging
 import math
 import os
 import re
+import sqlite3
+import statistics
 import threading
 import time
 import uuid
@@ -65,6 +67,10 @@ TILT_HOLD_S = 5.0  # наклон должен держаться дольше
 MOVE_MAX_HDOP = 5.0
 MOVE_MAX_AGE_S = 5.0
 MOVE_REPEAT_S = 300.0
+MOVE_REF_FIXES = 5  # точка отсчёта сдвига — медиана стольких первых хороших точек
+MOVE_CONFIRM_FIXES = 5  # сдвиг — столько хороших точек подряд дальше move_m …
+MOVE_CONFIRM_S = 10.0  # … от первой до последней не меньше
+MOVE_GAP_S = 30.0  # хороших точек не было дольше — «далёкие» считаются заново (редкие выбросы не копятся)
 TRIGGERED_HOLD_S = 30.0  # triggered — пока звучит сирена и ещё столько после последнего события
 JOURNAL_MAX = 200
 STATUS_EVENTS = 100
@@ -88,6 +94,9 @@ VISION_KINDS = ("approach", "face", "loiter")  # от камеры (fnav-watch):
 # пропало видео камеры: как события камер (без сирены: бывает и сбой Wi-Fi, и перезагрузка камеры); вернулось —
 # только журнал и push (не тревога)
 NO_SIREN_KINDS = (*VISION_KINDS, "video_lost")
+# поставили / сняли с охраны: не тревога — только журнал (и push, если с клавиатуры или снята посреди тревоги)
+SWITCH_KINDS = ("armed", "disarmed")
+SOURCE_TEXT = {"keypad": "with the keypad", "web": "from the app"}  # откуда поставили / сняли (data.source)
 CAMERA_NAMES = {"front": "front camera", "rear": "rear camera"}
 SNAPSHOTS_MAX = 100  # событий со снимками камер (alarm_snaps/<id>.jpg, задняя — <id>-rear.jpg)
 SNAPSHOT_BEFORE_S = 5.0  # снимок к событию — кадр за столько до него: видно, что к нему привело
@@ -244,22 +253,31 @@ def haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 def good_fix(fix: GpsFix) -> bool:
-    return (fix.fix != "none" and fix.lat is not None and fix.lon is not None and fix.hdop is not None
+    """Точка годится для сдвига: только 3D (2D между домами и в паркинге скачет сильнее всего), HDOP ≤ 5, свежая."""
+    return (fix.fix == "3d" and fix.lat is not None and fix.lon is not None and fix.hdop is not None
             and fix.hdop <= MOVE_MAX_HDOP and (fix.age_s is None or fix.age_s <= MOVE_MAX_AGE_S))
 
 
 class MoveWatch:
-    """Сдвиг по GPS: точка отсчёта — первая хорошая точка (fix, HDOP ≤ 5) после постановки на охрану;
-    расстояние ≥ move_m → событие; дальше — не чаще раза в 300 с и только если от последнего сообщённого места
-    снова ≥ move_m."""
+    """Сдвиг по GPS. Точка отсчёта — медиана первых MOVE_REF_FIXES хороших точек (3D, HDOP ≤ 5) после постановки на
+    охрану: выброс среди них (двор между домами, паркинг — скачок на 100–200 м) её не сдвинет. Сдвиг — когда хорошие
+    точки дальше move_m идут подряд: не меньше MOVE_CONFIRM_FIXES и от первой до последней ≥ MOVE_CONFIRM_S (точка
+    ближе — счёт заново; хороших не было дольше MOVE_GAP_S — тоже). Дальше — не чаще раза в 300 с и только если от
+    последнего сообщённого места снова ≥ move_m (подряд, по тому же правилу). После перезапуска точка отсчёта —
+    сохранённая, подтверждение — то же."""
 
     def __init__(self) -> None:
         self.ref: tuple[float, float] | None = None
         self.last: tuple[float, float] | None = None
         self.last_ts: float | None = None
+        self._seed: list[tuple[float, float]] = []  # хорошие точки для точки отсчёта
+        self._far_n = 0  # хороших точек подряд дальше move_m
+        self._far_t0: float | None = None  # первая из них
+        self._good_t: float | None = None  # последняя хорошая точка
 
     def reset(self) -> None:
-        self.ref = self.last = self.last_ts = None
+        self.ref = self.last = self.last_ts = self._far_t0 = self._good_t = None
+        self._seed, self._far_n = [], 0
 
     def to_dict(self) -> dict:
         return {"ref": list(self.ref) if self.ref else None, "last": list(self.last) if self.last else None,
@@ -275,19 +293,33 @@ class MoveWatch:
                 m.last_ts = float(d["last_ts"]) if d.get("last_ts") is not None else None
         return m
 
-    def check(self, fix: GpsFix, move_m: float, now: float) -> Detection | None:
+    def check(self, fix: GpsFix, move_m: float, now: float, mono: float | None = None) -> Detection | None:
+        """now — unix-время (last_ts переживает перезапуск), mono — для счёта подряд (без него — now)."""
         if not good_fix(fix):
             return None
+        t = now if mono is None else mono
         cur = (float(fix.lat), float(fix.lon))  # type: ignore[arg-type]
+        if self._good_t is not None and t - self._good_t > MOVE_GAP_S:
+            self._far_n, self._far_t0 = 0, None
+        self._good_t = t
         if self.ref is None:
-            self.ref = cur
+            self._seed.append(cur)
+            if len(self._seed) >= MOVE_REF_FIXES:
+                self.ref = (statistics.median(p[0] for p in self._seed), statistics.median(p[1] for p in self._seed))
+                self._seed = []
             return None
-        if self.last is None:
-            if haversine_m(self.ref, cur) < move_m:
-                return None
-        elif now - (self.last_ts or 0.0) < MOVE_REPEAT_S or haversine_m(self.last, cur) < move_m:
+        if haversine_m(self.ref if self.last is None else self.last, cur) < move_m:
+            self._far_n, self._far_t0 = 0, None
+            return None
+        if self._far_t0 is None:
+            self._far_t0 = t
+        self._far_n += 1
+        if self._far_n < MOVE_CONFIRM_FIXES or t - self._far_t0 < MOVE_CONFIRM_S - EPS:
+            return None
+        if self.last is not None and now - (self.last_ts or 0.0) < MOVE_REPEAT_S:
             return None
         self.last, self.last_ts = cur, now
+        self._far_n, self._far_t0 = 0, None
         return Detection("move", {"distance_m": round(haversine_m(self.ref, cur)), "lat": round(cur[0], 7),
                                   "lon": round(cur[1], 7)})
 
@@ -368,7 +400,7 @@ def _gap_text(s: float) -> str:
 
 def make_event(kind: str, data: dict, ts: float) -> AlarmEvent:
     """Тексты push и журнала (по-английски); время — местное устройства, HH:MM. События камеры с задней
-    (data.camera == "rear") — свои тексты: «за фургоном»."""
+    (data.camera == "rear") — свои тексты: «за фургоном». armed / disarmed — откуда (data.source)."""
     hm = time.strftime("%H:%M", time.localtime(ts))
     url = "#/alarm"
     rear = kind in VISION_KINDS and data.get("camera") == "rear"
@@ -407,6 +439,15 @@ def make_event(kind: str, data: dict, ts: float) -> AlarmEvent:
         name = CAMERA_NAMES.get(str(data.get("camera")), "camera")
         gap = _gap_text(float(data.get("lost_s") or 0))
         title, body = f"{name.capitalize()} is back", f"Video from the {name} again at {hm}, after {gap} without it"
+    elif kind in SWITCH_KINDS:
+        how = SOURCE_TEXT.get(str(data.get("source")), "")
+        verb = "Armed" if kind == "armed" else "Disarmed"
+        title, body = f"Alarm {verb.lower()}", " ".join(x for x in (verb, how, f"at {hm}") if x)
+        delay = data.get("delay_s")
+        if kind == "armed" and isinstance(delay, (int, float)) and delay > 0:
+            body += f", active in {delay:.0f} s"
+        elif kind == "disarmed" and data.get("was") == "triggered":
+            body += " while the alarm was going off"
     else:
         title, body = "Test alarm", f"Alarm notifications work ({hm})"
     return AlarmEvent(id=uuid.uuid4().hex, ts=round(ts, 3), kind=kind, title=title, body=body, url=url,  # type: ignore[arg-type]
@@ -643,6 +684,142 @@ class HazardLights:
         return AlarmHazard(enabled=self.get_cfg().enabled, active=self.active, error=self.error)
 
 
+# ───────────────────────── outbox для сервера ─────────────────────────
+
+
+def _err_text(e: BaseException) -> str:
+    return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+
+
+def _db_broken(e: BaseException) -> bool:
+    """Файл базы испорчен (а не «нельзя писать»): его можно убрать в сторону и начать новую."""
+    name = getattr(e, "sqlite_errorname", None) or ""
+    return name.startswith(("SQLITE_CORRUPT", "SQLITE_NOTADB")) or type(e) is sqlite3.DatabaseError
+
+
+class AlarmOutbox:
+    """Очередь событий для fnav-relay: SQLite (переживает обрывы и перезагрузки), а когда база не открывается или не
+    пишется — в памяти (push уходит, пока жив процесс). Битый файл при старте (пропало питание) — в сторону
+    (*.bad-<время>) и новая база; не вышло и так (карта только для чтения, полна) — память, error — почему.
+    Строки — ((«db» | «mem», id), событие); сервер события с известным id не дублирует, повтор не страшен."""
+
+    def __init__(self, path: Path, max_rows: int = OUTBOX_MAX_ROWS) -> None:
+        self.path = path
+        self.max_rows = max_rows
+        self.db: Outbox | None = Outbox(path, max_rows=max_rows)
+        self.error: str | None = None  # база не работает — очередь в памяти до перезапуска
+        self.moved: Path | None = None  # куда убран битый файл
+        self._mem: list[tuple[int, dict]] = []
+        self._seq = 0
+        self._lock = threading.RLock()
+
+    def open(self) -> None:
+        """При старте: открыть базу; битая — в сторону и заново; не вышло — память."""
+        with self._lock:
+            if self.db is None:
+                return
+            try:
+                self.db.count()
+                return
+            except Exception as e:  # noqa: BLE001 — sqlite3.Error, OSError
+                why = _err_text(e)
+                broken = _db_broken(e)
+            if broken:
+                try:
+                    self.moved = self._move_aside()
+                    log.error("alarm: outbox %s is broken (%s) - moved to %s, starting a new one",
+                              self.path, why, self.moved.name)
+                    self.db.count()
+                    return
+                except Exception as e:  # noqa: BLE001
+                    why = f"{why}; no new one: {_err_text(e)}" if self.moved is None else _err_text(e)
+            self._fail(why, salvage=False)  # читать из неё нечего (а рядом может лежать чужой журнал WAL)
+
+    def _move_aside(self) -> Path:
+        assert self.db is not None
+        self.db.close()
+        bad = self.path.with_name(f"{self.path.name}.bad-{time.strftime('%Y%m%d-%H%M%S')}")
+        os.replace(self.path, bad)
+        for sfx in ("-wal", "-shm"):  # журнал битой базы к новой не относится
+            p = self.path.with_name(self.path.name + sfx)
+            if p.exists():
+                os.replace(p, bad.with_name(bad.name + sfx))
+        return bad
+
+    def _fail(self, why: str, salvage: bool = True) -> None:
+        """База не работает (why — почему): дальше — память; что из базы ещё читается (salvage) — туда же."""
+        self.error = why
+        log.error("alarm: outbox %s unusable (%s) - events wait for the server in memory until restart",
+                  self.path, self.error)
+        old: list[tuple[int, dict]] = []
+        if self.db is not None:
+            if salvage:
+                with contextlib.suppress(Exception):
+                    old = self.db.peek(self.max_rows)
+            with contextlib.suppress(Exception):
+                self.db.close()
+        self.db = None
+        self._mem = self._numbered([*(b for _, b in old), *(b for _, b in self._mem)])
+
+    def _numbered(self, bodies: list[dict]) -> list[tuple[int, dict]]:
+        """Новые id (больше всех прежних: недосланная пачка со старыми id ничего лишнего не удалит)."""
+        out = []
+        for b in bodies[-self.max_rows:]:
+            self._seq += 1
+            out.append((self._seq, b))
+        return out
+
+    def add(self, ev: dict) -> None:
+        with self._lock:
+            if self.db is not None:
+                try:
+                    self.db.add(ev)
+                    return
+                except Exception as e:  # noqa: BLE001
+                    self._fail(_err_text(e))
+            self._mem = [*self._mem, *self._numbered([ev])][-self.max_rows:]
+
+    def peek(self, n: int = BATCH) -> list[tuple[tuple[str, int], dict]]:
+        with self._lock:
+            rows: list[tuple[tuple[str, int], dict]] = []
+            if self.db is not None:
+                try:
+                    rows = [(("db", i), e) for i, e in self.db.peek(n)]
+                except Exception as e:  # noqa: BLE001
+                    self._fail(_err_text(e))
+            return rows + [(("mem", i), e) for i, e in self._mem[:max(0, n - len(rows))]]
+
+    def drop(self, rows: list[tuple[tuple[str, int], dict]]) -> None:
+        """Удалить доставленные строки (из peek)."""
+        db_ids = [k[1] for k, _ in rows if k[0] == "db"]
+        mem_ids = [k[1] for k, _ in rows if k[0] == "mem"]
+        with self._lock:
+            if db_ids and self.db is not None:
+                try:
+                    self.db.drop_upto(max(db_ids))
+                except Exception as e:  # noqa: BLE001
+                    self._fail(_err_text(e))
+            if mem_ids:
+                last = max(mem_ids)
+                self._mem = [r for r in self._mem if r[0] > last]
+
+    def count(self) -> int:
+        with self._lock:
+            n = 0
+            if self.db is not None:
+                try:
+                    n = self.db.count()
+                except Exception as e:  # noqa: BLE001
+                    self._fail(_err_text(e))
+            return n + len(self._mem)
+
+    def close(self) -> None:
+        with self._lock:
+            if self.db is not None:
+                with contextlib.suppress(Exception):
+                    self.db.close()
+
+
 # ───────────────────────── сервис ─────────────────────────
 
 
@@ -676,7 +853,7 @@ class AlarmService:
         self.video = VideoWatch()
         self.siren = Siren(radio, data_dir / "alarm_siren.wav", allowed=lambda: self.state in DETECTED)
         self.hazard = HazardLights(lambda: self.get_settings().hazard, open_hazard, mono=mono)
-        self.outbox = Outbox(data_dir / "alarm_outbox.db", max_rows=OUTBOX_MAX_ROWS)
+        self.outbox = AlarmOutbox(data_dir / "alarm_outbox.db", max_rows=OUTBOX_MAX_ROWS)
         self._transport = transport
         self._client: httpx.AsyncClient | None = None  # создаётся при первой отправке (сервер может быть не настроен)
         self._io = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fnav-alarm-io")  # записи файлов — по порядку
@@ -695,18 +872,32 @@ class AlarmService:
         self._sim_tilt = -1.0
         self.last_error: str | None = None
         self.last_sent: float | None = None
+        self._write_errors: dict[str, str] = {}  # файл охраны → почему не записался (карта полна, «только чтение»)
         self.detector.configure(get_settings())
         imu.subscribe(self._on_samples)
 
     # ── жизненный цикл ──
     async def start(self, background: bool = True) -> None:
+        """Файлы не читаются, outbox битый — охрана всё равно работает: циклы событий и сервера запускаются всегда."""
         self._loop = asyncio.get_running_loop()
-        await self._run_io(self._load)
+        try:
+            await self._run_io(self._load)
+        except Exception:
+            log.exception("alarm: cannot load the saved state")
         if self.state != "off":
             self.detector.rebase()  # база наклона — через 2 с после старта
             log.info("alarm: armed (restored after restart)")
-        self._pending = await asyncio.to_thread(self.outbox.count)
-        self.hazard.apply(self.get_settings().hazard)
+        try:
+            await asyncio.to_thread(self.outbox.open)  # битая база — в сторону и новая; не вышло — очередь в памяти
+            self._pending = await asyncio.to_thread(self.outbox.count)
+            self.hazard.apply(self.get_settings().hazard)
+        except Exception:
+            log.exception("alarm start")
+        if self.siren.radio is not None:  # WAV сирены — заранее: карта «только чтение» потом не помешает сирене
+            try:
+                await asyncio.to_thread(self.siren.ensure_wav)
+            except OSError as e:
+                log.warning("alarm: cannot write %s: %s", self.siren.wav_path, e)
         if background:
             self._tasks = [asyncio.create_task(self._tick_loop(), name="alarm-tick"),
                            asyncio.create_task(self._relay_loop(), name="alarm-relay")]
@@ -761,18 +952,42 @@ class AlarmService:
                 events.append(AlarmEvent.model_validate(e))
         self.events = events[:JOURNAL_MAX]
 
-    async def _save_state(self) -> None:
-        d = {"on": self.state != "off", "armed_at": self.armed_at, "seq": self.seq, "move": self.move.to_dict()}
-        await self._run_io(atomic_write_text, self.state_path, json.dumps(d))
+    async def _write(self, path: Path, text: str) -> bool:
+        """Записать файл охраны. Не вышло (карта полна, перемонтирована «только чтение») — в лог и в
+        AlarmStatus.storage_error, охрана идёт дальше: состояние и журнал — в памяти."""
+        try:
+            await self._run_io(atomic_write_text, path, text)
+        except Exception as e:  # noqa: BLE001
+            msg = _err_text(e)
+            if self._write_errors.get(path.name) != msg:
+                log.error("alarm: cannot write %s: %s", path, msg)
+            self._write_errors[path.name] = msg
+            return False
+        if self._write_errors.pop(path.name, None):
+            log.info("alarm: %s is written again", path.name)
+        return True
 
-    async def _save_events(self) -> None:
+    async def _save_state(self) -> bool:
+        d = {"on": self.state != "off", "armed_at": self.armed_at, "seq": self.seq, "move": self.move.to_dict()}
+        return await self._write(self.state_path, json.dumps(d))
+
+    async def _save_events(self) -> bool:
         data = json.dumps([e.model_dump(mode="json") for e in self.events], ensure_ascii=False)
-        await self._run_io(atomic_write_text, self.events_path, data)
+        return await self._write(self.events_path, data)
+
+    def storage_error(self) -> str | None:
+        """Что не пишется на карту (охрана при этом работает): файлы охраны, outbox."""
+        parts = []
+        if self._write_errors:
+            parts.append("Alarm state and log are not saved: " + next(iter(self._write_errors.values())))
+        if self.outbox.error:
+            parts.append(f"Notifications wait in memory only (lost on restart): {self.outbox.error}")
+        return "; ".join(parts) or None
 
     # ── состояние ──
     async def _changed(self) -> None:
+        self._kick.set()  # серверу — сразу, даже если файл не запишется
         await self._save_state()
-        self._kick.set()
 
     def _set_armed(self) -> None:
         self.state, self.armed_at, self._arm_deadline = "armed", self.clock(), None
@@ -782,8 +997,9 @@ class AlarmService:
         self.video.reset()
         log.info("alarm: armed")
 
-    async def arm(self) -> AlarmStatus:
-        """off → arming (arm_delay_s) → armed; при arm_delay_s = 0 — сразу armed. Уже включена — ничего."""
+    async def arm(self, source: str = "web") -> AlarmStatus:
+        """off → arming (arm_delay_s) → armed; при arm_delay_s = 0 — сразу armed. Уже включена — ничего.
+        source — откуда («web» — API админки, «keypad» — клавиша): в журнал; не из админки — и push."""
         if self.state == "off":
             cfg = self.get_settings()
             if cfg.hazard.enabled and cfg.hazard.confirm:
@@ -794,10 +1010,13 @@ class AlarmService:
             else:
                 self.state, self._arm_deadline, self.armed_at = "arming", self.mono() + delay, None
                 log.info("alarm: arming in %d s", delay)
+            await self._journal("armed", {"source": source, "delay_s": max(0, delay)}, push=source != "web")
             await self._changed()
         return self.status()
 
-    async def disarm(self) -> AlarmStatus:
+    async def disarm(self, source: str = "web") -> AlarmStatus:
+        """→ off, сирена и аварийка молчат. В журнал (data.source, data.was); push — не из админки или посреди
+        тревоги (хозяин должен узнать, что сирену заглушили в кабине)."""
         was = self.state
         self.state, self.armed_at, self._arm_deadline, self._last_event_mono = "off", None, None, None
         self.detector.clear_base()
@@ -810,6 +1029,8 @@ class AlarmService:
             if hz.enabled and hz.confirm:
                 self.hazard.confirm(2)
             log.info("alarm: disarmed")
+            await self._journal("disarmed", {"source": source, "was": was},
+                                push=source != "web" or was == "triggered")
             await self._changed()
         return self.status()
 
@@ -823,12 +1044,12 @@ class AlarmService:
         """Мигнуть аварийкой 3 с текущими настройками. None — пошло, иначе — почему нет."""
         return await self.hazard.test()
 
-    async def toggle(self) -> bool:
+    async def toggle(self, source: str = "keypad") -> bool:
         """Клавиша «Alarm on/off»: off → arming/armed, иначе (и из triggered) → off. → включена ли теперь."""
         if self.state == "off":
-            await self.arm()
+            await self.arm(source)
             return True
-        await self.disarm()
+        await self.disarm(source)
         return False
 
     async def poll(self) -> None:
@@ -848,7 +1069,7 @@ class AlarmService:
         if self.state not in DETECTED or not cfg.move_enabled or self.get_fix is None:
             return
         before = self.move.to_dict()
-        det = self.move.check(self.get_fix(), cfg.move_m, self.clock())
+        det = self.move.check(self.get_fix(), cfg.move_m, self.clock(), self.mono())
         if self.move.to_dict() != before:
             await self._save_state()
         if det is not None:
@@ -901,7 +1122,9 @@ class AlarmService:
         self.seq += 1
 
     async def _fire(self, det: Detection) -> None:
-        """Событие охраны: журнал → сирена и защита записи → outbox (push не чаще push_cooldown_s на вид)."""
+        """Событие охраны: сирена и аварийка → outbox (push не чаще push_cooldown_s на вид) → журнал и состояние на
+        карту, защита записи и снимки. Сначала то, что от карты памяти не зависит: полная или «только чтение» карта не
+        оставит без сирены, аварийки и push; каждый шаг сам по себе (ошибка — в лог, записи — в storage_error)."""
         if self.state not in DETECTED:
             return
         cfg = self.get_settings()
@@ -910,21 +1133,27 @@ class AlarmService:
         self.state, self._last_event_mono = "triggered", self.mono()
         self._record(ev)
         log.warning("alarm: %s - %s", ev.title, ev.body)
-        if first:
-            await self._changed()
-        else:
-            await self._save_state()
-        await self._save_events()
-        if (cfg.siren and det.kind not in NO_SIREN_KINDS and self.state in DETECTED
-                and not self.siren.sounding):
+        if cfg.siren and det.kind not in NO_SIREN_KINDS and not self.siren.sounding:
             spawn(self.siren.start(cfg.siren_s), name="alarm-siren-start")
-        if cfg.hazard.enabled and self.state in DETECTED:
+        if cfg.hazard.enabled:
             self.hazard.flash(cfg.hazard.seconds)
-        plan = self._camera_plan(det)
+        if first:
+            self._kick.set()  # новое состояние — серверу сразу
+        await self._enqueue(ev, cooldown=True)
+        try:
+            plan = self._camera_plan(det)
+        except Exception:
+            log.exception("alarm: camera plan")
+            plan = {}
         front, rear = plan.get("front"), plan.get("rear")
-        seg, snap, seg_rear, snap_rear = await asyncio.gather(
+        res = await asyncio.gather(
+            self._save_state(), self._save_events(),
             self._protect("front", front), self._save_snapshot(ev.id, "front", front),
-            self._protect("rear", rear), self._save_snapshot(ev.id, "rear", rear))
+            self._protect("rear", rear), self._save_snapshot(ev.id, "rear", rear), return_exceptions=True)
+        for r in res:
+            if isinstance(r, BaseException):
+                log.error("alarm: %s - step failed: %s", det.kind, _err_text(r))
+        seg, snap, seg_rear, snap_rear = (None if isinstance(r, BaseException) else r for r in res[2:])
         if seg:
             ev.data["segment"] = seg
         if snap:
@@ -935,7 +1164,6 @@ class AlarmService:
             ev.data["snapshot_rear"] = True
         if seg or snap or seg_rear or snap_rear:
             await self._save_events()
-        await self._enqueue(ev, cooldown=True)
 
     async def _note(self, det: Detection) -> None:
         """Событие без тревоги (камера снова передаёт видео): журнал и push; состояние, сирена и аварийка — как были."""
@@ -944,9 +1172,20 @@ class AlarmService:
         ev = make_event(det.kind, dict(det.data), self.clock())
         self._record(ev)
         log.info("alarm: %s - %s", ev.title, ev.body)
+        await self._enqueue(ev, cooldown=True)
         await self._save_state()
         await self._save_events()
-        await self._enqueue(ev, cooldown=True)
+
+    async def _journal(self, kind: str, data: dict, push: bool) -> None:
+        """Запись журнала «поставили / сняли с охраны» (SWITCH_KINDS): не тревога — без сирены, аварийки, защиты
+        записи и снимков; push — если push (без паузы push_cooldown_s: «сняли» вслед за «поставили» не теряется).
+        Состояние сохраняет вызывающий (_changed)."""
+        ev = make_event(kind, data, self.clock())
+        self._record(ev)
+        log.info("alarm: %s - %s", ev.title, ev.body)
+        if push:
+            await self._enqueue(ev, cooldown=False)
+        await self._save_events()
 
     async def vision_event(self, kind: str, data: dict) -> bool:
         """Событие fnav-watch (человек подошёл / лицо у стекла / стоит у фургона; data.camera — какая камера) →
@@ -1024,7 +1263,11 @@ class AlarmService:
             return False
         if not jpg:
             return False
-        await self._run_io(self._write_snapshot, event_id, jpg, camera)
+        try:
+            await self._run_io(self._write_snapshot, event_id, jpg, camera)
+        except Exception as e:  # noqa: BLE001 — карта полна / «только чтение»: событие идёт дальше
+            log.error("alarm: cannot save the %s snapshot: %s", camera, _err_text(e))
+            return False
         return True
 
     def _write_snapshot(self, event_id: str, jpg: bytes, camera: str = "front") -> None:
@@ -1064,7 +1307,11 @@ class AlarmService:
                 log.info("alarm: no push for %s (cooldown)", key)
                 return
             self._last_push[key] = now
-        await asyncio.to_thread(self.outbox.add, ev.model_dump(mode="json"))
+        try:  # база не пишется — AlarmOutbox держит событие в памяти; сюда — только совсем неожиданное
+            await asyncio.to_thread(self.outbox.add, ev.model_dump(mode="json"))
+        except Exception:
+            log.exception("alarm: cannot queue %s for the server", ev.kind)
+            return
         self._pending += 1
         self._kick.set()
 
@@ -1072,9 +1319,9 @@ class AlarmService:
         """Проверка уведомлений: событие test — журнал → сервер → push, без сирены и камеры, в любом состоянии."""
         ev = make_event("test", {}, self.clock())
         self._record(ev)
+        await self._enqueue(ev, cooldown=False)
         await self._save_state()
         await self._save_events()
-        await self._enqueue(ev, cooldown=False)
         return self.status()
 
     async def clear_events(self) -> AlarmStatus:
@@ -1130,7 +1377,7 @@ class AlarmService:
                                         json={"state": self._relay_state(), "events": [e for _, e in rows]})
             r.raise_for_status()
             if rows:
-                await asyncio.to_thread(self.outbox.drop_upto, rows[-1][0])
+                await asyncio.to_thread(self.outbox.drop, rows)
                 sent += len(rows)
             self._pending = await asyncio.to_thread(self.outbox.count)
             self.last_sent = time.time()
@@ -1187,6 +1434,7 @@ class AlarmService:
             vision=self.vision_status() if self.vision_status else AlarmVision(
                 enabled=self.get_settings().vision.enabled),
             cameras=self.video.status(self.get_video()) if self.get_video else [],
+            storage_error=self.storage_error(),
         )
 
     def telemetry(self) -> AlarmTelemetry:

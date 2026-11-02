@@ -124,3 +124,23 @@ test("banner: a lost camera reads CAMERA; a camera back (no alarm) shows none", 
   updateAlarmTrack(t, hit("video_back", 5), 30); // still triggered: the back note is not an alarm
   assert.equal(alarmBanner(t, hit("video_back", 5), 30.1), null);
 });
+
+test("armed / disarmed in the log: no banner, only the ALARM ON / OFF flash", () => {
+  const t = newAlarmTrack();
+  updateAlarmTrack(t, A("off", 3), 0);
+  const armed = A("arming", 4, { arm_in_s: 60, last: { kind: "armed", ts: 1, title: "Alarm armed" } });
+  updateAlarmTrack(t, armed, 1);
+  assert.equal(alarmBanner(t, armed, 1.1), null);
+  assert.deepEqual(alarmFlash(t, 1.1), { on: true, t0: 1 });
+  updateAlarmTrack(t, hit("impact", 5), 70);
+  assert.equal(alarmBanner(t, hit("impact", 5), 70.1).word, "IMPACT");
+  // disarmed with the keypad in the middle of the alarm: the banner goes at once, ALARM OFF flashes
+  const off = A("off", 6, { last: { kind: "disarmed", ts: 2, title: "Alarm disarmed" } });
+  updateAlarmTrack(t, off, 72);
+  assert.equal(alarmBanner(t, off, 72.1), null);
+  assert.deepEqual(alarmFlash(t, 72.1), { on: false, t0: 72 });
+  // even if a switch note ever came while triggered, it is quiet
+  const odd = A("triggered", 7, { last: { kind: "disarmed", ts: 3, title: "x" } });
+  updateAlarmTrack(t, odd, 80);
+  assert.equal(alarmBanner(t, odd, 80.1), null);
+});

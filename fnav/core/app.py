@@ -824,12 +824,12 @@ def _register_alarm(app: FastAPI, core: Core) -> None:
 
     @app.post("/api/alarm/arm")
     async def alarm_arm():
-        await core.alarm.arm()
+        await core.alarm.arm(source="web")
         return await status()
 
     @app.post("/api/alarm/disarm")
     async def alarm_disarm():
-        await core.alarm.disarm()
+        await core.alarm.disarm(source="web")
         return await status()
 
     @app.post("/api/alarm/silence")

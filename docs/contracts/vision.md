@@ -73,7 +73,7 @@ fnav-watch читает `fnav.paths.settings_file()` сам (как fnav-camera)
 - Статус в `AlarmStatus.vision`: `enabled`, `available`, `watching`, `people`, `error` — как раньше; плюс `rear`
   (`AlarmVisionCamera {watching, people, error}` из `cameras.rear`, `null` — задняя не смотрится или старый
   fnav-watch). Не смотрит — `rear.watching = false`, `people = 0`.
-- Снимок к любому событию журнала (кроме `test`): `GET /api/alarm/snapshot/{event_id}.jpg` (задней — `…-rear.jpg`,
+- Снимок к любому событию журнала (кроме `test`, `armed`, `disarmed`): `GET /api/alarm/snapshot/{event_id}.jpg` (задней — `…-rear.jpg`,
   обе камеры к любому событию), хранятся последние 100
   (`<data_dir>/alarm_snaps/`), удаляются вместе с журналом. `--mock`: `POST /api/alarm/simulate` с `approach`/`face`.
 

@@ -43,12 +43,33 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
   следующий удар — не раньше чем через 2 с.
 - **Наклон** (`tilt_enabled`): база — средний `g_lp` за 2 с в момент перехода в `armed`; `g_slow` — EMA τ = 5 с;
   угол между `g_slow` и базой ≥ `tilt_deg` дольше 5 с → событие `tilt`, база := текущий вектор.
-- **Сдвиг по GPS** (`move_enabled`): точка отсчёта — первая точка с `fix` ≠ `none` и `hdop ≤ 5` после перехода в
-  `armed`; расстояние ≥ `move_m` → событие `move` (`distance_m`, `lat`, `lon`); дальше — не чаще раза в 300 с и только
-  если от последнего сообщённого места снова ≥ `move_m`.
+- **Сдвиг по GPS** (`move_enabled`, `MoveWatch`, проверка раз в секунду): годятся только точки `fix = "3d"`
+  (2D между домами и в паркинге скачет сильнее всего), `hdop ≤ 5`, не старше 5 с. Точка отсчёта — **медиана первых 5**
+  годных точек после перехода в `armed` (выброс среди них, даже первой точкой, её не сдвигает). Событие `move`
+  (`distance_m` — от точки отсчёта, `lat`, `lon`) — только когда годные точки дальше `move_m` идут **подряд: не меньше 5
+  и от первой до последней ≥ 10 с**; точка ближе — счёт заново, годных точек не было дольше 30 с — тоже (редкие выбросы
+  в паркинге не копятся). Одиночный скачок на 100–200 м (двор между домами, многоэтажный паркинг) сирену не включает.
+  Дальше — не чаще раза в 300 с и только если от последнего сообщённого места снова ≥ `move_m` (подряд, по тому же
+  правилу). Точка отсчёта и последнее сообщённое место переживают перезапуск (`alarm_state.json`), счёт «подряд» — нет:
+  после перезапуска подтверждение то же.
 - **Камера пропала** (`video_loss`) — раздел ниже.
 - События и сирена — только в `armed`/`triggered`. Push одного вида (`kind`) — не чаще раза в `push_cooldown_s`
-  (в журнал попадают все события).
+  (в журнал попадают все события; `armed`/`disarmed` и `test` — без паузы).
+
+### Поставили / сняли с охраны (`armed`, `disarmed`)
+
+Каждая постановка (`off` → `arming`/`armed`) и каждое снятие (не `off` → `off`) — запись журнала: `armed`
+(`data.source`, `data.delay_s` — `arm_delay_s`, 0 — сразу) и `disarmed` (`data.source`, `data.was` — из какого
+состояния: `arming`/`armed`/`triggered`). `data.source`: `"web"` — `POST /api/alarm/arm|disarm` (админка, на устройстве
+или удалённо), `"keypad"` — клавиша «Alarm on/off». Повторное «включить» включённой (и «выключить» выключенной) — без
+записи.
+
+- **Push**: с клавиатуры — всегда (и постановка, и снятие); снятие посреди тревоги (`was = "triggered"`) — всегда, откуда
+  бы ни сняли (хозяин должен узнать, что сирену и аварийку заглушили в кабине); постановка и снятие из админки вне
+  тревоги — без push (хозяин сам). Пауза `push_cooldown_s` к ним не применяется: «сняли» вслед за «поставили» не теряется.
+- **Не тревога**: без сирены, аварийки (кроме подтверждения `hazard.confirm`), защиты записи и снимков; состояние меняется
+  только самим arm/disarm. Метками на записях не становятся. Экран плашку не показывает (там вспышка `ALARM ON` /
+  `ALARM OFF`).
 
 ### Камера пропала (видео перестало идти)
 
@@ -85,13 +106,19 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 сирена замолкает. Состояние охраны переживает перезапуск (`data_dir/alarm_state.json`); после перезапуска во
 включённой охране — сразу `armed` (база наклона — через 2 с после старта).
 
-### Действия при событии (кроме `test`)
+### Действия при событии (кроме `test`, `armed`, `disarmed`)
 
 Снимки и защита записи — **только у камер, у которых видео идёт сейчас** (`VideoWatch`: `get_video`). Задняя
 выключена — её не спрашивают; камера есть, но кадров нет (выключена из сети, не подключена, сервис не работает) — ни
 её снимка, ни записи (`data.snapshot*` / `data.segment*` нет), а не стоп-кадр или старая запись. Исключение —
 пропавшая камера в событии `video_lost` (раздел «Камера пропала»). Сервис камеры и сам не отдаёт старых кадров
 ([camera.md](camera.md), `/snapshot.jpg`).
+
+**Порядок**: сначала то, что от карты памяти не зависит — состояние `triggered` и журнал в памяти, сирена (п. 3),
+аварийка, событие в outbox (п. 5, push); потом записи на карту — `alarm_state.json`, `alarm_events.json` (п. 1), защита
+записи (п. 2) и снимки (п. 4). Каждый шаг сам по себе: карта полна или перемонтирована «только чтение» — сирена,
+аварийка и push всё равно; ошибка записи — в лог и в `AlarmStatus.storage_error` (охрана работает, журнал и состояние —
+в памяти до следующей удачной записи; после перезапуска несохранённое потеряно).
 
 1. Журнал (`data_dir/alarm_events.json`, последние 200), `Telemetry.alarm.seq += 1`.
 2. Камера: `protect-current` (клиент fnav-core к fnav-camera) — сегмент не удалится автоматически;
@@ -104,7 +131,8 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 4. Снимок камеры — кадр **за 5 с до события** (`SNAPSHOT_BEFORE_S`; `GET /snapshot.jpg?before=5` fnav-camera, кадр из
    её истории: видно, что к событию привело; кадров тогда не было — снимка нет) → `data_dir/alarm_snaps/<id>.jpg` (последние 100),
    `data.snapshot = true`; удаляются вместе с журналом. Запись события в админке (кнопка Play) тоже начинается за 5 с.
-5. В outbox для сервера (если настроен `FNAV_RELAY_URL`/токен, как у журнала позиций).
+5. В outbox для сервера (если настроен `FNAV_RELAY_URL`/токен, как у журнала позиций). База outbox не пишется — событие
+   ждёт отправки в памяти (раздел 5).
 
 ### Аварийка (RC-реле на кнопку аварийной сигнализации)
 
@@ -155,7 +183,7 @@ fnav-core ищет датчик на `sensor_bus` (по умолчанию 3), �
 
 ## 4. API устройства (только с сессией, как остальной `/api`)
 
-`AlarmEvent = {id: str (uuid4 hex), ts: float (unix), kind: "impact"|"tilt"|"move"|"approach"|"face"|"loiter"|"video_lost"|"video_back"|"test", title: str, body: str,
+`AlarmEvent = {id: str (uuid4 hex), ts: float (unix), kind: "impact"|"tilt"|"move"|"approach"|"face"|"loiter"|"video_lost"|"video_back"|"test"|"armed"|"disarmed", title: str, body: str,
 url: str, data: object}` — `url` относительно каталога админки (`"#/alarm"`, для `move` — `"#/tracking"`).
 
 Тексты: `impact` — «Impact detected» / «Hit 0.42 g at 14:03»; `tilt` — «Van tilted» / «Tilted 4.2° at 14:03»;
@@ -164,8 +192,10 @@ close to the van at 14:03»; `face` — «Someone is looking in» / «A face clo
 «A person has stayed close to the van for 8 s at 14:03» (секунды — `data.held_s`); `video_lost` — «Rear camera lost» /
 «No video from the rear camera since 14:02» (`Front camera lost` …; обе — «Both cameras lost» / «No video from either
 camera since 14:02»; время — `data.since`); `video_back` — «Rear camera is back» / «Video from the rear camera again at
-14:05, after 3 min without it»; `test` — «Test alarm» / «Alarm notifications work (14:03)». Время — локальное устройства,
-`HH:MM`.
+14:05, after 3 min without it»; `test` — «Test alarm» / «Alarm notifications work (14:03)»; `armed` — «Alarm armed» /
+«Armed with the keypad at 14:03, active in 60 s» (из админки — «from the app»; `delay_s = 0` — без «active in»);
+`disarmed` — «Alarm disarmed» / «Disarmed from the app at 14:05» (посреди тревоги — «… while the alarm was going off»).
+Время — локальное устройства, `HH:MM`.
 События камер несут `data.camera` (`"front"` / `"rear"`). С задней — свои тексты: `approach` — «Person approaching behind
 the van» / «Someone came close to the back of the van at 14:03»; `face` — «Someone is looking into the rear camera» /
 «A face close to the rear camera at 14:03»; `loiter` — «Someone is lingering behind the van» / «A person has stayed close
@@ -179,13 +209,15 @@ error: str|null}, level_g: float|null, tilt_deg: float|null (текущий уг
 (звучит), events: AlarmEvent[] (новые первыми, ≤ 100), relay: {configured: bool, pending: int}, hazard: {…},
 vision: {enabled, available, watching, people, error, rear: {watching, people, error} | null, front: {…} | null — ошибка передней отдельно: её нет, а задняя смотрится — предупреждение, не отказ} ([vision.md](vision.md)),
 cameras: [{camera: "front"|"rear", video: bool (кадры идут), lost: bool (было video_lost, ещё не вернулась)}] (задняя —
-если включена)}`
+если включена), storage_error: str|null (что не пишется на карту: «Alarm state and log are not saved: …» — файлы
+охраны, «Notifications wait in memory only (lost on restart): …» — outbox; охрана при этом работает; на странице охраны —
+красная строка «Storage»)}`
 
 | Метод | Путь | Ответ |
 |---|---|---|
 | GET | `/api/alarm` | `AlarmStatus` |
-| POST | `/api/alarm/arm` | `AlarmStatus` (`arming`; при `arm_delay_s = 0` — сразу `armed`) |
-| POST | `/api/alarm/disarm` | `AlarmStatus` |
+| POST | `/api/alarm/arm` | `AlarmStatus` (`arming`; при `arm_delay_s = 0` — сразу `armed`); в журнал — `armed`, `source: "web"` |
+| POST | `/api/alarm/disarm` | `AlarmStatus`; в журнал — `disarmed`, `source: "web"` (push — только если снята посреди тревоги) |
 | POST | `/api/alarm/silence` | `AlarmStatus` (сирена замолкает, охрана остаётся) |
 | POST | `/api/alarm/test` | `AlarmStatus` — событие `test` идёт всем путём (журнал → сервер → push), без сирены |
 | GET | `/api/alarm/snapshot/{id}.jpg` | снимок камеры к событию журнала; 404 — нет. `?thumb=1` — миниатюра для списков (192×144, ~5 КБ; уменьшение при декодировании JPEG): делается при первом запросе, лежит в `alarm_snaps/thumbs/`, удаляется вместе со снимком и при очистке журнала |
@@ -197,11 +229,12 @@ cameras: [{camera: "front"|"rear", video: bool (кадры идут), lost: bool
 **Телеметрия** (WebSocket): `Telemetry.alarm = {state, arm_in_s: int|null, level_g: float|null, sensor_ok: bool,
 siren: bool, seq: int, last: {kind, ts, title}|null}` (`null`, если сервиса нет).
 
-**Кнопки**: действие `"alarm"` («Alarm on/off») — переключает `off` ↔ `arming`/`armed` (из `triggered` — `off`).
+**Кнопки**: действие `"alarm"` («Alarm on/off») — переключает `off` ↔ `arming`/`armed` (из `triggered` — `off`); в
+журнал — `armed`/`disarmed` с `source: "keypad"` и push хозяину (раздел «Поставили / сняли с охраны»).
 
 **Экран**: охрана не `off` — маленький значок в углу (`ARM 45` при обратном отсчёте, `ARMED`); `triggered` — крупная
 мигающая надпись по `last.kind` (`IMPACT` / `TILTED` / `MOVING` / `PERSON` / `FACE` / `CAMERA`) 10 с после нового `seq`
-(`video_back` и `test` — без надписи); переключение кнопкой —
+(`video_back`, `test`, `armed`, `disarmed` — без надписи); переключение кнопкой —
 вспышка `ALARM ON` / `ALARM OFF` (как вспышка режима радио).
 
 ## 5. Устройство → сервер
@@ -210,7 +243,18 @@ siren: bool, seq: int, last: {kind, ts, title}|null}` (`null`, если серв
 `{"state": {"armed": bool, "notify_offline": bool}, "events": [AlarmEvent, …]}` → `{"ok": true, "accepted": n}`.
 Устройство шлёт: при изменении состояния, сразу при новых событиях и раз в 60 с (пульс). События лежат в outbox
 (SQLite `data_dir/alarm_outbox.db`, переживает обрывы и перезагрузки) до ответа 200. Сервер не дублирует события
-с уже известным `id`.
+с уже известным `id` (повтор после сбоя outbox не страшен).
+
+Outbox не должен выключать охрану (`AlarmOutbox`, `fnav/core/alarm.py`):
+
+- При старте файл испорчен (пропало питание: `file is not a database`, `malformed`) — он уходит в сторону
+  (`alarm_outbox.db.bad-<ГГГГММДД-ЧЧММСС>`, с ним `-wal`/`-shm`), база создаётся заново (что не ушло на сервер — в
+  убранном файле).
+- Не открывается и так (карта «только чтение», полна, файл не убрать) или перестала писаться/читаться на ходу — события
+  ждут отправки **в памяти** (до 1000, до перезапуска; что ещё читается из базы — туда же), push уходит как обычно;
+  причина — в `AlarmStatus.storage_error`. Повторная попытка открыть базу — при следующем старте.
+- Запуск охраны в ядре не зависит от отметок, fnav-watch, уровня и датчика (и наоборот): каждый запускается сам по себе,
+  сбой одного — в лог.
 
 ## 6. Сервер (fnav-relay)
 
@@ -254,8 +298,9 @@ siren: bool, seq: int, last: {kind, ts, title}|null}` (`null`, если серв
 - **Android** (Chrome): подписка прямо в браузере; приложение тоже можно установить.
 - Страница `#/alarm` («Alarm»): состояние и Arm/Disarm (обратный отсчёт), Silence; живой уровень вибрации с отметкой
   порога и пиком (для подбора `impact_g` стуком по кузову), текущий угол наклона; настройки `settings.alarm`;
-  уведомления: включить на этом устройстве / тест / выключить, список подписанных устройств; журнал событий,
-  «Send test alarm» (`/api/alarm/test`), Clear.
+  уведомления: включить на этом устройстве / тест / выключить, список подписанных устройств; журнал событий
+  (`armed`/`disarmed` — «Armed»/«Disarmed» с замком, рядом откуда: `keypad` / `app`, `during the alarm`),
+  «Send test alarm» (`/api/alarm/test`), Clear; `storage_error` — красная строка «Storage» в состоянии.
 - Кнопки Arm / Disarm / Stop (страница Alarm и Dashboard): после ответа на действие новые кнопки ~1,5 с неактивны
   и приглушены (`ACT_COOL_MS`, `actCooldown` в `web/admin/js/dash-fmt.js`). Disarm встаёт ровно на место Arm (Arm —
   на место Disarm, Disarm — на место Stop), а ответ по Wi-Fi фургона приходит за ~50 мс: двойное нажатие на Arm или

@@ -224,7 +224,7 @@ async def test_rear_vision_event_no_siren_own_switch_and_own_push_cooldown(tmp_p
     assert await svc.vision_event("approach", {"track": 3, "camera": "rear"})  # в журнал — да, push — нет
     await settle()
     assert [e.title for e in svc.events] == ["Person approaching behind the van", "Person approaching behind the van",
-                                             "Person approaching"]
+                                             "Person approaching", "Alarm armed"]
     assert svc.events[0].data["camera"] == "rear" and svc.events[0].data["snapshot"] is True
     assert sirens == [] and svc.outbox.count() == 2
     cfg["s"] = cfg["s"].model_copy(update={"vision": VisionSettings(enabled=True, rear=False)})

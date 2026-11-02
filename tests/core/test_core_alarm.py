@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import sqlite3
 import struct
 import time
 
@@ -13,9 +14,11 @@ import httpx
 import pytest
 from core_helpers import login, make_opts, running_app
 
+from fnav.core import alarm as alarm_mod
 from fnav.core import keypad as kp
 from fnav.core.alarm import (
     IMPACT_GAP_S,
+    AlarmOutbox,
     AlarmService,
     Detection,
     Detector,
@@ -26,9 +29,12 @@ from fnav.core.alarm import (
 )
 from fnav.core.app import create_app
 from fnav.core.imu import ImuService
+from fnav.core.level import LevelService
+from fnav.core.marks import MarkLog
 from fnav.core.radio import RadioDirectory, RadioService, bluealsa_device
 from fnav.core.tracking import TOKEN_HEADER, RelayConfig
-from fnav.models import AlarmSettings, GpsFix, RadioOutput, RadioSettings, RadioStation
+from fnav.core.vision import VisionClient
+from fnav.models import AlarmSettings, GpsFix, HazardSettings, RadioOutput, RadioSettings, RadioStation
 from fnav.sensors import mpu6050 as mpu
 
 DT = 1.0 / 200
@@ -291,23 +297,78 @@ def fx(dlat_m: float = 0.0, hdop: float | None = 1.0, fix: str = "3d", age: floa
     return GpsFix(fix=fix, lat=52.2 + dlat_m * M_LAT, lon=21.0, hdop=hdop, age_s=age)
 
 
-def test_move_watch_hdop_gate_and_repeat_rule():
+def feed(m: MoveWatch, dlats, t0: float, step: float = 1.0, move_m: float = 100, **kw) -> list[tuple[float, Detection]]:
+    """Точки по одной раз в step с, начиная с t0 → [(время, событие)]."""
+    out = []
+    for i, d in enumerate(dlats):
+        t = t0 + i * step
+        det = m.check(fx(d, **kw), move_m, t)
+        if det is not None:
+            out.append((t, det))
+    return out
+
+
+def test_move_watch_reference_filters_and_repeat_rule():
     m = MoveWatch()
-    assert m.check(fx(0, hdop=7.0), 100, 1000.0) is None and m.ref is None  # плохой HDOP — не точка отсчёта
-    assert m.check(fx(0, fix="none"), 100, 1000.0) is None and m.ref is None
-    assert m.check(fx(0), 100, 1001.0) is None and m.ref is not None
-    assert m.check(fx(50), 100, 1010.0) is None
-    assert m.check(fx(900, hdop=9.0), 100, 1011.0) is None  # скачок при плохом HDOP — не сдвиг
-    assert m.check(fx(500, age=30.0), 100, 1012.0) is None  # устаревшая точка
-    d = m.check(fx(150), 100, 1020.0)
-    assert d is not None and d.kind == "move" and d.data["distance_m"] == pytest.approx(150, abs=1)
+    assert m.check(fx(0, hdop=7.0), 100, 1000.0) is None  # плохой HDOP — не в точку отсчёта
+    assert m.check(fx(0, fix="none"), 100, 1000.0) is None
+    assert m.check(fx(0, fix="2d"), 100, 1000.0) is None  # 2D — тоже (между домами скачет сильнее всего)
+    assert m.check(fx(0, age=30.0), 100, 1000.0) is None  # устаревшая
+    assert m._seed == [] and m.ref is None
+    assert feed(m, [0, 3, -2, 1], 1001.0) == [] and m.ref is None  # точка отсчёта — по пяти хорошим точкам
+    assert m.check(fx(-1), 100, 1005.0) is None
+    assert m.ref == pytest.approx((52.2, 21.0))  # медиана
+    assert feed(m, [900] * 20, 1010.0, hdop=9.0) == []  # скачок при плохом HDOP — не сдвиг
+    assert feed(m, [500] * 20, 1040.0, age=30.0) == []  # устаревшие точки
+    assert feed(m, [500] * 20, 1070.0, fix="2d") == []  # 2D
+    # 150 м подряд: событие на 11-й точке — пять подряд и 10 с от первой
+    [(t, d)] = feed(m, [150] * 15, 1100.0)
+    assert t == 1110.0 and d.kind == "move" and d.data["distance_m"] == pytest.approx(150, abs=1)
     assert d.data["lat"] == pytest.approx(52.2 + 150 * M_LAT) and d.data["lon"] == 21.0
-    assert m.check(fx(400), 100, 1100.0) is None  # 250 м от сообщённого, но не прошло 300 с
-    assert m.check(fx(200), 100, 1321.0) is None  # прошло, но от сообщённого места только 50 м
-    d = m.check(fx(400), 100, 1322.0)
-    assert d is not None and d.data["distance_m"] == pytest.approx(400, abs=1)  # от места стоянки
+    assert feed(m, [400] * 20, 1200.0) == []  # 250 м от сообщённого, но не прошло 300 с
+    assert feed(m, [200] * 20, 1420.0) == []  # прошло, но от сообщённого места только 50 м
+    [(t, d)] = feed(m, [400] * 12, 1500.0)
+    assert t == 1510.0 and d.data["distance_m"] == pytest.approx(400, abs=1)  # от места стоянки
     m2 = MoveWatch.from_dict(json.loads(json.dumps(m.to_dict())))
     assert (m2.ref, m2.last, m2.last_ts) == (m.ref, m.last, m.last_ts)
+
+
+def test_move_watch_ignores_outliers():
+    """Двор между домами, паркинг: точки скачут на 100–200 м — без подряд идущих далёких точек сдвига нет."""
+    m = MoveWatch()
+    feed(m, [0] * 5, 0.0)
+    assert feed(m, [0, 180, 0, 0, 170, 175, 3, 0], 10.0) == []  # одиночные выбросы, точка ближе — счёт заново
+    assert feed(m, [200] * 9 + [0], 30.0) == []  # выброс держится 8 с — меньше 10 с
+    # редкие выбросы через паузы без хороших точек (паркинг: 2D, HDOP > 5) — не копятся
+    for k in range(10):
+        assert m.check(fx(200), 100, 100.0 + 40.0 * k) is None
+        assert m.check(fx(0, fix="2d"), 100, 120.0 + 40.0 * k) is None
+    assert m.last is None
+
+
+def test_move_watch_first_fix_outlier_does_not_shift_the_reference():
+    m = MoveWatch()
+    assert feed(m, [190, 0, 2, -1, 1], 0.0) == []
+    assert m.ref == pytest.approx((52.2 + 1 * M_LAT, 21.0))  # медиана: выброс первой точкой не в счёт
+    assert feed(m, [0, 1, -2] * 10, 10.0) == []  # верные точки — не «далеко»
+
+
+def test_move_watch_tow_away():
+    m = MoveWatch()
+    feed(m, [0] * 5, 0.0)
+    # эвакуатор, 7 м/с: дальше 100 м — с 15-й точки (t = 25), событие — через 10 с
+    [(t, d)] = feed(m, [7 * i for i in range(60)], 10.0)
+    assert t == 35.0 and d.data["distance_m"] == 175
+
+
+def test_move_watch_restored_reference_needs_confirmation_too():
+    m = MoveWatch()
+    feed(m, [0] * 5, 0.0)
+    m2 = MoveWatch.from_dict(json.loads(json.dumps(m.to_dict())))  # после перезапуска
+    assert m2.ref == m.ref
+    assert feed(m2, [0, 300, 0], 100.0) == []  # выброс — не сдвиг и после перезапуска
+    [(t, _)] = feed(m2, [300] * 12, 200.0)
+    assert t == 210.0
 
 
 def test_event_texts():
@@ -392,8 +453,8 @@ async def test_state_machine_and_arm_delay(tmp_path):
     await svc.start(background=False)
     st = await svc.arm()
     assert st.state == "arming" and st.arm_in_s == 60 and st.armed_at is None
-    await svc._fire(Detection("impact", {"peak_g": 1.0}))  # в arming событий нет
-    assert svc.events == []
+    await svc._fire(Detection("impact", {"peak_g": 1.0}))  # в arming событий нет — только запись о постановке
+    assert [e.kind for e in svc.events] == ["armed"] and svc.events[0].data == {"source": "web", "delay_s": 60}
     clk.tick(30.2)
     await svc.poll()
     assert svc.status().arm_in_s == 30 and svc.state == "arming"
@@ -406,7 +467,7 @@ async def test_state_machine_and_arm_delay(tmp_path):
     st = svc.status()
     assert st.state == "triggered" and st.events[0].kind == "impact" and st.events[0].title == "Impact detected"
     tel = svc.telemetry()
-    assert tel.seq == 1 and tel.last.kind == "impact" and tel.state == "triggered"
+    assert tel.seq == 2 and tel.last.kind == "impact" and tel.state == "triggered"
     clk.tick(29)
     await svc.poll()
     assert svc.state == "triggered"  # 30 с после последнего события
@@ -415,7 +476,8 @@ async def test_state_machine_and_arm_delay(tmp_path):
     assert svc.state == "armed"
     assert (await svc.disarm()).state == "off"
     await svc._fire(Detection("tilt", {"tilt_deg": 5.0}))  # выключена — не событие
-    assert len(svc.events) == 1
+    assert [e.kind for e in svc.events] == ["disarmed", "impact", "armed"]
+    assert svc.events[0].data == {"source": "web", "was": "armed"}
     await svc.stop()
 
 
@@ -429,8 +491,9 @@ async def test_events_from_sensor_samples_only_when_armed(tmp_path):
     assert svc.events == [] and svc.status().level_g == pytest.approx(0.6, abs=0.01)
     await svc.arm()
     svc.imu.feed([(0.0, 0.0, 1.0)] * 400 + spike)
-    await until(lambda: svc.events)
-    assert [e.kind for e in svc.events] == ["impact"] and svc.events[0].data["peak_g"] == pytest.approx(0.6, abs=0.01)
+    await until(lambda: svc.events[0].kind == "impact")
+    assert [e.kind for e in svc.events] == ["impact", "armed"]
+    assert svc.events[0].data["peak_g"] == pytest.approx(0.6, abs=0.01)
     assert svc.state == "triggered" and svc.status().tilt_deg == pytest.approx(0.0, abs=0.2)
     await svc.stop()
 
@@ -442,16 +505,18 @@ async def test_state_and_journal_survive_restart(tmp_path):
     svc, clk, _ = make_alarm(tmp_path, arm_delay_s=0, protect=protect, fix=fx(0))
     await svc.start(background=False)
     await svc.arm()
-    await svc.check_gps()  # точка отсчёта для сдвига
+    for _ in range(5):  # точка отсчёта для сдвига — по пяти точкам
+        await svc.check_gps()
+        clk.tick(1.0)
     await svc._fire(Detection("impact", {"peak_g": 0.3}))
     assert svc.events[0].data["segment"] == "2026-10-27/2026-10-27_14-00-00.ts"
     await svc.stop()
     saved = json.loads((tmp_path / "alarm_state.json").read_text())
-    assert saved["on"] is True and saved["seq"] == 1 and saved["move"]["ref"] is not None
+    assert saved["on"] is True and saved["seq"] == 2 and saved["move"]["ref"] is not None
 
     svc2, _, _ = make_alarm(tmp_path, clk=clk)
     await svc2.start(background=False)
-    assert svc2.state == "armed" and svc2.armed_at == saved["armed_at"] and svc2.seq == 1
+    assert svc2.state == "armed" and svc2.armed_at == saved["armed_at"] and svc2.seq == 2
     assert svc2.events[0].data["segment"].endswith(".ts") and svc2.move.ref is not None
     assert svc2.detector._base_acc is not None  # база наклона — заново, по первым 2 с
     await svc2.disarm()
@@ -488,21 +553,30 @@ async def test_journal_is_capped(tmp_path):
 
 async def test_gps_move_event(tmp_path):
     cur = {"fix": fx(0)}
-    svc, _clk, _ = make_alarm(tmp_path, arm_delay_s=0, move_m=100)
+    svc, clk, _ = make_alarm(tmp_path, arm_delay_s=0, move_m=100)
     svc.get_fix = lambda: cur["fix"]
     await svc.start(background=False)
     await svc.check_gps()
-    assert svc.events == []  # выключена
+    assert svc.events == [] and svc.move._seed == []  # выключена
     await svc.arm()
-    await svc.check_gps()
+    for _ in range(5):
+        await svc.check_gps()
+        clk.tick(1.0)
+    assert svc.move.ref is not None
     cur["fix"] = fx(230)
     await svc.check_gps()
+    assert svc.state == "armed"  # одна далёкая точка — ещё не сдвиг
+    for _ in range(10):
+        clk.tick(1.0)
+        await svc.check_gps()
     ev = svc.events[0]
     assert ev.kind == "move" and ev.url == "#/tracking" and ev.data["distance_m"] == 230
-    assert ev.body.startswith("230 m from the parking spot at ")
+    assert ev.body.startswith("230 m from the parking spot at ") and svc.state == "triggered"
     await svc.disarm()
     await svc.arm()  # новая постановка — новая точка отсчёта
-    await svc.check_gps()
+    for _ in range(5):
+        await svc.check_gps()
+        clk.tick(1.0)
     assert svc.move.ref == pytest.approx((52.2 + 230 * M_LAT, 21.0))
     await svc.stop()
 
@@ -521,7 +595,7 @@ async def test_push_cooldown_and_relay_payload(tmp_path):
     await svc._fire(Detection("impact", {"peak_g": 0.7}))
     await svc.test()
     await svc.test()  # проверка уведомлений — без паузы
-    assert len(svc.events) == 6 and svc.outbox.count() == 5 and svc.status().relay.pending == 5
+    assert len(svc.events) == 7 and svc.outbox.count() == 5 and svc.status().relay.pending == 5  # armed — без push
     relay.up = False
     with pytest.raises(httpx.HTTPError):
         await svc.send_once()
@@ -535,7 +609,11 @@ async def test_push_cooldown_and_relay_payload(tmp_path):
     assert set(e) == {"id", "ts", "kind", "title", "body", "url", "data"} and e["data"]["peak_g"] == 0.3
     assert svc.outbox.count() == 0 and svc.status().relay.pending == 0
     cfg["s"] = cfg["s"].model_copy(update={"notify_offline": True})
-    await svc.disarm()
+    await svc.disarm()  # посреди тревоги — push, даже из админки
+    await svc.send_once()
+    body = relay.bodies[-1]
+    assert body["state"] == {"armed": False, "notify_offline": True}
+    assert [(e["kind"], e["data"]) for e in body["events"]] == [("disarmed", {"source": "web", "was": "triggered"})]
     await svc.send_once()  # пульс: без событий — только состояние
     assert relay.bodies[-1] == {"state": {"armed": False, "notify_offline": True}, "events": []}
     await svc.stop()
@@ -699,7 +777,8 @@ async def test_alarm_api_mock(data_dir):
         assert st["state"] == "arming" and st["arm_in_s"] == 60
         assert (await c.post("/api/alarm/disarm")).json()["state"] == "off"
         r = await c.post("/api/alarm/simulate", json={"kind": "impact", "g": 0.7})
-        assert r.status_code == 200 and r.json()["events"] == []  # не на охране — не событие
+        assert r.status_code == 200  # не на охране — не событие; в журнале — только поставили / сняли
+        assert [(e["kind"], e["data"]["source"]) for e in r.json()["events"]] == [("disarmed", "web"), ("armed", "web")]
         assert (await c.patch("/api/settings", json={"alarm": {"arm_delay_s": 0, "siren": False}})).status_code == 200
         assert (await c.post("/api/alarm/arm")).json()["state"] == "armed"
         st = (await c.post("/api/alarm/simulate", json={"kind": "impact", "g": 0.7})).json()
@@ -708,11 +787,12 @@ async def test_alarm_api_mock(data_dir):
         st = (await c.post("/api/alarm/simulate", json={"kind": "move"})).json()
         assert st["events"][0]["kind"] == "move" and st["events"][0]["url"] == "#/tracking"
         st = (await c.post("/api/alarm/test")).json()
-        assert st["events"][0]["title"] == "Test alarm" and len(st["events"]) == 3
+        assert st["events"][0]["title"] == "Test alarm" and len(st["events"]) == 6
+        assert [e["kind"] for e in st["events"][:4]] == ["test", "move", "impact", "armed"]
         short = (await c.get("/api/alarm", params={"events": 1})).json()  # дашборд: только последние
         assert [e["kind"] for e in short["events"]] == ["test"] and short["state"] == st["state"]
         tel = (await c.get("/api/telemetry")).json()["alarm"]
-        assert tel["seq"] == 3 and tel["last"]["kind"] == "test" and tel["state"] == "triggered"
+        assert tel["seq"] == 6 and tel["last"]["kind"] == "test" and tel["state"] == "triggered"
         assert (await c.post("/api/alarm/silence")).json()["state"] == "triggered"
         assert (await c.delete("/api/alarm/events")).json()["events"] == []
         assert (await c.post("/api/alarm/simulate", json={"kind": "boom"})).status_code == 422
@@ -742,6 +822,10 @@ async def test_keypad_alarm_toggle(data_dir):
         await core.alarm._fire(Detection("impact", {"peak_g": 0.4}))
         await core.keypad.dispatch("alarm")  # из triggered — выключить
         assert core.alarm.state == "off"
+        ev = core.alarm.events[0]  # в журнале: сняли клавишей посреди тревоги
+        assert ev.kind == "disarmed" and ev.data == {"source": "keypad", "was": "triggered"}
+        assert [(e.kind, e.data["source"]) for e in core.alarm.events if e.kind != "impact"] == [
+            ("disarmed", "keypad"), ("armed", "keypad"), ("disarmed", "keypad"), ("armed", "keypad")]
         await login(c)
         acts = (await c.get("/api/controls")).json()["keypad"]["actions"]
         assert {"id": "alarm", "title": "Alarm on/off"}.items() <= next(a for a in acts if a["id"] == "alarm").items()
@@ -875,7 +959,7 @@ async def test_video_lost_raises_the_alarm_without_siren_and_back_is_a_note(tmp_
     for _ in range(20):
         clk.tick(1.0)
         await svc.check_video()
-    assert svc.events == [] and svc.state == "armed"  # 19 с — ещё нет
+    assert [e.kind for e in svc.events] == ["armed"] and svc.state == "armed"  # 19 с — ещё нет
     clk.tick(1.0)
     await svc.check_video()
     await settle()
@@ -892,7 +976,7 @@ async def test_video_lost_raises_the_alarm_without_siren_and_back_is_a_note(tmp_
     for _ in range(11):
         clk.tick(1.0)
         await svc.check_video()
-    assert [e.kind for e in svc.events] == ["video_back", "video_lost"] and svc.state == "armed"  # не тревога
+    assert [e.kind for e in svc.events] == ["video_back", "video_lost", "armed"] and svc.state == "armed"  # не тревога
     assert svc.events[0].data == {"camera": "rear", "lost_s": 52}
     assert svc.outbox.count() == 2
     # выключили в настройках — не следим (и после включения камера должна снова показаться)
@@ -901,7 +985,7 @@ async def test_video_lost_raises_the_alarm_without_siren_and_back_is_a_note(tmp_
     for _ in range(30):
         clk.tick(1.0)
         await svc.check_video()
-    assert len(svc.events) == 2 and svc.video.cams == {}
+    assert len(svc.events) == 3 and svc.video.cams == {}
     await svc.disarm()
     assert svc.status().cameras[0].lost is False
     await svc.stop()
@@ -918,3 +1002,201 @@ async def test_video_lost_api_mock(data_dir):
         assert st["cameras"] == [{"camera": "front", "video": False, "lost": False}] and st["events"] == []
         cam = (await c.get("/api/camera/status")).json()
         assert cam["state"] == "error" and cam["video_age_s"] is None
+
+
+# ── карта памяти не пишется, outbox битый ──
+
+
+def read_only(*_a, **_kw):
+    raise OSError(30, "Read-only file system")
+
+
+async def test_event_goes_out_when_the_card_cannot_be_written(tmp_path, monkeypatch):
+    """Карта полна / перемонтирована «только чтение»: файлы охраны, снимки и outbox не пишутся — сирена, аварийка и
+    push всё равно (раньше ошибка записи до сирены отменяла всё)."""
+    relay = FakeRelay()
+    svc, _clk, _ = make_alarm(tmp_path, arm_delay_s=0, siren=True, hazard=HazardSettings(enabled=True, seconds=5),
+                              relay=RelayConfig("http://relay", "tok"), transport=httpx.MockTransport(relay))
+    sirens: list[float] = []
+
+    async def siren_start(seconds: float) -> bool:
+        sirens.append(seconds)
+        return True
+
+    async def snapshot(before_s: float = 0.0) -> bytes:
+        return b"\xff\xd8 jpeg"
+
+    svc.siren.start = siren_start
+    svc.snapshot = snapshot
+    await svc.start(background=False)
+    await svc.arm()
+    assert svc.status().storage_error is None
+    monkeypatch.setattr(alarm_mod, "atomic_write_text", read_only)
+    monkeypatch.setattr(svc, "_write_snapshot", read_only)
+
+    def db_read_only(*_a, **_kw):
+        raise sqlite3.OperationalError("attempt to write a readonly database")
+
+    assert svc.outbox.db is not None
+    monkeypatch.setattr(svc.outbox.db, "add", db_read_only)
+    await svc._fire(Detection("impact", {"peak_g": 0.5}))
+    await settle()
+    assert svc.state == "triggered" and sirens == [30] and svc.hazard.active and svc.hazard.lit
+    assert svc.events[0].kind == "impact" and "snapshot" not in svc.events[0].data
+    st = svc.status()
+    assert st.relay.pending == 1 and svc.outbox.db is None  # outbox — в памяти
+    assert "Read-only file system" in st.storage_error and "readonly database" in st.storage_error
+    assert await svc.send_once() == 1
+    assert [e["kind"] for e in relay.bodies[-1]["events"]] == ["impact"] and relay.bodies[-1]["state"]["armed"]
+    await svc._fire(Detection("tilt", {"tilt_deg": 4.0}))  # и дальше — через память
+    assert await svc.send_once() == 1 and svc.outbox.count() == 0
+    monkeypatch.undo()  # карта снова пишется — ошибка файлов уходит из статуса (outbox — в памяти до перезапуска)
+    await svc.silence()
+    await svc.test()
+    assert svc.status().storage_error.startswith("Notifications wait in memory only")
+    assert json.loads((tmp_path / "alarm_events.json").read_text())[0]["kind"] == "test"
+    await svc.stop()
+
+
+async def test_broken_outbox_is_moved_aside(tmp_path):
+    """Пропало питание — файл outbox испорчен: при старте он уходит в сторону (*.bad-<время>), база новая."""
+    (tmp_path / "alarm_outbox.db").write_bytes(b"not a database " * 500)
+    (tmp_path / "alarm_outbox.db-wal").write_bytes(b"junk")
+    relay = FakeRelay()
+    svc, _, _ = make_alarm(tmp_path, relay=RelayConfig("http://relay", "tok"), transport=httpx.MockTransport(relay))
+    await svc.start(background=False)
+    bad = svc.outbox.moved
+    assert bad is not None and bad.name.startswith("alarm_outbox.db.bad-") and bad.read_bytes().startswith(b"not a")
+    wal = tmp_path / "alarm_outbox.db-wal"  # журнал битой базы к новой не пристаёт (уходит с ней или его убрал SQLite)
+    assert not wal.exists() or wal.read_bytes() != b"junk"
+    assert svc.outbox.error is None and svc.status().storage_error is None
+    await svc.test()
+    assert svc.outbox.count() == 1 and await svc.send_once() == 1
+    await svc.stop()
+    svc2, _, _ = make_alarm(tmp_path)  # новая база открывается как обычно
+    await svc2.start(background=False)
+    assert svc2.outbox.moved is None and svc2.outbox.db is not None
+    await svc2.stop()
+
+
+async def test_outbox_that_cannot_be_opened_keeps_events_in_memory(tmp_path, monkeypatch):
+    relay = FakeRelay()
+    (tmp_path / "alarm_outbox.db").mkdir()  # не открывается (как карта «только чтение»): файл не трогаем
+    svc, _, _ = make_alarm(tmp_path, arm_delay_s=0, relay=RelayConfig("http://relay", "tok"),
+                           transport=httpx.MockTransport(relay))
+    await svc.start(background=True)  # циклы охраны и сервера всё равно идут
+    assert len(svc._tasks) == 2 and svc.outbox.db is None and svc.outbox.moved is None
+    assert "unable to open database file" in svc.status().storage_error
+    await svc.arm()
+    await svc._fire(Detection("impact", {"peak_g": 0.4}))
+    await until(lambda: any(b["events"] for b in relay.bodies))
+    assert [e["kind"] for b in relay.bodies for e in b["events"]] == ["impact"] and svc.outbox.count() == 0
+    await svc.stop()
+    # битый файл, который и убрать нельзя (карта «только чтение») — тоже память
+    d = tmp_path / "ro"
+    d.mkdir()
+    (d / "alarm_outbox.db").write_bytes(b"garbage" * 100)
+    monkeypatch.setattr(AlarmOutbox, "_move_aside", read_only)
+    svc2, _, _ = make_alarm(d)
+    await svc2.start(background=False)
+    assert svc2.outbox.db is None and svc2.outbox.error.startswith("DatabaseError: file is not a database; no new one")
+    assert (d / "alarm_outbox.db").read_bytes() == b"garbage" * 100
+    await svc2.stop()
+
+
+def test_outbox_memory_fallback_keeps_unsent_rows(tmp_path):
+    ob = AlarmOutbox(tmp_path / "unused.db", max_rows=3)
+    ob._fail("OSError: [Errno 30] Read-only file system", salvage=False)
+    for i in range(5):
+        ob.add({"id": str(i), "ts": 1.0})
+    assert ob.count() == 3 and [e["id"] for _, e in ob.peek(2)] == ["2", "3"]  # старые — за пределом max_rows
+    rows = ob.peek(2)
+    ob.add({"id": "5", "ts": 1.0})
+    ob.drop(rows)
+    assert [e["id"] for _, e in ob.peek(10)] == ["4", "5"]
+    assert not (tmp_path / "unused.db").exists()
+
+
+async def test_core_starts_the_rest_when_the_alarm_cannot(data_dir, monkeypatch):
+    """Сбой старта охраны не оставляет без отметок, fnav-watch и уровня (раньше — один try на всех)."""
+    started: list[str] = []
+
+    async def boom(self, background: bool = True) -> None:
+        raise sqlite3.DatabaseError("file is not a database")
+
+    monkeypatch.setattr(AlarmService, "start", boom)
+    for cls, name in ((MarkLog, "marks"), (VisionClient, "vision"), (LevelService, "level")):
+        async def spy(self, background: bool = True, _orig=cls.start, _name=name) -> None:
+            started.append(_name)
+            await _orig(self, background=background)
+
+        monkeypatch.setattr(cls, "start", spy)
+    async with running_app() as c:
+        assert started == ["marks", "vision", "level"] and c.app.state.core.started
+
+
+async def test_core_with_a_broken_outbox_file(data_dir):
+    (data_dir / "alarm_outbox.db").write_bytes(b"garbage" * 1000)
+    async with running_app() as c:
+        core = c.app.state.core
+        assert core.alarm.outbox.error is None and list(data_dir.glob("alarm_outbox.db.bad-*"))
+        await login(c)
+        st = (await c.post("/api/alarm/arm")).json()
+        assert st["state"] == "arming" and st["storage_error"] is None
+
+
+# ── поставили / сняли с охраны: журнал и push ──
+
+
+def test_arm_disarm_texts():
+    ts = time.mktime((2026, 10, 27, 14, 3, 0, 0, 0, -1))
+    e = make_event("armed", {"source": "keypad", "delay_s": 60}, ts)
+    assert (e.title, e.body, e.url) == ("Alarm armed", "Armed with the keypad at 14:03, active in 60 s", "#/alarm")
+    assert make_event("armed", {"source": "web", "delay_s": 0}, ts).body == "Armed from the app at 14:03"
+    e = make_event("disarmed", {"source": "web", "was": "armed"}, ts)
+    assert (e.title, e.body) == ("Alarm disarmed", "Disarmed from the app at 14:03")
+    e = make_event("disarmed", {"source": "keypad", "was": "triggered"}, ts)
+    assert e.body == "Disarmed with the keypad at 14:03 while the alarm was going off"
+    assert make_event("disarmed", {}, ts).body == "Disarmed at 14:03"
+
+
+async def test_arm_disarm_journal_and_push(tmp_path):
+    """Клавиша — push всегда (без паузы между push); из админки — только снятие посреди тревоги. Не тревога: без
+    сирены, аварийки, защиты записи и снимков."""
+    relay = FakeRelay()
+    protected: list[int] = []
+
+    async def protect():
+        protected.append(1)
+        return {"segment": "x.ts"}
+
+    svc, clk, cfg = make_alarm(tmp_path, arm_delay_s=0, push_cooldown_s=600, protect=protect,
+                               hazard=HazardSettings(enabled=True),
+                               relay=RelayConfig("http://relay", "tok"), transport=httpx.MockTransport(relay))
+    await svc.start(background=False)
+    await svc.arm()  # из админки
+    await svc.disarm()
+    assert [(e.kind, e.data["source"]) for e in svc.events] == [("disarmed", "web"), ("armed", "web")]
+    assert svc.outbox.count() == 0 and svc.seq == 2  # хозяин сам — без push
+    assert await svc.toggle() is True  # клавиша
+    assert await svc.toggle() is False
+    assert await svc.toggle() is True
+    assert svc.state == "armed" and svc.outbox.count() == 3  # пауза push_cooldown_s их не глотает
+    assert not svc.hazard.active and not svc.siren.sounding and protected == []
+    await svc._fire(Detection("impact", {"peak_g": 0.5}))
+    assert protected == [1] and svc.hazard.active
+    clk.tick(5)
+    st = await svc.disarm()  # из админки, но посреди тревоги — push
+    assert st.state == "off" and not svc.hazard.active
+    assert svc.events[0].data == {"source": "web", "was": "triggered"}
+    assert await svc.send_once() == 5
+    kinds = [(e["kind"], e["data"]["source"]) for e in relay.bodies[-1]["events"] if e["kind"] != "impact"]
+    assert kinds == [("armed", "keypad"), ("disarmed", "keypad"), ("armed", "keypad"), ("disarmed", "web")]
+    assert relay.bodies[-1]["events"][-1]["body"].endswith("while the alarm was going off")
+    assert [e.kind for e in svc.events if "snapshot" in e.data or "segment" in e.data] == ["impact"]
+    cfg["s"] = cfg["s"].model_copy(update={"arm_delay_s": 30})
+    await svc.toggle()  # с задержкой: в журнале — через сколько начнёт следить
+    assert svc.state == "arming" and svc.events[0].data == {"source": "keypad", "delay_s": 30}
+    await svc.arm()  # уже включена — без записи
+    assert svc.events[0].kind == "armed" and svc.seq == 8
+    await svc.stop()

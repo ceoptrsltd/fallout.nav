@@ -265,6 +265,15 @@ test("event card: the one figure next to the time", () => {
   assert.equal(eventDetail({ kind: "test" }), "");
 });
 
+test("armed / disarmed: a quiet note in the log, with where it came from", () => {
+  assert.deepEqual(kindInfo("armed"), { label: "Armed", icon: "lock", kind: "" });
+  assert.deepEqual(kindInfo("disarmed"), { label: "Disarmed", icon: "unlock", kind: "" });
+  assert.equal(eventDetail({ kind: "armed", data: { source: "keypad", delay_s: 60 } }), "keypad");
+  assert.equal(eventDetail({ kind: "disarmed", data: { source: "web", was: "armed" } }), "app");
+  assert.equal(eventDetail({ kind: "disarmed", data: { source: "keypad", was: "triggered" } }), "keypad · during the alarm");
+  assert.equal(eventDetail({ kind: "disarmed", data: {} }), "");
+});
+
 test("lost camera: labels, the gap, where to watch from, the cameras line", () => {
   assert.deepEqual(kindInfo("video_lost", "rear"), { label: "Rear camera lost", icon: "cam", kind: "bad" });
   assert.equal(kindInfo("video_lost", "both").label, "Both cameras lost");

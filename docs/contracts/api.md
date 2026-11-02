@@ -73,7 +73,7 @@
 Файлы: `{recordings_dir}/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS.ts` (задняя камера — `{recordings_dir}/rear/YYYY-MM-DD/…`, путь
 записи `rear/ДАТА/ИМЯ.ts`), защищено = рядом `…ts.lock`, индекс ключевых кадров — `…ts.idx`. Подробно — `camera.md`.
 
-- `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","camera":"front"|"rear","date":"2026-10-20","start":"2026-10-20T16:40:00","start_ts":1792507200.123|null,"size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool,"events":[…],"marks":[{"kind":"motion"|"vehicle"|"person","ts":..,"offset_s":..,"dur_s":..}]}]` (обе камеры, новые сверху; `events` — события охраны, `marks` — отметки движения без тревоги своей камеры, [vision.md](vision.md) «Отметки»).
+- `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","camera":"front"|"rear","date":"2026-10-20","start":"2026-10-20T16:40:00","start_ts":1792507200.123|null,"size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool,"events":[…],"marks":[{"kind":"motion"|"vehicle"|"person","ts":..,"offset_s":..,"dur_s":..}]}]` (обе камеры, новые сверху; `events` — события охраны (кроме `test`, `armed`, `disarmed`), `marks` — отметки движения без тревоги своей камеры, [vision.md](vision.md) «Отметки»).
   `start` — местное время устройства из имени файла (как в имени, без пояса); `start_ts` — истинное начало (unix, UTC)
   из `.ts.idx` регистратора (camera.md), `null` — записи до этой версии и `nosync/`. Пояс устройства меняется в дороге
   («Часовой пояс»), поэтому начало записи — `start_ts`, а без него — `start` в поясе устройства (не браузера!):

@@ -358,7 +358,7 @@ def test_attach_events_marks_alarm_events_inside_recordings():
         {"path": "nosync/boot-1_0001.ts", "start": None, "duration_s": 60.0, "in_progress": False},
     ]
     events = [ev(1, 327.5, snapshot=True), ev(2, 601.0, kind="impact"), ev(3, 700.0), ev(4, 30.0, kind="test"),
-              ev(5, -100.0)]
+              ev(5, -100.0), ev(7, 40.0, kind="armed"), ev(8, 650.0, kind="disarmed")]  # поставили / сняли — не метки
     out = attach_events(items, events, now=t0 + 720)
     cur, done, nosync = out
     assert [m["id"] for m in done["events"]] == ["e1", "e2"]  # e2 — на стыке (≤ 2 с после конца)
