@@ -12,6 +12,7 @@ import { store, on } from "../store.js";
 import { banner, confirmDialog, segmented, switchEl, toast } from "../ui.js";
 import {
   camFromHash, camDot, rearStatus, screenInfo, rtspProblem, passwordInfo, takePassword, rearConfirm, snapName,
+  protectedInfo, storageWarning,
 } from "../camera-fmt.js";
 
 const CAM_STATE = { starting: "starting", recording: "recording", stopped: "stopped", error: "error" };
@@ -365,7 +366,7 @@ export function mount(root) {
   const stRefs = {};
   const kvRow = (k, label) => { const v = h("span.v", null, "—"); stRefs[k] = v; return [h("span.k", null, label), v]; };
   const statusCard = h(".card", null, h("h2", null, "Status"),
-    h(".kv", null, kvRow("state", "State"), kvRow("fps", "Frames/s"), kvRow("br", "Bitrate"), kvRow("mode", "Sensor → output"), kvRow("seg", "Current segment"), kvRow("drop", "Dropped frames"), kvRow("exp", "Exposure"), kvRow("rc", "Recordings"), kvRow("free", "Free space"), kvRow("sync", "Time synchronized"), kvRow("err", "Error")));
+    h(".kv", null, kvRow("state", "State"), kvRow("fps", "Frames/s"), kvRow("br", "Bitrate"), kvRow("mode", "Sensor → output"), kvRow("seg", "Current segment"), kvRow("drop", "Dropped frames"), kvRow("exp", "Exposure"), kvRow("rc", "Recordings"), kvRow("prot", "Protected"), kvRow("free", "Free space"), kvRow("sync", "Time synchronized"), kvRow("err", "Error")));
   const setS = (k, t, cls) => { stRefs[k].textContent = t; stRefs[k].className = "v" + (cls ? " " + cls : ""); };
   function renderStatus() {
     const c = store.telemetry?.camera;
@@ -378,9 +379,23 @@ export function mount(root) {
     setS("drop", String(c.frames_dropped ?? 0), c.frames_dropped > 0 ? "amber" : "");
     setS("exp", exposureText(c));
     setS("rc", `${c.recordings_count ?? "—"} · ${isNum(c.recordings_gb) ? c.recordings_gb.toFixed(2) + " GB" : "—"}`);
+    const pi = protectedInfo(c);
+    setS("prot", pi.text, kindCls(pi.kind));
     setS("free", isNum(c.free_gb) ? c.free_gb.toFixed(1) + " GB" : "—");
     setS("sync", c.time_synced ? "yes" : "no", c.time_synced ? "" : "amber");
     setS("err", c.error || "—", c.error ? "red" : "");
+  }
+
+  // ── protected recordings squeeze the unprotected ones (camera.md «Минимум петли»): above both tabs ──
+  const warnBox = h("div", { hidden: true });
+  let warnText = null;
+  function renderWarn() {
+    const t = store.telemetry;
+    const w = t ? storageWarning(t.camera, t.camera_rear, store.settings?.storage?.max_recordings_gb) : null;
+    if (w === warnText) return;
+    warnText = w;
+    warnBox.hidden = !w;
+    warnBox.replaceChildren(...(w ? [banner("warn", w)] : []));
   }
 
   // ── settings ──
@@ -751,6 +766,7 @@ export function mount(root) {
 
   root.append(
     h(".page-head", null, h("h1", null, "Camera"), hasRear ? tabSeg : null),
+    warnBox,
     hasRear ? screenCard : null,
     frontPane,
     hasRear ? rearPane : null,
@@ -762,8 +778,9 @@ export function mount(root) {
   renderRearMode();
   renderRearStatus();
   renderDots();
-  const offT = on("telemetry", () => { renderStatus(); renderRearStatus(); renderScreen(); renderDots(); });
-  const offS = on("settings", () => renderRearMode());
+  renderWarn();
+  const offT = on("telemetry", () => { renderStatus(); renderRearStatus(); renderScreen(); renderDots(); renderWarn(); });
+  const offS = on("settings", () => { renderRearMode(); renderWarn(); });
   const offC = on("conn", () => { renderScreen(); renderDots(); });
 
   return () => {

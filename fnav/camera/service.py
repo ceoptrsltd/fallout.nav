@@ -18,14 +18,14 @@ from fnav.models import CameraId, CameraSettings, CameraStatus, Settings
 from .jpeg import LoresFrame
 from .live import LiveHub, LiveMux
 from .mjpeg import JpegWorker, MjpegHub
-from .recorder import Recorder, TimeSync, lock_segment
+from .recorder import PROTECT_EDGE_S, Recorder, TimeSync, lock_segment
 from .rtsp import DEFAULT_URL, RtspPublisher
 from .rtsp_pull import AAC_FRAME, AAC_RATE
 from .shmring import RingWriter
 from .shmring import default_path as ring_default_path
 from .sound import SoundMonitor
 from .sources import FakeSource, FrameSink, Source
-from .storage import GB, cleanup, disk_free, repair_latest, segment_reserve_bytes, stats
+from .storage import GB, cleanup, disk_free, loop_minimum, repair_latest, segment_reserve_bytes, stats
 
 log = logging.getLogger("fnav.camera")
 
@@ -36,6 +36,7 @@ REAR_RTSP_URL = "rtsp://127.0.0.1:8554/rear"
 REAR_PORT = 8083
 BUSY_S = 120.0  # чужой файл моложе — текущий сегмент другой камеры: очистка его не трогает
 LAST_SEGMENT_S = 600.0  # сегмента сейчас нет (камера пропала, конвейер перезапущен) — защищаем прошлый, если он моложе
+LOOP_MIN_S = 3600.0  # петлю (незащищённые записи) лимит объёма не сокращает меньше часа записи (camera.md)
 
 SourceFactory = Callable[[Settings, FrameSink], Source]
 
@@ -163,6 +164,8 @@ class CameraService(FrameSink):
         self.free_gb: float | None = None
         self.recordings_count = 0
         self.recordings_bytes = 0
+        self.protected_bytes: int | None = None  # защищённые записи там, где чистит этот экземпляр
+        self.loop_minutes: int | None = None  # сколько минут записи держит петля (оценка по битрейту)
         self.moving: bool | None = None  # сообщает ядро (POST /motion); от этого — предел выдержки ночью
         # lores-кадры для fnav-watch (камера на охране): копируются, только пока он просит
         self.ring = RingWriter(ring_path or ring_default_path(camera_id))
@@ -377,15 +380,20 @@ class CameraService(FrameSink):
                 log.exception("set max exposure failed")
 
     def protect_current(self, recent: bool = False) -> str | None:
-        """Защитить текущий сегмент. recent (охрана: камера пропала) — его нет, потому что конвейер перезапущен без
-        кадров: последний закрытый, если он моложе LAST_SEGMENT_S (в нём то, что было перед пропажей)."""
+        """Защитить текущий сегмент (у границы — и соседей, см. Recorder.protect_current). recent (охрана: камера
+        пропала) — его нет, потому что конвейер перезапущен без кадров: последний закрытый, если он моложе
+        LAST_SEGMENT_S (в нём то, что было перед пропажей). Закрытый при остановке конвейера меньше PROTECT_EDGE_S
+        назад защищается и вместе с текущим: регистратор после перезапуска о нём не знает."""
         p = self._p
         rel = p.recorder.protect_current() if p is not None and p.recorder is not None else None
         last = self._last_segment
-        if (rel is None and recent and last is not None and time.monotonic() - last[2] <= LAST_SEGMENT_S
-                and last[0].is_file()):
-            lock_segment(last[0])
-            rel = last[1]
+        if last is not None and last[0].is_file():
+            age = time.monotonic() - last[2]
+            if rel is None and recent and age <= LAST_SEGMENT_S:
+                lock_segment(last[0])
+                rel = last[1]
+            elif rel is not None and age < PROTECT_EDGE_S and lock_segment(last[0]):
+                log.info("protected the previous segment too: %s", self.rel_prefix + last[1])
         if rel:
             rel = self.rel_prefix + rel
             log.info("protected: %s", rel)
@@ -439,6 +447,9 @@ class CameraService(FrameSink):
             recordings_count=self.recordings_count,
             recordings_gb=round(self.recordings_bytes / GB, 3),
             free_gb=round(self.free_gb, 2) if self.free_gb is not None else None,
+            protected_gb=round(self.protected_bytes / GB, 2) if self.protected_bytes is not None else None,
+            loop_minutes=self.loop_minutes,
+            over_limit=self._over_limit,
             time_synced=rec.segment_time_synced if seg and rec else self.time_sync.value,
             moving=self.moving,
             max_exposure_ms=None if self.rear else max_frame_us(self.cam, self.moving) / 1000,
@@ -686,15 +697,29 @@ class CameraService(FrameSink):
         rec = p.recorder if p else None
         # лимит объёма — с местом под следующий сегмент: после очистки записи + сегмент ≤ лимита
         max_total = max(0, int(s.storage.max_recordings_gb * GB) - reserve)
+        # петля ради лимита — не меньше часа записи (но не больше половины лимита): защищённые сверх лимита иначе
+        # оставили бы от неё последние минуты; глубже чистит только нехватка свободного места. Байт/с — по битрейту
+        # из настроек: у передней — с задней, если та пишет (передняя чистит и её записи)
+        kbps = cam.bitrate_kbps
+        if not self.rear and s.rear_camera.enabled and s.rear_camera.record:
+            kbps += s.rear_camera.bitrate_kbps
+        loop_bps = kbps * 1000 / 8
+        min_loop = loop_minimum(int(loop_bps * LOOP_MIN_S), max_total)
         # передняя чистит все записи (и задней: самые старые — первыми), кроме чужого текущего сегмента;
         # задняя — только свои (если передняя не работает)
         res = cleanup(self.root, min_free + reserve, current=rec.current_path if rec else None,
-                      free_fn=self.free_fn, max_total_bytes=max_total, skip_recent_s=0.0 if self.rear else BUSY_S)
+                      free_fn=self.free_fn, max_total_bytes=max_total, skip_recent_s=0.0 if self.rear else BUSY_S,
+                      min_loop_bytes=min_loop)
         self.free_gb = res.free_gb
-        if res.over_limit and not self._over_limit:
-            log.warning("recordings take %.2f GB > limit %.1f GB: only protected recordings are left to delete",
-                        res.total_bytes / GB, s.storage.max_recordings_gb)
-        self._over_limit = res.over_limit
+        self.protected_bytes = res.protected_bytes
+        self.loop_minutes = round(res.loop_bytes / loop_bps / 60) if loop_bps > 0 else None
+        over = res.protected_bytes + min_loop > max_total  # защищённые не оставляют петле её минимума
+        if over and not self._over_limit:
+            log.warning("protected recordings take %.2f GB of the %.1f GB limit: the loop keeps only ~%d min",
+                        res.protected_bytes / GB, s.storage.max_recordings_gb, round(min_loop / loop_bps / 60))
+        elif self._over_limit and not over:
+            log.info("protected recordings fit the limit again (%.2f GB)", res.protected_bytes / GB)
+        self._over_limit = over
         if res.free_bytes < min_free:
             if not self._no_space:
                 log.error("%s (free %.2f GB)", NO_SPACE, res.free_gb)

@@ -329,6 +329,56 @@ def test_lost_camera_reports_video_age_and_protects_the_last_segment(tmp_path: P
         svc.stop()
 
 
+def test_protect_takes_the_neighbours_at_a_segment_boundary(tmp_path: Path):
+    """Защита у границы сегмента (FakeSource, сегменты по 3 с, ключевые кадры раз в 1 с): сразу после смены — и
+    прошлый; у конца — и следующий, когда откроется; после перезапуска конвейера — и сегмент, закрытый при
+    остановке (регистратор новый, о нём не знает). Ответ — по-прежнему текущий сегмент."""
+    svc = _rear_service(tmp_path, enabled=True)
+    svc.segment_s_override = 3.0
+    root = tmp_path / "rec"
+
+    def locked(rel: str) -> bool:
+        return (root / (rel + ".lock")).is_file()
+
+    def seg() -> str | None:
+        return svc.status().current_segment
+
+    svc.start()
+    try:
+        assert _wait(lambda: seg() is not None)
+        rec = svc._p.recorder
+        rec.protect_edge_s = 1.0
+        first = seg()
+        assert _wait(lambda: seg() not in (None, first))
+        cur = seg()
+        assert svc.protect_current() == cur
+        assert locked(first) and locked(cur)
+
+        assert _wait(lambda: seg() not in (None, cur))
+        near = seg()
+        assert _wait(lambda: rec._seg_last_ts - rec._seg_first_ts >= 2.2e6 if rec._seg_first_ts else False)
+        assert svc.protect_current() == near and locked(near)
+        assert _wait(lambda: seg() not in (None, near))
+        after = seg()
+        assert _wait(lambda: locked(after))  # следующий — как только открылся
+
+        assert _wait(lambda: seg() not in (None, after))
+        last = seg()
+        assert _wait(lambda: rec._seg_last_ts - rec._seg_first_ts >= 1.2e6 if rec._seg_first_ts else False)
+        assert not locked(last)
+        svc.restart()
+        assert _wait(lambda: svc._p is not None and svc._p.recorder is not rec and seg() not in (None, last))
+        assert svc.protect_current() == seg()
+        assert locked(last)  # закрыт при остановке конвейера только что
+
+        (root / (last + ".lock")).unlink()
+        path, rel, _t = svc._last_segment
+        svc._last_segment = (path, rel, time.monotonic() - 61)  # давно — о событии в нём ничего
+        assert svc.protect_current() is not None and not locked(last)
+    finally:
+        svc.stop()
+
+
 class _MainDropSource:
     """Задняя с двумя потоками: основной (FakeSource) можно «уронить», второй дальше даёт картинку (picture_mono)."""
 

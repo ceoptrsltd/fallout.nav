@@ -205,13 +205,16 @@ _CLOSE = _Close()
 
 
 AUDIO_QUEUE = 100  # кадров AAC сверх очереди видео (16 к/с)
+PROTECT_EDGE_S = 60.0  # защита у границы сегмента: и прошлый (начался недавно), и следующий (скоро смена)
 
 
-def lock_segment(path: Path) -> None:
-    """Защитить сегмент: рядом <имя>.lock — очистка его не удалит."""
+def lock_segment(path: Path) -> bool:
+    """Защитить сегмент: рядом <имя>.lock — очистка его не удалит. → True, если защиты ещё не было."""
     lock = path.with_name(path.name + ".lock")
+    new = not lock.exists()
     lock.touch(exist_ok=True)
     fsync_dir(lock.parent)
+    return new
 
 
 class Recorder:
@@ -266,6 +269,11 @@ class Recorder:
         self._writer: threading.Thread | None = None
         self._syncer: threading.Thread | None = None
         self._last_ts: int | None = None
+        # защита соседей (protect_current): время — по меткам кадров камеры
+        self.protect_edge_s = PROTECT_EDGE_S
+        self._seg_last_ts: int | None = None  # метка последнего записанного кадра (поток писателя)
+        self._prev_seg: tuple[Path, str, int | None] | None = None  # закрытый перед текущим: (путь, rel, метка конца)
+        self._protect_next_until: int | None = None  # следующий сегмент защитить, если начнётся не позже метки
 
         self.paused = False  # нет места → не пишем
         self.write_error: str | None = None
@@ -367,13 +375,48 @@ class Recorder:
 
     # ── защита ──
     def protect_current(self) -> str | None:
+        """Защитить текущий сегмент → его rel. Событие у границы — и соседей: в прошлом есть кадры моложе
+        protect_edge_s (текущий начался недавно: там подход и кадр «за 5 с») — и его; до плановой смены меньше
+        protect_edge_s — следующий, как только откроется (продолжение)."""
+        edge_us = int(self.protect_edge_s * 1e6)
         with self._seg_lock:
-            seg = self._seg
-            rel = self.segment_rel
-        if seg is None or rel is None:
-            return None
+            seg, rel = self._seg, self.segment_rel
+            if seg is None or rel is None:
+                return None
+            first, last = self._seg_first_ts, self._seg_last_ts
+            # «сейчас» — последний записанный кадр сегмента (только что открыт — его начало)
+            now = last if last is not None and (first is None or last >= first) else first
+            pos = (now - first) / 1e6 if now is not None and first is not None else 0.0
+            prev = self._prev_seg
+            if prev is None or prev[2] is None or now is None or now - prev[2] >= edge_us:
+                prev = None
+            base = first if first is not None else now
+            nxt = base is not None and self.segment_s - pos < self.protect_edge_s
+            if nxt:  # смена — не позже начала + segment_s (+ ожидание ключевого кадра)
+                self._protect_next_until = base + int((self.segment_s + self.protect_edge_s) * 1e6)
         lock_segment(seg.path)
+        if prev is not None and prev[0].is_file():
+            self._lock_more(prev[0], prev[1], "previous")
+        if nxt:
+            log.info("%s ends in %.0f s: the next segment will be protected too", rel, max(0.0, self.segment_s - pos))
         return rel
+
+    def _protect_opened(self, first_ts: int) -> None:
+        """Открылся сегмент: защитить, если его ждёт защита события в конце прошлого (поток писателя)."""
+        with self._seg_lock:
+            until, self._protect_next_until = self._protect_next_until, None
+            seg, rel = self._seg, self.segment_rel
+        if until is not None and seg is not None and first_ts <= until:
+            self._lock_more(seg.path, rel, "next")
+
+    @staticmethod
+    def _lock_more(path: Path, rel: str | None, which: str) -> None:
+        """Защитить соседа; ошибка — только в лог (текущий уже защищён, запись не трогаем)."""
+        try:
+            if lock_segment(path):
+                log.info("protected the %s segment too: %s", which, rel)
+        except OSError as e:
+            log.warning("cannot protect the %s segment %s: %s", which, rel, e)
 
     @property
     def current_path(self) -> Path | None:
@@ -438,11 +481,13 @@ class Recorder:
                 if not key:
                     return
                 self._open_segment(item.ts_us)
+                self._protect_opened(item.ts_us)
             assert self._seg is not None and self._mux is not None and self._seg_first_ts is not None
             pts = PTS_START + pts_from_us(item.ts_us - self._seg_first_ts)
             offset = self._seg.size
             self._seg.write(self._mux.mux(au, pts, keyframe=key))
             self._seg_frames += 1
+            self._seg_last_ts = item.ts_us
             self.frames_written += 1
             if key:
                 self._index_add(offset, pts)
@@ -509,6 +554,8 @@ class Recorder:
             self._mux = None
             rel = self.segment_rel
             self.segment_rel = None
+            if seg is not None and rel:
+                self._prev_seg = (seg.path, rel, self._seg_last_ts)
         self._index_close()
         if seg is None:
             return

@@ -75,6 +75,12 @@ def segment_reserve_bytes(bitrate_kbps: int, segment_minutes: float) -> int:
     return int(bitrate_kbps * 1000 / 8 * segment_minutes * 60)
 
 
+def loop_minimum(bytes_per_hour: int, max_total_bytes: int) -> int:
+    """Меньше этого лимит объёма петлю (незащищённые записи) не сокращает: час записи, но не больше половины лимита
+    (иначе лимит не работал бы и без защищённых). Глубже чистит только нехватка свободного места."""
+    return max(0, min(int(bytes_per_hour), max_total_bytes // 2))
+
+
 @dataclass
 class CleanupResult:
     deleted: list[Path] = field(default_factory=list)
@@ -82,7 +88,9 @@ class CleanupResult:
     target_bytes: int = 0
     ok: bool = True  # свободного места ≥ target
     total_bytes: int = 0  # все записи после очистки (с защищёнными и текущей)
-    over_limit: bool = False  # лимит объёма не выдержан: остались только защищённые
+    over_limit: bool = False  # лимит объёма не выдержан: остались защищённые и минимум петли
+    protected_bytes: int = 0  # защищённые записи
+    loop_bytes: int = 0  # петля после очистки: незащищённые записи (с текущей)
 
     @property
     def free_gb(self) -> float:
@@ -111,39 +119,50 @@ def cleanup(
     free_fn: DiskFree = disk_free,
     max_total_bytes: int | None = None,
     skip_recent_s: float = 0.0,
+    min_loop_bytes: int = 0,
 ) -> CleanupResult:
     """Удалять самые старые незащищённые .ts (кроме текущего), пока свободно < target или все записи
     вместе (с защищёнными) занимают > max_total_bytes. Защищённые не удаляются никогда.
+    Ради лимита объёма петля (незащищённые, с текущей) не сокращается меньше min_loop_bytes — иначе защищённые
+    сверх лимита оставили бы от петли минуты; ниже — только ради свободного места (диск правда кончается).
     skip_recent_s — не трогать файлы, изменённые недавно (текущий сегмент другой камеры: его пишет другой процесс)."""
     res = CleanupResult(target_bytes=target_free_bytes)
-    files: list[tuple[Path, int]] = []
+    files: list[tuple[Path, int, bool]] = []
     for p in list_recordings(root):
         try:
-            files.append((p, p.stat().st_size))
+            files.append((p, p.stat().st_size, is_protected(p)))
         except OSError:
             continue
-    total = sum(size for _, size in files)
+    total = sum(size for _, size, _ in files)
+    loop = sum(size for _, size, prot in files if not prot)
     free = free_fn(root)
 
-    def need() -> bool:
-        return free < target_free_bytes or (max_total_bytes is not None and total > max_total_bytes)
+    def over() -> bool:
+        return max_total_bytes is not None and total > max_total_bytes
 
-    if need():
+    if free < target_free_bytes or over():
         cur = current.resolve() if current else None
-        for p, size in files:
-            if not need():
+        for p, size, prot in files:
+            space = free < target_free_bytes
+            if not space and not over():
                 break
-            if is_protected(p):
+            if prot:
                 continue
             try:
                 if cur is not None and p.resolve() == cur:
                     continue
                 if skip_recent_s and time.time() - p.stat().st_mtime < skip_recent_s:
                     continue
+                if not space and loop - size < min_loop_bytes:
+                    break  # только лимит: петлю меньше минимума не режем (и дыр в ней не делаем)
+                if is_protected(p):  # защитили только что
+                    loop -= size
+                    continue
                 p.unlink()
                 remove_sidecar(p)
                 res.deleted.append(p)
                 total -= size
+                loop -= size
                 log.info("cleanup: deleted %s (%.1f MB)", p.relative_to(root).as_posix(), size / 1e6)
             except OSError as e:
                 log.warning("cleanup: cannot delete %s: %s", p, e)
@@ -154,7 +173,9 @@ def cleanup(
     res.free_bytes = free
     res.ok = free >= target_free_bytes
     res.total_bytes = total
-    res.over_limit = max_total_bytes is not None and total > max_total_bytes
+    res.over_limit = over()
+    res.protected_bytes = total - loop
+    res.loop_bytes = loop
     return res
 
 

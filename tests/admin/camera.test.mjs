@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 import {
   CAMS, camName, camFromHash, camState, camDot, codecInfo, rearStatus, screenInfo, rtspProblem, passwordInfo,
-  takePassword, rearConfirm, snapName,
+  takePassword, rearConfirm, snapName, protectedInfo, storageWarning,
 } from "../../web/admin/js/camera-fmt.js";
 
 test("tabs: names and the camera from the page link", () => {
@@ -148,4 +148,26 @@ test("snapshot file name: camera and local time", () => {
   assert.equal(snapName("rear", d), "rear-2026-10-28_09-05-07.jpg");
   assert.equal(snapName("front", d), "front-2026-10-28_09-05-07.jpg");
   assert.equal(snapName("rear", d.getTime()), "rear-2026-10-28_09-05-07.jpg");
+});
+
+test("protected recordings: status row, amber while they squeeze the unprotected ones", () => {
+  assert.deepEqual(protectedInfo({ protected_gb: 3.24, loop_minutes: 95.4, over_limit: false }), { text: "3.2 GB · unprotected ~95 min", kind: "" });
+  assert.deepEqual(protectedInfo({ protected_gb: 9.8, loop_minutes: 60, over_limit: true }), { text: "9.8 GB · unprotected ~60 min", kind: "warn" });
+  assert.deepEqual(protectedInfo({ protected_gb: 0 }), { text: "0 GB", kind: "" });
+  assert.deepEqual(protectedInfo({}), { text: "—", kind: "" }); // older camera service
+  assert.deepEqual(protectedInfo(null), { text: "—", kind: "" });
+});
+
+test("storage warning: protected recordings take X of the Y GB limit, only ~N min kept; the front's numbers first", () => {
+  const front = { protected_gb: 9.84, loop_minutes: 61, over_limit: true };
+  const rear = { protected_gb: 2.5, loop_minutes: 70, over_limit: true };
+  const w = storageWarning(front, rear, 10);
+  assert.match(w, /^Protected recordings take 9\.8 GB of the 10 GB recordings limit: only the newest ~61 min of unprotected footage is kept/);
+  assert.match(w, /Unprotect recordings you no longer need\.$/);
+  assert.match(storageWarning({ over_limit: false }, rear, 10), /take 2\.5 GB of the 10 GB/); // only the rear squeezed
+  assert.match(storageWarning(front, null, undefined), /of the recordings limit:/);
+  assert.match(storageWarning({ over_limit: true }, null, 10), /^Protected recordings fill the 10 GB recordings limit: only the newest hour or less/);
+  assert.equal(storageWarning({ over_limit: false, protected_gb: 9 }, { over_limit: false }, 10), null);
+  assert.equal(storageWarning(null, null, 10), null);
+  assert.equal(storageWarning({ state: "recording" }, undefined, 10), null); // older camera service: no field
 });

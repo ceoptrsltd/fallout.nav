@@ -70,6 +70,33 @@ export function rearStatus(c) {
   };
 }
 
+const gb1 = (v) => String(Math.round(v * 10) / 10);
+
+/**
+ * Protected recordings for the status card: {text, kind}, e.g. "3.2 GB · unprotected ~95 min" (CameraStatus
+ * protected_gb / loop_minutes, camera.md «Минимум петли»); amber while they squeeze the unprotected ones (over_limit).
+ */
+export function protectedInfo(c) {
+  const s = c && typeof c === "object" ? c : {};
+  if (!num(s.protected_gb)) return { text: "—", kind: "" };
+  const loop = num(s.loop_minutes) ? ` · unprotected ~${Math.round(s.loop_minutes)} min` : "";
+  return { text: `${gb1(s.protected_gb)} GB${loop}`, kind: s.over_limit ? "warn" : "" };
+}
+
+/**
+ * Warning text while protected recordings leave the unprotected ones only their minimum (CameraStatus.over_limit,
+ * camera.md «Минимум петли»), or null. front / rear: the cameras' CameraStatus — the front cleans both cameras'
+ * recordings, so its numbers come first; limitGb: settings.storage.max_recordings_gb.
+ */
+export function storageWarning(front, rear, limitGb) {
+  const c = [front, rear].find((s) => s && typeof s === "object" && s.over_limit);
+  if (!c) return null;
+  const take = num(c.protected_gb) ? `take ${gb1(c.protected_gb)} GB of` : "fill";
+  const limit = num(limitGb) ? `the ${gb1(limitGb)} GB recordings limit` : "the recordings limit";
+  const kept = num(c.loop_minutes) ? `~${Math.round(c.loop_minutes)} min` : "hour or less";
+  return `Protected recordings ${take} ${limit}: only the newest ${kept} of unprotected footage is kept, older driving is deleted. Unprotect recordings you no longer need.`;
+}
+
 /** What the car screen shows (telemetry display): {camera, text}; the rear view overrides the map / camera logic. */
 export function screenInfo(d) {
   if (!d || typeof d !== "object") return { camera: null, text: "—" };

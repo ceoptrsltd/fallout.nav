@@ -103,6 +103,20 @@ async def test_rear_whep_and_status_from_the_service(data_dir):
         assert r.status_code == 201 and r.headers["location"] == "/api/camera/rear/whep/abc"
 
 
+async def test_storage_limit_status_reaches_the_admin(data_dir):
+    """Защищённые теснят петлю (camera.md «Минимум петли»): поля статуса сервиса камеры доходят до админки."""
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.port == 8081 and req.url.path == "/status":
+            st = CameraStatus(state="recording", protected_gb=9.84, loop_minutes=61, over_limit=True)
+            return httpx.Response(200, json=st.model_dump(mode="json"))
+        raise httpx.ConnectError("refused", request=req)
+
+    async with running_app(make_opts(local_transport=FakeUpstream(handler).transport)) as c:
+        await login(c)
+        st = (await c.get("/api/camera/status")).json()
+        assert (st["protected_gb"], st["loop_minutes"], st["over_limit"]) == (9.84, 61, True)
+
+
 async def test_alarm_protects_and_snaps_both_cameras(tmp_path):
     svc, _, _ = make_alarm(tmp_path, arm_delay_s=0, vision=VisionSettings(enabled=True),
                            protect=lambda: _ok("2026-10-28/f.ts"))

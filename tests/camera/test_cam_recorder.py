@@ -173,6 +173,61 @@ def test_protect_current(tmp_path: Path, frames_10s):
     rec.stop()
 
 
+def _locked(root: Path) -> list[bool]:
+    """Защищён ли каждый сегмент, от старых к новым."""
+    return [f.with_name(f.name + ".lock").exists() for f in list_recordings(root)]
+
+
+def _feed(rec: Recorder, frames) -> None:
+    for au, key, ts in frames:
+        rec.push(au, key, ts)
+    assert rec.drain()
+
+
+def test_protect_right_after_a_change_locks_the_previous_segment(tmp_path: Path, frames_10s):
+    """Событие вскоре после смены сегмента: подход и кадр «за 5 с» — в прошлом, он защищается тоже."""
+    rec = make_rec(tmp_path, segment_s=3.0)  # ключевые кадры раз в 1 с: смена на 3 с, 6 с, …
+    rec.protect_edge_s = 1.0
+    rec.start()
+    _feed(rec, frames_10s[:50])  # A: 0–2,93 с, B: с 3,0 с, последний кадр 3,27 с
+    rel = rec.protect_current()
+    assert rel == list_recordings(tmp_path)[1].relative_to(tmp_path).as_posix()  # вызывающим — как раньше: текущий
+    assert _locked(tmp_path) == [True, True]
+    _feed(rec, frames_10s[50:110])  # C с 6,0 с: событие было не у конца B — C не защищается
+    rec.stop()
+    assert _locked(tmp_path) == [True, True, False]
+
+
+def test_protect_near_the_end_locks_the_next_segment_when_it_opens(tmp_path: Path, frames_10s):
+    """Событие в последние секунды сегмента: продолжение — в следующем, он защищается, как только откроется.
+    Событие в середине — только текущий."""
+    rec = make_rec(tmp_path, segment_s=3.0)
+    rec.protect_edge_s = 1.0
+    rec.start()
+    _feed(rec, frames_10s[:20])  # середина A (1,27 с)
+    rec.protect_current()
+    _feed(rec, frames_10s[20:80])  # B с 3,0 с, последний кадр 5,27 с: до смены 0,73 с
+    assert _locked(tmp_path) == [True, False]
+    rec.protect_current()
+    assert _locked(tmp_path) == [True, True]
+    _feed(rec, frames_10s[80:140])  # C с 6,0 с — защищён; D с 9,0 с — уже нет
+    rec.stop()
+    assert _locked(tmp_path) == [True, True, True, False]
+
+
+def test_protect_skips_a_previous_segment_from_before_a_gap(tmp_path: Path, frames_10s):
+    """Текущий начался недавно, но прошлый кончился задолго (видео пропадало): в нём нет ничего о событии."""
+    rec = make_rec(tmp_path, segment_s=600)
+    rec.protect_edge_s = 1.0
+    rec.start()
+    _feed(rec, frames_10s[:45])
+    rec.close_segment()  # основной поток пропал
+    _feed(rec, [(au, key, ts + 100_000_000) for au, key, ts in frames_10s[45:60]])  # вернулся через 100 с
+    assert rec.protect_current() is not None
+    rec.stop()
+    assert _locked(tmp_path) == [False, True]
+
+
 def test_queue_overflow_resyncs_on_keyframe(tmp_path: Path, frames_10s):
     rec = make_rec(tmp_path, segment_s=600, queue_frames=10)
     # писатель не запущен — очередь переполнится

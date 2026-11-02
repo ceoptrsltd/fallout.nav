@@ -508,6 +508,12 @@ class CameraStatus(_Model):
     recordings_count: int = 0
     recordings_gb: float = 0.0
     free_gb: float | None = None
+    # лимит записей (camera.md «Минимум петли»): у передней — по записям обеих камер (она чистит все), у задней — по
+    # своим. protected_gb — защищённые; loop_minutes — сколько минут записи держит петля (незащищённые, по битрейту
+    # из настроек); over_limit — защищённые не оставляют петле её минимума: записи больше лимита, петля — минимум
+    protected_gb: float | None = None
+    loop_minutes: int | None = None
+    over_limit: bool = False
     time_synced: bool = False  # было ли системное время синхронизировано при начале сегмента
     # экспозиция (метаданные кадра) и предел выдержки, который сейчас действует
     moving: bool | None = None  # что сообщило ядро: едем / стоим / ещё не сообщало

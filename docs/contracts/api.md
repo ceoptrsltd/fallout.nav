@@ -94,7 +94,8 @@
 - `GET /api/camera/view` → `{"camera":"front"|"rear","rear_enabled":bool}` — что показывает экран в режиме камеры;
   `POST /api/camera/view` `{"camera"?: "front"|"rear"}` (без поля — переключить; задняя выключена — `409`).
   Телеметрия: `display.camera`, `display.reason = "rear"`, `display.rear_mirror`; `camera_rear` — статус задней или `null`.
-- `GET /api/camera/status` → `CameraStatus`.
+- `GET /api/camera/status` → `CameraStatus`; лимит записей — `protected_gb`, `loop_minutes`, `over_limit` (camera.md
+  «Минимум петли»; админка предупреждает на «Camera» и «Recordings»).
 - `GET /api/camera/mjpeg` → поток `multipart/x-mixed-replace` 768×576 (для экрана и превью).
 - `GET /api/camera/snapshot.jpg` — текущий кадр; видео нет — 503 `{"detail": "No video from the camera"}` (не стоп-кадр).
 - `POST /api/camera/whep` — прокси WebRTC WHEP к MediaMTX `http://127.0.0.1:8889/cam/whep` (тело SDP и заголовки `Content-Type`/`Location` проброшены; `PATCH`/`DELETE` по `Location` — тоже через `/api/camera/whep/...`).

@@ -5,7 +5,8 @@ import { api, appUrl, encPath, errText } from "../api.js";
 import { loadHls } from "../vendor.js";
 import { hlsUrl, playerKind, HLS_MIME, jumpTo, markPos, parseRecLink, recCamera, filterRecs, recTitle, downloadName } from "../rec-play.js";
 import { kindInfo, markLabel, marksSummary, peakText } from "../alarm-fmt.js";
-import { store } from "../store.js";
+import { storageWarning } from "../camera-fmt.js";
+import { store, on } from "../store.js";
 import { modal, confirmDialog, toast, poll, badge, emptyState, banner, segmented } from "../ui.js";
 
 let camFilter = "all"; // All / Front / Rear: kept while the app is open
@@ -202,6 +203,17 @@ export function mount(root) {
   const body = h("div", { style: { display: "flex", flexDirection: "column", gap: "12px" } });
   const summary = h("span.dim.mono");
   let stopped = false;
+  // protected recordings squeeze the unprotected ones (camera.md «Минимум петли»): unprotecting happens here
+  const warnBox = h("div", { hidden: true });
+  let warnText = null;
+  function renderWarn() {
+    const t = store.telemetry;
+    const w = t ? storageWarning(t.camera, t.camera_rear, store.settings?.storage?.max_recordings_gb) : null;
+    if (w === warnText) return;
+    warnText = w;
+    warnBox.hidden = !w;
+    warnBox.replaceChildren(...(w ? [banner("warn", w)] : []));
+  }
 
   async function load() {
     try {
@@ -352,8 +364,12 @@ export function mount(root) {
       } }, icon("lock"), "Protect current"),
       h("button.btn", { onclick: load }, icon("refresh"), "Refresh"),
     ),
+    warnBox,
     body,
   );
+  renderWarn();
+  const offT = on("telemetry", renderWarn);
+  const offS = on("settings", renderWarn);
   const stop = poll(load, 10000);
-  return () => { stopped = true; stop(); };
+  return () => { stopped = true; stop(); offT(); offS(); };
 }
