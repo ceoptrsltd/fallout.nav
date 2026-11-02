@@ -15,7 +15,7 @@ dashcam recorder, navigation display on HDMI (720x576 @ 50 Hz -> HDMI->AV conver
 | `systemd/` | `fnav-core`, `fnav-camera`, `fnav-watch`, `mediamtx`, `fnav-display` units; drop-ins (watchdog, journald, seatd, NM wait-online) |
 | `mediamtx.yml` | MediaMTX config (`/etc/fnav/mediamtx.yml`) |
 | `sysctl/90-fnav.conf` | fast dirty-page writeback (video survives power loss) |
-| `sudoers/fnav`, `polkit/` | the only privileges the `fnav` user gets |
+| `sudoers/fnav`, `polkit/` | the only privileges the `fnav` user gets (polkit: NetworkManager, the system time zone) |
 | `gpsd/`, `chrony/` | gpsd on `/dev/ttyAMA0`, chrony with NTP + GPS (SHM) time |
 | `udev/`, `networkmanager/`, `chromium/`, `initramfs/` | small supporting files |
 | `bin/` | helpers run on the device: `fnav-sync-system`, `fnav-pip-sync`, `fnav-deploy-remote`, `fnav-display-prestart` |
@@ -40,7 +40,8 @@ The full desktop image is fine: the installer disables the desktop (see below).
    ```
    Shortcut doing both: `./pi/deploy.sh --install` (needs a real terminal; in mintty prefix with `winpty`).
    Optional environment: `FNAV_PASSWORD` (non-interactive), `FNAV_HOSTNAME=fnav` (so `http://fnav.local` works),
-   `FNAV_TIMEZONE=Europe/Warsaw`, `MEDIAMTX_VERSION`, `FNAV_WIFI_SSID` + `FNAV_WIFI_PSK`.
+   `FNAV_TIMEZONE=Europe/Warsaw` (the starting zone: later it follows the van, see "Time"), `MEDIAMTX_VERSION`,
+   `FNAV_WIFI_SSID` + `FNAV_WIFI_PSK`.
 3. **Reboot**: `sudo reboot`. The boot configuration (UART, I2C, camera overlay, KMS, HDMI mode) only applies after it.
 4. Open `http://<device-ip>/` (or `http://fnav.local/`), log in with the password from step 2.
 
@@ -103,6 +104,13 @@ come minutes after boot); the stock `makestep 1 3` line in `/etc/chrony/chrony.c
 Check: `chronyc sources -v`, `chronyc tracking`, `timedatectl show -p NTPSynchronized`. The `offset 0.15` of the GPS source is a starting
 value: if `chronyc sourcestats` shows a steady offset of the GPS source against NTP, adjust `pi/chrony/fnav.conf`.
 
+The time zone follows the van (recording names, push texts and the screen clock are local time): when the weather
+forecast for the GPS position names another zone twice in a row, `fnav-core` runs `timedatectl set-timezone` itself,
+allowed by `polkit/50-fnav-timedate.rules` (only `org.freedesktop.timedate1.set-timezone`, only for `fnav`; installed
+by `fnav-sync-system`, so by every `deploy.sh`; polkitd picks it up without a restart). Switch it off in the web UI
+(System -> "Time zone follows the van"). Check: `timedatectl show -p Timezone`, `journalctl -u fnav-core | grep 'time zone'`,
+`sudo -u fnav timedatectl --no-ask-password set-timezone Europe/Warsaw` (must not ask for a password).
+
 ## Checking that it works
 
 ```bash
@@ -158,7 +166,7 @@ sudo ./pi/install.sh --rollback-boot   # restore config.txt and cmdline.txt from
 sudo systemctl disable --now fnav-display fnav-watch fnav-camera fnav-core mediamtx
 sudo rm /etc/systemd/system/{fnav-core,fnav-camera,fnav-watch,fnav-display,mediamtx}.service
 sudo rm /etc/systemd/system/{seatd.service.d,NetworkManager-wait-online.service.d}/fnav.conf
-sudo rm /etc/sudoers.d/fnav /etc/polkit-1/rules.d/50-fnav-networkmanager.rules /etc/udev/rules.d/90-fnav.rules \
+sudo rm /etc/sudoers.d/fnav /etc/polkit-1/rules.d/50-fnav-{networkmanager,timedate}.rules /etc/udev/rules.d/90-fnav.rules \
         /etc/sysctl.d/90-fnav.conf /etc/chrony/conf.d/fnav.conf /etc/NetworkManager/conf.d/90-fnav-wifi.conf \
         /etc/systemd/system.conf.d/90-fnav-watchdog.conf /etc/systemd/journald.conf.d/90-fnav.conf
 sudo cp /etc/default/gpsd.fnav-orig /etc/default/gpsd; sudo cp /etc/chrony/chrony.conf.fnav-orig /etc/chrony/chrony.conf

@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel, Field
 from starlette.staticfiles import StaticFiles
 
-from fnav import __version__, paths
+from fnav import __version__, paths, tz
 from fnav.core import secretsfile as sf
 from fnav.core.auth import COOKIE_NAME, SESSION_TTL_S, AuthMiddleware
 from fnav.core.bluetooth import BluetoothError
@@ -203,8 +203,12 @@ def _register_auth(app: FastAPI, core: Core) -> None:
 
     @app.get("/api/session")
     async def session(request: Request):
-        return {"authenticated": core.auth.is_authenticated(request), "local": core.auth.is_local(request),
-                "remote": core.auth.is_remote(request), "mock": core.mock}
+        authed = core.auth.is_authenticated(request)
+        out = {"authenticated": authed, "local": core.auth.is_local(request),
+               "remote": core.auth.is_remote(request), "mock": core.mock}
+        if authed:  # пояс устройства (≈ страна, где машина) — только своим; админка переводит по нему время записей
+            out["timezone"] = tz.zone_name()
+        return out
 
     @app.post("/api/system/password")
     async def change_password(body: PasswordBody, request: Request):

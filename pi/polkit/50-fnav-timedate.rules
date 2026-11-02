@@ -1,0 +1,8 @@
+// fallout.nav: the fnav user (fnav-core) may set the system time zone without a password:
+// the zone follows the van across borders (fnav/core/timezone.py -> timedatectl set-timezone).
+// Only the zone: not the clock, NTP or the RTC mode. Installed as /etc/polkit-1/rules.d/50-fnav-timedate.rules.
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.freedesktop.timedate1.set-timezone" && subject.user === "fnav") {
+        return polkit.Result.YES;
+    }
+});

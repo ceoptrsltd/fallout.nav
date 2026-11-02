@@ -11,6 +11,7 @@ import { openPreview } from "./preview.js";
 import { installEntry } from "./install.js";
 import { needsAppLogin, clearAppLogin } from "./app-login.js";
 import { versionOf, versionStep, versionDue, VERSION_CHECK_MS } from "./version-fmt.js";
+import { setDeviceZone } from "./devtime.js";
 
 const PAGES = [
   { id: "dashboard", title: "Dashboard", icon: "dash", load: () => import("./pages/dashboard.js") },
@@ -287,6 +288,7 @@ if (window.isSecureContext && "serviceWorker" in navigator) {
     const s = await api.get("/api/session", { noRedirect: true });
     if (!s || !s.authenticated || needsAppLogin()) return goLogin();
     if (s.offline) setOffline(true);
+    setDeviceZone(s.timezone); // recording names are the device's local time
   } catch (e) {
     toast("error", "No connection to the device: " + errText(e));
   }

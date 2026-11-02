@@ -232,3 +232,47 @@ def test_cleanup_removes_sidecar(tmp_path: Path):
     res = cleanup(tmp_path, target_free_bytes=10, free_fn=lambda _p: 0 if old.exists() else 100)
     assert res.deleted == [old]
     assert not ti.sidecar_path(old).exists() and not old.parent.exists()
+
+
+def test_sidecar_keeps_the_true_start(tmp_path: Path, frames_10s):
+    """Истинное начало (unix) в заголовке .ts.idx: имя — по местному времени, а пояс меняется в дороге."""
+    wall = datetime(2026, 11, 2, 13, 40, 10)
+    for sub, synced in (("dated", True), ("nosync", False)):
+        rec = Recorder(tmp_path / sub, segment_s=600, fsync_interval_s=0.2, gop=15, fps=FPS,
+                       time_sync=TimeSync(lambda s=synced: s), clock=lambda: wall)
+        rec.start()
+        for au, key, ts in frames_10s:
+            rec.push(au, key, ts)
+        assert rec.drain()
+        rec.stop()
+        (p,) = list_recordings(tmp_path / sub)
+        assert len(ti.read_sidecar(p)) == 10  # строки индекса — после строки start
+        assert ti.update_index(p).from_sidecar == 9
+        if synced:
+            assert p.name == "2026-11-02_13-40-10.ts"
+            assert ti.read_start(p) == pytest.approx(wall.timestamp(), abs=1e-3)
+        else:  # время не синхронизировано — начало не известно
+            assert p.parent.name == "nosync" and ti.read_start(p) is None
+
+
+def test_sidecar_header_versions(tmp_path: Path):
+    p = tmp_path / "a.ts"
+    keys = write_ts(p, 15 * 4)
+    lines = b"".join(b"%d %d\n" % k for k in keys)
+    for head, start in ((b"fnav-tsindex 1\n", None),  # записи до смены формата
+                        (b"fnav-tsindex 2\n", None),
+                        (b"fnav-tsindex 2\nstart 1793627210.250\n", 1793627210.25),
+                        (b"fnav-tsindex 2\nstart nan\n", None),
+                        (b"fnav-tsindex 2\nstart -5\n", None)):
+        ti.sidecar_path(p).write_bytes(head + lines)
+        assert ti.read_start(p) == start, head
+        assert ti.read_sidecar(p) == keys, head
+    ti.sidecar_path(p).write_bytes(b"fnav-tsindex 2\nstart 17936")  # недописанная строка
+    assert ti.read_start(p) is None and ti.read_sidecar(p) == []
+    ti.sidecar_path(p).write_bytes(b"fnav-tsindex 9\nstart 1793627210\n" + lines)  # чужая версия
+    assert ti.read_start(p) is None and ti.read_sidecar(p) == []
+    assert ti.read_start(tmp_path / "none.ts") is None
+    w = ti.SidecarWriter(p, 1793627210.25)
+    w.add(*keys[0])
+    w.close()
+    assert ti.sidecar_path(p).read_bytes() == b"fnav-tsindex 2\nstart 1793627210.250\n%d %d\n" % keys[0]

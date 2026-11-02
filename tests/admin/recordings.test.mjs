@@ -35,9 +35,10 @@ test("alarm events in recordings: segment start, deep link, jump and marker posi
   assert.equal(segmentStartMs(path), t0);
   assert.equal(segmentStartMs("nosync/boot-abcd_0001.ts"), null);
   const link = recLink(path, t0 / 1000 + 27.4);
-  assert.equal(link, "#/recordings?play=2026-10-27%2F2026-10-27_22-05-00.ts&t=27");
-  assert.deepEqual(parseRecLink(link), { play: path, t: 27 });
-  assert.deepEqual(parseRecLink("#/recordings?play=nosync%2Fa.ts"), { play: "nosync/a.ts", t: null });
+  const at = Math.round(t0 / 1000 + 27.4); // the moment itself: the player prefers it with the recording's start_ts
+  assert.equal(link, "#/recordings?play=2026-10-27%2F2026-10-27_22-05-00.ts&t=27&at=" + at);
+  assert.deepEqual(parseRecLink(link), { play: path, t: 27, at });
+  assert.deepEqual(parseRecLink("#/recordings?play=nosync%2Fa.ts"), { play: "nosync/a.ts", t: null, at: null });
   assert.equal(recLink("nosync/a.ts", 123), "#/recordings?play=nosync%2Fa.ts");
   assert.equal(parseRecLink("#/recordings"), null);
   assert.equal(jumpTo(27), 27 - LEAD_S);
@@ -70,5 +71,5 @@ test("rear camera recordings: which camera, the filter, the player title, the do
   assert.equal(downloadName(rear), "rear-2026-10-28_10-00-00.ts"); // not the same name as the front's file
   // alarm log → player: the rear path goes through the link as is
   const t0 = new Date(2026, 9, 28, 10, 0, 0).getTime() / 1000;
-  assert.deepEqual(parseRecLink(recLink(rear.path, t0 + 42)), { play: rear.path, t: 42 });
+  assert.deepEqual(parseRecLink(recLink(rear.path, t0 + 42)), { play: rear.path, t: 42, at: t0 + 42 });
 });

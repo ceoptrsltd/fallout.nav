@@ -1,5 +1,6 @@
 // Shared state: WebSocket <root>ws (telemetry, settings, events) + settings.
 import { api, goLogin, ROOT } from "./api.js";
+import { setDeviceZone } from "./devtime.js";
 
 export const store = {
   offline: false, // remote and the device is not connected: api/session answered by the server (remote.md)
@@ -78,6 +79,7 @@ function connect() {
     switch (m.type) {
       case "telemetry":
         store.telemetry = m;
+        if (m.system && m.system.timezone) setDeviceZone(m.system.timezone); // the van crossed a border
         store.telemetryAt = Date.now();
         updateOnline();
         emit("telemetry", m);

@@ -91,7 +91,7 @@ async def test_recordings_api(data_dir):
         assert by["2026-10-19/2026-10-19_10-00-00.ts"]["protected"] is True
         assert by["2026-10-20/2026-10-20_16-40-00.ts"] | {} == {
             "path": "2026-10-20/2026-10-20_16-40-00.ts", "camera": "front", "date": "2026-10-20",
-            "start": "2026-10-20T16:40:00",
+            "start": "2026-10-20T16:40:00", "start_ts": None,  # без .ts.idx истинное начало не известно
             "size_bytes": 10240, "duration_s": None, "protected": False, "in_progress": False, "audio": False, "events": [],
             "marks": []}
         assert by["nosync/boot-abcd1234_0001.ts"]["start"] is None
@@ -372,3 +372,39 @@ def test_attach_events_marks_alarm_events_inside_recordings():
     lost = ev(6, 625.0, kind="video_lost", camera="front", since=t0 + 590.0)
     done = attach_events([dict(items[1])], [lost], now=t0 + 720)[0]
     assert [(m["id"], m["offset_s"]) for m in done["events"]] == [("e6", 590.0)]
+
+
+async def test_true_start_from_the_keyframe_index_across_a_time_zone_change(tmp_path):
+    """Имена — по местному времени, пояс меняется в дороге: начало записи — start_ts из .ts.idx (регистратор)."""
+    from types import SimpleNamespace
+
+    from fnav.core.recordings import Recordings, attach_events, recording_at
+
+    root = tmp_path / "rec"
+    t0 = 1_793_623_210.0  # 2026-11-02 12:40:10 UTC: в Варшаве 13:40:10 — так названа запись
+    warsaw = root / "2026-11-02/2026-11-02_13-40-10.ts"
+    lisbon = root / "2026-11-02/2026-11-02_13-10-00.ts"  # уже в Лиссабоне (UTC+0): по имени «раньше», на деле позже
+    for p, start in ((warsaw, t0), (lisbon, t0 + 1790)):
+        write_rec(p, 4, sidecar=False)
+        SidecarWriter(p, start).close()
+        os.utime(p, (start + 600, start + 600))
+    old = root / "2026-11-01/2026-11-01_09-00-00.ts"  # записана до start_ts в индексе
+    write_rec(old, 4, sidecar=True)
+    os.utime(old, (t0 - 86400, t0 - 86400))
+    recs = Recordings(root)
+    items = await recs.list()
+    assert [(i["path"].split("/")[1], i["start_ts"]) for i in items] == [
+        ("2026-11-02_13-10-00.ts", t0 + 1790), ("2026-11-02_13-40-10.ts", t0), ("2026-11-01_09-00-00.ts", None)]
+    assert items[1]["start"] == "2026-11-02T13:40:10"  # местное время записи — как было
+    ev = SimpleNamespace(id="e1", kind="impact", title="Impact", ts=t0 + 3, data={})
+    marks = {i["path"]: i["events"] for i in attach_events(items, [ev], now=t0 + 4000)}
+    assert [m["offset_s"] for m in marks["2026-11-02/2026-11-02_13-40-10.ts"]] == [3.0]  # в любом поясе системы
+    assert marks["2026-11-02/2026-11-02_13-10-00.ts"] == []
+    assert recording_at(items, t0 + 2, "front", now=t0 + 4000) == {"path": "2026-11-02/2026-11-02_13-40-10.ts",
+                                                                     "offset_s": 2.0}
+    # только что начатая: индекса ещё нет — не запоминаем «нет начала», следующий список его найдёт
+    cur = "2026-11-02/2026-11-02_14-00-00.ts"
+    write_rec(root / cur, 2, sidecar=False)
+    assert (await recs.item(cur, current=cur))["start_ts"] is None
+    SidecarWriter(root / cur, t0 + 4790).close()
+    assert (await recs.item(cur, current=cur))["start_ts"] == t0 + 4790

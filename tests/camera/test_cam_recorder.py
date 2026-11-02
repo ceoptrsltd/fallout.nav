@@ -252,3 +252,15 @@ def test_rates(tmp_path: Path, frames_10s):
         rec._account_rate(ts, len(au))
     fps, kbps = rec.rates()
     assert fps is not None and abs(fps - FPS) < 0.5 and kbps and kbps > 0
+
+
+def test_time_sync_notices_a_time_zone_change(monkeypatch):
+    """Машина пересекла границу, fnav-core сменил пояс системы: обслуживание камеры (TimeSync.refresh) вызывает
+    tzset — следующий сегмент назван по новому местному времени."""
+    import fnav.camera.recorder as recmod
+
+    checks = []
+    monkeypatch.setattr(recmod.ZoneWatch, "check", lambda self: checks.append(1) or False)
+    ts = TimeSync(lambda: True)
+    assert ts.refresh() is True
+    assert len(checks) == 2  # при создании и при каждом обновлении

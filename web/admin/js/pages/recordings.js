@@ -3,7 +3,8 @@
 import { h, icon, clear, fmtBytes, fmtDur, isNum } from "../dom.js";
 import { api, appUrl, encPath, errText } from "../api.js";
 import { loadHls } from "../vendor.js";
-import { hlsUrl, playerKind, HLS_MIME, jumpTo, markPos, parseRecLink, recCamera, filterRecs, recTitle, downloadName } from "../rec-play.js";
+import { hlsUrl, playerKind, HLS_MIME, jumpTo, markPos, parseRecLink, linkOffset, recCamera, filterRecs, recTitle, downloadName } from "../rec-play.js";
+import { deviceClock } from "../devtime.js";
 import { kindInfo, markLabel, marksSummary, peakText } from "../alarm-fmt.js";
 import { storageWarning } from "../camera-fmt.js";
 import { store, on } from "../store.js";
@@ -20,7 +21,7 @@ function timeOf(r) {
   return m ? `${m[1]}:${m[2]}:${m[3]}` : r.path.split("/").pop();
 }
 const LEAD_TEXT = "a few seconds";
-const evClock = (e) => (Number.isFinite(e.ts) ? new Date(e.ts * 1000).toLocaleTimeString("en-GB") : "");
+const evClock = (e) => deviceClock(e.ts); // the device's clock, like the recording's own time
 function dayTitle(d) {
   if (!/^\d{4}-\d\d-\d\d$/.test(d || "")) return "Time not synchronized";
   const dt = new Date(d + "T00:00:00");
@@ -225,12 +226,12 @@ export function mount(root) {
         const days = [...new Set(filterRecs(list, camFilter).map((r) => r.date))];
         days.slice(1).forEach((d) => closedDays.add(d));
         render();
-        // "#/recordings?play=<path>&t=<s>" (alarm log, dashboard): straight to the moment of the event
+        // "#/recordings?play=<path>&t=<s>&at=<unix>" (alarm log, dashboard): straight to the moment of the event
         const link = parseRecLink(location.hash);
         if (link) {
           history.replaceState(null, "", "#/recordings");
           const r = list.find((x) => x.path === link.play);
-          if (r) openPlayer(r, { at: link.t });
+          if (r) openPlayer(r, { at: linkOffset(link, r) });
           else toast("warn", "That recording is no longer on the device");
         }
         return;

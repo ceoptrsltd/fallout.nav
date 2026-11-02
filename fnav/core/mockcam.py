@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
+from fnav.camera.tsindex import SidecarWriter
 from fnav.models import CameraStatus
 
 log = logging.getLogger("fnav.core.mockcam")
@@ -260,6 +261,7 @@ class MockCamera:
                 p = root / t.strftime("%Y-%m-%d") / f"{t.strftime('%Y-%m-%d_%H-%M-%S')}.ts"
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(_demo_ts(seconds=3 + i))
+                SidecarWriter(p, t.timestamp()).close()  # истинное начало, как у регистратора (start_ts)
                 end = min(t.timestamp() + 595, now - 30) if mins else now
                 os.utime(p, (end, end))
                 names.append(p)

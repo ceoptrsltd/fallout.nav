@@ -22,6 +22,9 @@ Static files go out with Cache-Control: no-store. "A new version is available" (
 web/admin/version.json, which only the deploy writes: `bash tools/web-version.sh`, then edit "version" by hand while
 the admin is open (no file — no check).
 
+The device's time zone (api/session, telemetry system.timezone) is the PC's own; --tz Europe/Lisbon emulates a device
+in another zone: fake recordings are named by its clock and carry start_ts (needs the tz database: tzdata on Windows).
+
 Telemetry comes from fnav.mock.sensors.MockSensorHub; settings live in memory (fnav.models.Settings).
 """
 
@@ -45,6 +48,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
@@ -55,6 +59,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse 
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
+from fnav import tz  # noqa: E402
 from fnav.mock.sensors import MockSensorHub  # noqa: E402
 from fnav.models import (  # noqa: E402
     CameraStatus,
@@ -121,11 +126,33 @@ def apply_settings(new: Settings) -> None:
     hub.apply_settings(new)
 
 
+# ───────────────────────── device clock (--tz) ─────────────────────────
+
+DEVICE_TZ = tz.zone_name()  # the device's zone (IANA) as api/session and telemetry report it; None — unknown
+DEVICE_ZI: ZoneInfo | None = None  # --tz: the mock device's clock runs in this zone, not in the PC's
+
+
+def device_now() -> datetime:
+    """The mock device's wall clock (naive, like the names of its recordings)."""
+    return datetime.now(DEVICE_ZI).replace(tzinfo=None) if DEVICE_ZI else datetime.now()
+
+
+def device_ts(wall: datetime) -> float:
+    """Its wall-clock time → unix seconds (start_ts of a recording)."""
+    return wall.replace(tzinfo=DEVICE_ZI).timestamp() if DEVICE_ZI else wall.timestamp()
+
+
+def device_offset_min() -> int:
+    now = datetime.now(DEVICE_ZI) if DEVICE_ZI else datetime.now().astimezone()
+    off = now.utcoffset()
+    return round(off.total_seconds() / 60) if off is not None else 0
+
+
 # ───────────────────────── fake recordings ─────────────────────────
 
 
 def build_recordings() -> list[dict]:
-    now = datetime.now().replace(microsecond=0)
+    now = device_now().replace(microsecond=0)
     out = []
     # the current in-progress segment
     start = now - timedelta(minutes=3, seconds=20)
@@ -150,6 +177,7 @@ def _rec(start: datetime, dur: float, protected=False, in_progress=False) -> dic
         "path": f"{start:%Y-%m-%d}/{name}.ts",
         "date": f"{start:%Y-%m-%d}",
         "start": start.isoformat(timespec="seconds"),
+        "start_ts": device_ts(start),
         "size_bytes": int(dur * 6000 * 1000 / 8 * 1.02),
         "duration_s": None if in_progress else float(dur),
         "protected": protected,
@@ -449,6 +477,8 @@ def build_telemetry() -> dict:
             wifi_signal_pct=78,
             internet=True,
             time_synced=True,
+            utc_offset_min=device_offset_min(),
+            timezone=DEVICE_TZ,
         ),
         errors=snap.errors,
     )
@@ -580,6 +610,8 @@ async def session(request: Request):
     out = {"authenticated": request.cookies.get(COOKIE) in sessions}
     if is_remote(request) and OFFLINE:
         out.update(local=False, mock=False, offline=True)  # answered by the server instead of the device
+    elif out["authenticated"]:
+        out["timezone"] = DEVICE_TZ  # the device's zone: the admin reads recording names in it
     return out
 
 
@@ -706,8 +738,13 @@ async def list_recordings():
     cur = next((r for r in recordings if r["in_progress"]), None)
     if cur:
         started = datetime.fromisoformat(cur["start"])
-        cur["size_bytes"] = int((datetime.now() - started).total_seconds() * 6000 * 1000 / 8)
+        cur["size_bytes"] = int((device_now() - started).total_seconds() * 6000 * 1000 / 8)
     return recordings
+
+
+@app.get("/api/recordings/item/{path:path}")
+async def recording_item(path: str):
+    return _find(path)
 
 
 @app.get("/api/recordings/file/{path:path}")
@@ -2142,15 +2179,21 @@ class RemotePrefix:
 
 
 def main() -> None:
-    global STRICT_AUTH, OFFLINE
+    global STRICT_AUTH, OFFLINE, DEVICE_TZ, DEVICE_ZI
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8300)
     ap.add_argument("--strict-auth", action="store_true", help="require a session even from loopback (to test the UI auth flow)")
     ap.add_argument("--offline", action="store_true", help=f"under {REMOTE_PREFIX}/ act as if the device were not connected")
+    ap.add_argument("--tz", help="the device's time zone, e.g. Europe/Lisbon (default: the PC's own)")
     a = ap.parse_args()
     STRICT_AUTH = a.strict_auth
     OFFLINE = a.offline
+    if a.tz:
+        try:
+            DEVICE_ZI, DEVICE_TZ = ZoneInfo(a.tz), a.tz
+        except (ZoneInfoNotFoundError, ValueError):
+            sys.exit(f"--tz {a.tz}: unknown time zone (on Windows: pip install tzdata)")
     print(f"fnav web UI mock: http://{a.host}:{a.port}/admin/   (password: {PASSWORD})")
     print(f"  remote access:   http://{a.host}:{a.port}{REMOTE_PREFIX}/" + ("   (device offline)" if OFFLINE else ""))
     uvicorn.run(RemotePrefix(app), host=a.host, port=a.port, log_level="warning")

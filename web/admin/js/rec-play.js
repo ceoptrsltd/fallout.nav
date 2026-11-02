@@ -1,5 +1,6 @@
 // Recordings playback: playlist URL, the choice of player, which camera (pure helpers, tests/admin/recordings.test.mjs).
 import { appUrl, encPath } from "./api.js";
+import { wallToMs } from "./devtime.js";
 
 /** HLS playlist of a recording (docs/contracts/api.md): byte ranges of the .ts itself, so any point is seekable. */
 export function hlsUrl(path, root) {
@@ -49,31 +50,56 @@ export function recTitle(r) {
 // ── alarm events inside a recording (GET /api/recordings → events[].offset_s) ──
 export const LEAD_S = 5; // a jump to an event starts this much earlier: what led to it is seen too
 
-/** Local start time (ms) of a segment from its file name ("…/2026-10-27_22-05-00.ts"); null — no time (nosync). */
-export function segmentStartMs(path) {
+/** Start (unix ms) of a segment from its file name ("…/2026-10-27_22-05-00.ts"): the DEVICE's local time, so it is
+ *  read in the device's zone (devtime.js), not the phone's; tz — another zone (null: the browser's). null — nosync. */
+export function segmentStartMs(path, tz) {
   const m = String(path || "").match(/(\d{4})-(\d\d)-(\d\d)_(\d\d)-(\d\d)-(\d\d)\.ts$/);
   if (!m) return null;
   const [y, mo, d, hh, mi, ss] = m.slice(1).map(Number);
-  return new Date(y, mo - 1, d, hh, mi, ss).getTime();
+  return wallToMs(y, mo, d, hh, mi, ss, tz);
 }
 
-/** Link that opens the recording in the player at the moment of an alarm event (ts — unix seconds). */
+/** Start (unix ms) of a recording (GET api/recordings item): start_ts — the true start the recorder kept, right across
+ *  time zone changes; otherwise its local "start" (or name) in the device's zone; null — not known (nosync). */
+export function recStartMs(r, tz) {
+  if (r && Number.isFinite(r.start_ts)) return r.start_ts * 1000;
+  const m = String((r && r.start) || "").match(/^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)/);
+  if (!m) return segmentStartMs(r && r.path, tz);
+  const [y, mo, d, hh, mi, ss] = m.slice(1).map(Number);
+  return wallToMs(y, mo, d, hh, mi, ss, tz);
+}
+
+/** Link that opens the recording in the player at the moment of an alarm event (ts — unix seconds): t — the offset by
+ *  the file name, at — the moment itself (the player prefers it with the recording's start_ts: a recording made
+ *  before the device changed its time zone is named by the old one). */
 export function recLink(path, ts) {
   const t0 = segmentStartMs(path);
   const off = t0 !== null && Number.isFinite(ts) ? Math.max(0, Math.round(ts - t0 / 1000)) : null;
-  return "#/recordings?play=" + encodeURIComponent(path) + (off !== null ? "&t=" + off : "");
+  return "#/recordings?play=" + encodeURIComponent(path) + (off !== null ? `&t=${off}&at=${Math.round(ts)}` : "");
 }
 
-/** {play, t} from "#/recordings?play=…&t=…"; null — no player link. */
+/** {play, t, at} from "#/recordings?play=…&t=…&at=…"; null — no player link. */
 export function parseRecLink(hash) {
   const q = String(hash || "").split("?")[1];
   if (!q) return null;
   const p = new URLSearchParams(q);
   const play = p.get("play");
   if (!play) return null;
-  const raw = p.get("t");
-  const t = raw === null || raw === "" ? NaN : Number(raw);
-  return { play, t: Number.isFinite(t) && t >= 0 ? t : null };
+  const num = (k) => {
+    const raw = p.get(k);
+    const v = raw === null || raw === "" ? NaN : Number(raw);
+    return Number.isFinite(v) && v >= 0 ? v : null;
+  };
+  return { play, t: num("t"), at: num("at") };
+}
+
+/** Where the player starts for a link (s into the recording rec): the moment (at) − the recording's start when both are
+ *  known — right even for a recording named in the zone before a change; otherwise the link's own t. */
+export function linkOffset(link, rec) {
+  if (!link) return null;
+  const t0 = recStartMs(rec);
+  if (Number.isFinite(link.at) && t0 !== null) return Math.max(0, Math.round(link.at - t0 / 1000));
+  return link.t;
 }
 
 /** Where playback starts for an event at offset (s). */

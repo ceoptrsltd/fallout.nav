@@ -6,7 +6,9 @@
 
 - `POST /api/login` `{"password": "..."}` → `200 {"ok": true}` + cookie `fnav_session` (HttpOnly, SameSite=Lax, 30 дней). Неверно → `401`.
   Защита от перебора: после 5 неудачных попыток с IP — пауза 30 с.
-- `POST /api/logout` → удаляет cookie. `GET /api/session` → `{"authenticated": bool}`.
+- `POST /api/logout` → удаляет cookie. `GET /api/session` → `{"authenticated": bool, "local", "remote", "mock"}`;
+  со входом ещё `"timezone": "Europe/Warsaw"|null` — пояс устройства (см. «Часовой пояс»; без входа не отдаётся:
+  пояс ≈ страна, где машина).
 - Пароль хранится как хэш `hashlib.scrypt` в `secrets.env` (`FNAV_PASSWORD_HASH=scrypt$<n>$<r>$<p>$<salt_b64>$<hash_b64>`), секрет подписи сессий — `FNAV_SESSION_SECRET`.
 - **Без авторизации доступно:** `/api/login`, `/api/session`, `/admin/login.html` и статика логина;
   а с адреса `127.0.0.1` (киоск Chromium на самом устройстве) — также `/display/**`, `/ws`, `/tiles/**`, `/api/camera/mjpeg`, `/api/camera/rear/mjpeg`, `/api/settings` (GET).
@@ -64,7 +66,14 @@
 Файлы: `{recordings_dir}/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS.ts` (задняя камера — `{recordings_dir}/rear/YYYY-MM-DD/…`, путь
 записи `rear/ДАТА/ИМЯ.ts`), защищено = рядом `…ts.lock`, индекс ключевых кадров — `…ts.idx`. Подробно — `camera.md`.
 
-- `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","camera":"front"|"rear","date":"2026-10-20","start":"2026-10-20T16:40:00","size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool,"events":[…],"marks":[{"kind":"motion"|"vehicle"|"person","ts":..,"offset_s":..,"dur_s":..}]}]` (обе камеры, новые сверху; `events` — события охраны, `marks` — отметки движения без тревоги своей камеры, [vision.md](vision.md) «Отметки»).
+- `GET /api/recordings` → `[{"path":"2026-10-20/2026-10-20_16-40-00.ts","camera":"front"|"rear","date":"2026-10-20","start":"2026-10-20T16:40:00","start_ts":1792507200.123|null,"size_bytes":..,"duration_s":..|null,"protected":bool,"in_progress":bool,"events":[…],"marks":[{"kind":"motion"|"vehicle"|"person","ts":..,"offset_s":..,"dur_s":..}]}]` (обе камеры, новые сверху; `events` — события охраны, `marks` — отметки движения без тревоги своей камеры, [vision.md](vision.md) «Отметки»).
+  `start` — местное время устройства из имени файла (как в имени, без пояса); `start_ts` — истинное начало (unix, UTC)
+  из `.ts.idx` регистратора (camera.md), `null` — записи до этой версии и `nosync/`. Пояс устройства меняется в дороге
+  («Часовой пояс»), поэтому начало записи — `start_ts`, а без него — `start` в поясе устройства (не браузера!):
+  так считают `offset_s` событий и отметок, порядок списка, и так же — админка (`web/admin/js/rec-play.js`
+  `recStartMs`, `devtime.js`). У записи без `start_ts`, сделанной до смены пояса, начало сдвинуто на разницу поясов.
+  Ссылка в плеер из журнала охраны и с главной: `#/recordings?play=<path>&t=<с от начала по имени>&at=<unix события>`;
+  плеер берёт `at − start_ts`, если оба известны, иначе `t`.
 - `GET /api/recordings/item/{path}` — одна запись в том же виде, что в списке (с `events` и `marks`), без обхода всех
   каталогов: плеер на странице охраны (кнопка Play у события, с 5 с до него); 404 — записи нет, 400 — плохой путь.
 - `GET /api/recordings/file/{path}` — отдача файла с поддержкой `Range` (`video/mp2t`).
@@ -138,11 +147,33 @@
 ## Система
 
 - `GET /api/system/status` → `{"system": SystemStatus, "disk": DiskStatus, "services": {"fnav-camera":"active",...}, "version":"..."}`.
+  В `SystemStatus` (и в телеметрии) — `timezone` (IANA, `null` — не известен) и `utc_offset_min` пояса устройства.
 - `GET /api/system/logs?unit=fnav-core&lines=200` → `{"lines":[...]}` (`journalctl`, только `fnav-*`, `mediamtx`, `gpsd`).
 - `POST /api/system/reboot`, `POST /api/system/shutdown`.
 - `GET /api/system/wifi` → `[{"ssid","priority","active","signal_pct"}]`; `POST /api/system/wifi` `{"ssid","password","priority"}`; `DELETE /api/system/wifi/{ssid}` (через `nmcli`).
 - `POST /api/system/password` `{"old","new"}` (новый ≥ 6 символов).
 - В mock-режиме системные действия не выполняются, возвращают `{"ok":true,"mock":true}`.
+
+### Часовой пояс
+
+Имена записей, время в push («Hit 0.42 g at 14:03») и часы на экране — по местному времени системы; пояс ставится
+при установке (`FNAV_TIMEZONE`) и дальше **следует за машиной** (`fnav/core/timezone.py`, настройка
+`settings.system.auto_timezone`, по умолчанию `true`, страница System админки):
+
+- Open-Meteo (`fnav/core/weather.py`, `timezone=auto`) в каждом прогнозе называет пояс точки (`timezone`, IANA).
+  Если свежий прогноз **для живой позиции GPS** (не для последней точки из кэша) два раза подряд называет пояс,
+  отличный от системного, fnav-core ставит его: `timedatectl --no-ask-password set-timezone <пояс>` (право — правило
+  polkit `pi/polkit/50-fnav-timedate.rules`, только это действие и только для `fnav`), затем `time.tzset()`; смена —
+  в журнале `fnav-core`. Два подряд — чтобы у границы пояс не «дребезжал»; прогноз обновляется раз в 30 мин или
+  через 25 км, так что смена — через ~30–60 мин после границы. `Etc/*`, `GMT`, `UTC` (море, паром) не ставятся.
+- Остальные процессы замечают смену сами: fnav-core и камеры проверяют `/etc/localtime` (`fnav/tz.py` `ZoneWatch`:
+  статус системы раз в 5 с, обслуживание камеры ≤ 10 с) и вызывают `time.tzset()`. fnav-watch местное время не
+  форматирует. Часы экрана — по `SystemStatus.utc_offset_min` (display.md).
+- Админка (телефон может быть в другом поясе) переводит местное время устройства (имена записей) по
+  `timezone` из `/api/session` и телеметрии (`web/admin/js/devtime.js`, Intl, с переходами на летнее время;
+  время, которое при переводе часов назад бывает дважды, — первое). Пояс не известен (старое устройство, mock на
+  Windows) — пояс браузера, как раньше. Mock-сервер админки: `--tz Europe/Lisbon` — устройство в другом поясе.
+- В `--mock` пояс системы не трогается.
 
 ## Ошибки
 

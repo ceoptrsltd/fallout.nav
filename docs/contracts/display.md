@@ -99,6 +99,7 @@ state = {
     internet: true | null,
     recording: true,
     wallMs: 1729440000123,        // Date.now() — для часов (ui/clock.js); время машины = UTC + telemetry.system.utc_offset_min
+                                  // (пояс fnav-core следует за машиной — api.md «Часовой пояс»; часы переходят сами, ≤ 5 с)
     vehicleX: 384, vehicleY: 386, // машина на экране (ветер вокруг неё, ui/weather.js)
   },
   canvas: { w: 768, h: 576, safe: { x: 38.4, y: 28.8, w: 691.2, h: 518.4 }, pxPerMm: 8.35 },

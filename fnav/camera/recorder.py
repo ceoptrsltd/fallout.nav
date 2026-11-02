@@ -10,7 +10,9 @@
 Итого после обрыва питания теряется ≤ fsync_interval_s + время fsync + 1 кадр.
 
 Рядом с сегментом — индекс ключевых кадров ``<сегмент>.ts.idx`` (tsindex.py): строка на каждый ключевой кадр
-после его записи, без fsync (после сбоя короче — fnav-core дочитает недостающее поиском по файлу).
+после его записи, без fsync (после сбоя короче — fnav-core дочитает недостающее поиском по файлу). В его заголовке —
+истинное начало сегмента (unix, UTC): имя — по местному времени, и после смены пояса в дороге по имени не понять,
+когда запись начата.
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from fnav.tz import ZoneWatch
 
 from .h264 import AccessUnitFixer
 from .tsindex import SidecarWriter
@@ -70,15 +74,18 @@ def check_time_synced(now: datetime | None = None) -> bool:
 
 
 class TimeSync:
-    """Кэш состояния синхронизации времени (обновляется в фоне, писатель не ждёт subprocess)."""
+    """Кэш состояния синхронизации времени (обновляется в фоне, писатель не ждёт subprocess).
+    Заодно — смена часового пояса системы (машина пересекла границу): tzset, следующие имена — в новом поясе."""
 
     def __init__(self, fn: Callable[[], bool] = check_time_synced) -> None:
         self._fn = fn
         self.value = False
+        self.zone = ZoneWatch()
         self.refresh()
 
     def refresh(self) -> bool:
         try:
+            self.zone.check()
             self.value = bool(self._fn())
         except Exception:
             log.exception("time sync check failed")
@@ -526,7 +533,8 @@ class Recorder:
         self._a_last = None
         seg.write(mux.tables())
         try:
-            self._idx = SidecarWriter(path)
+            # истинное начало (unix): имя — по местному времени, а пояс меняется в дороге (camera.md)
+            self._idx = SidecarWriter(path, now.timestamp() if synced else None)
         except OSError as e:
             log.warning("keyframe index not written for %s: %s", path.name, e)
             self._idx = None

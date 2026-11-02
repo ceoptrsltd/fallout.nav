@@ -6,6 +6,9 @@ ICON, ECMWF, GFS…; данные CC BY 4.0, подпись — в веб-инт
 data_dir/weather.json: без связи экран показывает почасовой прогноз из кэша на текущий час. Экран получает
 компактное состояние (WeatherStatus) сообщением {"type": "weather", …} по WebSocket — при подключении и раз
 в минуту. В --mock — вымышленный прогноз без сети.
+
+Пояс точки из свежего прогноза для живой позиции GPS (поле timezone) уходит в on_zone — часовой пояс устройства
+следует за машиной (fnav/core/timezone.py).
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ import logging
 import math
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -139,10 +142,12 @@ def fake_forecast(lat: float, lon: float, now: float) -> dict:
 class WeatherService:
     def __init__(self, cache_path: Path, get_gps: Callable[[], GpsFix],
                  on_update: Callable[[WeatherStatus], None] | None = None, *, mock: bool = False,
-                 transport: httpx.AsyncBaseTransport | None = None, clock: Callable[[], float] = time.time) -> None:
+                 transport: httpx.AsyncBaseTransport | None = None, clock: Callable[[], float] = time.time,
+                 on_zone: Callable[[str | None], Awaitable[object]] | None = None) -> None:
         self.cache_path = cache_path
         self.get_gps = get_gps
         self.on_update = on_update
+        self.on_zone = on_zone
         self.mock = mock
         self.clock = clock
         self.cache: dict = {}
@@ -196,10 +201,14 @@ class WeatherService:
     def status(self) -> WeatherStatus | None:
         return weather_status(self.cache, self.clock()) if self.cache else None
 
-    def _position(self) -> tuple[float, float] | None:
-        g = self.get_gps()
-        if g.fix != "none" and g.lat is not None and g.lon is not None:
-            return g.lat, g.lon
+    @staticmethod
+    def _live(g: GpsFix) -> tuple[float, float] | None:
+        return (g.lat, g.lon) if g.fix != "none" and g.lat is not None and g.lon is not None else None
+
+    def _position(self, g: GpsFix | None = None) -> tuple[float, float] | None:
+        live = self._live(g or self.get_gps())
+        if live is not None:
+            return live
         lat, lon = _num(self.cache.get("lat")), _num(self.cache.get("lon"))
         return (lat, lon) if lat is not None and lon is not None else None
 
@@ -217,7 +226,8 @@ class WeatherService:
     async def tick(self) -> bool:
         """Запросить прогноз, если пора. True — получен новый."""
         now = self.clock()
-        pos = self._position()
+        g = self.get_gps()
+        pos = self._position(g)
         if pos is None or now < self._retry_at or not self.due(pos, now):
             return False
         try:
@@ -235,6 +245,11 @@ class WeatherService:
         st = self.status()
         if st is not None and self.on_update:
             self.on_update(st)
+        if self.on_zone is not None and self._live(g) is not None:  # живая позиция GPS, не последняя из кэша
+            try:
+                await self.on_zone(fc.get("timezone"))
+            except Exception:
+                log.exception("weather: time zone")
         return True
 
     async def _fetch(self, lat: float, lon: float) -> dict:

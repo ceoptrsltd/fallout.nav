@@ -5,6 +5,7 @@ HLS: PAT/PMT, записанные перед IDR (tsmux пишет их пер�
 
 Источники (по порядку):
   * ``<запись>.ts.idx`` — пишет регистратор, строка на каждый ключевой кадр (см. docs/contracts/camera.md);
+    в заголовке — истинное начало записи (unix, UTC): имя файла — по местному времени, а пояс меняется в дороге;
   * поиск по файлу — для записей без бокового файла и для хвоста после его последней строки.
     Хвост (≤ DENSE_TAIL) просматривается подряд, остальное — выборочно: битрейт и GOP почти постоянны,
     поэтому место ключевого кадра через ~CHUNK_S секунд предсказуемо — читаем окно чуть раньше него
@@ -15,6 +16,7 @@ HLS: PAT/PMT, записанные перед IDR (tsmux пишет их пер�
 from __future__ import annotations
 
 import itertools
+import math
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -27,7 +29,9 @@ PTS_HZ = 90000
 PTS_MASK = (1 << 33) - 1
 
 SIDECAR_SUFFIX = ".idx"
-SIDECAR_MAGIC = b"fnav-tsindex 1\n"
+SIDECAR_MAGIC = b"fnav-tsindex 2\n"  # 2: сразу после заголовка — строка «start <unix>» (может не быть)
+_MAGICS = (SIDECAR_MAGIC, b"fnav-tsindex 1\n")  # 1 — записи до смены формата, без начала
+_START = b"start "
 
 DENSE_TAIL = 4 * 1024 * 1024  # хвост файла меньше этого — подряд (все ключевые кадры)
 CHUNK_S = 3.0  # длительность куска HLS, с
@@ -47,12 +51,16 @@ def sidecar_path(ts: Path) -> Path:
 
 
 class SidecarWriter:
-    """Строка ``<смещение> <pts>\\n`` на ключевой кадр, без буфера (сразу в ядро, без fsync)."""
+    """Строка ``<смещение> <pts>\\n`` на ключевой кадр, без буфера (сразу в ядро, без fsync).
+    start_ts — истинное начало записи (unix, UTC): строка ``start <unix>`` сразу после заголовка."""
 
-    def __init__(self, ts: Path) -> None:
+    def __init__(self, ts: Path, start_ts: float | None = None) -> None:
         self.path = sidecar_path(ts)
         self._f = open(self.path, "wb", buffering=0)  # noqa: SIM115
-        self._f.write(SIDECAR_MAGIC)
+        head = SIDECAR_MAGIC
+        if start_ts is not None and math.isfinite(start_ts):
+            head += b"%s%.3f\n" % (_START, start_ts)
+        self._f.write(head)
 
     def add(self, offset: int, pts: int) -> None:
         self._f.write(b"%d %d\n" % (offset, pts & PTS_MASK))
@@ -61,16 +69,45 @@ class SidecarWriter:
         self._f.close()
 
 
+def _header(data: bytes) -> tuple[float | None, int] | None:
+    """Заголовок бокового файла → (начало записи unix или None, где начинаются строки индекса); не наш — None."""
+    magic = next((m for m in _MAGICS if data.startswith(m)), None)
+    if magic is None:
+        return None
+    pos = len(magic)
+    if magic != SIDECAR_MAGIC or not data.startswith(_START, pos):
+        return None, pos
+    end = data.find(b"\n", pos)
+    if end < 0:  # строка недописана
+        return None, len(data)
+    try:
+        v = float(data[pos + len(_START):end])
+    except ValueError:
+        v = math.nan
+    return (v if math.isfinite(v) and v > 0 else None), end + 1
+
+
+def read_start(ts: Path) -> float | None:
+    """Истинное начало записи (unix, UTC) из бокового файла; нет (старая запись, nosync, нет файла) — None."""
+    try:
+        with open(sidecar_path(ts), "rb") as f:
+            head = _header(f.read(64))
+    except OSError:
+        return None
+    return head[0] if head else None
+
+
 def read_sidecar(ts: Path) -> list[tuple[int, int]]:
     """Строки бокового файла; недописанная последняя и всё после первой ошибки — отбрасываются."""
     try:
         data = sidecar_path(ts).read_bytes()
     except OSError:
         return []
-    if not data.startswith(SIDECAR_MAGIC):
+    head = _header(data)
+    if head is None:
         return []
     out: list[tuple[int, int]] = []
-    for line in data[len(SIDECAR_MAGIC):].split(b"\n")[:-1]:
+    for line in data[head[1]:].split(b"\n")[:-1]:
         parts = line.split()
         if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
             break

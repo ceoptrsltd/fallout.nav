@@ -38,6 +38,7 @@ from fnav.core.recordings import Recordings
 from fnav.core.speedlimit import SpeedLimitService
 from fnav.core.system import SystemService, run
 from fnav.core.tiles import TileService
+from fnav.core.timezone import TimeZoneFollower
 from fnav.core.tracking import RelayConfig, TrackService
 from fnav.core.util import cancel_tasks, spawn
 from fnav.core.videoout import VideoOutput, VideoOutputError
@@ -163,9 +164,11 @@ class Core:
                                   player=opts.radio_player)
         self.bt.on_output(self.radio.set_output)
         self.speedlimits = SpeedLimitService(paths.data_dir() / "speedlimits.sqlite", lambda: self.hub.snapshot().gps)
+        self.timezone = TimeZoneFollower(lambda: self.store.get().system.auto_timezone, mock=opts.mock)
         self.weather = WeatherService(paths.data_dir() / "weather.json", lambda: self.hub.snapshot().gps,
                                       lambda st: self.ws.broadcast(st.model_dump(mode="json")),
-                                      mock=opts.mock, transport=opts.weather_transport)
+                                      mock=opts.mock, transport=opts.weather_transport,
+                                      on_zone=self.timezone.observe)
         self.games = GamesService(lambda: self.hub.snapshot().gps.speed_mps, self._pause_radio_for_game,
                                   self._resume_radio_after_game, lambda lvl, text: self.ws.toast(text, lvl),
                                   mock=opts.mock, prepare_audio=self._audio_for_game,

@@ -68,6 +68,7 @@ put "$PI/sudoers/fnav" /etc/sudoers.d/fnav 0440 sudoers
 
 # polkit, NetworkManager, Chromium policy
 put "$PI/polkit/50-fnav-networkmanager.rules" /etc/polkit-1/rules.d/50-fnav-networkmanager.rules 0644 polkit
+put "$PI/polkit/50-fnav-timedate.rules" /etc/polkit-1/rules.d/50-fnav-timedate.rules 0644 polkit
 put "$PI/networkmanager/90-fnav-wifi.conf" /etc/NetworkManager/conf.d/90-fnav-wifi.conf 0644 nm
 put "$PI/chromium/fnav-policy.json" /etc/chromium/policies/managed/fnav.json 0644 none
 

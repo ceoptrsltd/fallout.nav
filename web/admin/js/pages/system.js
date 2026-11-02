@@ -1,8 +1,9 @@
-// System: services, logs, Wi-Fi, password change, reboot / shutdown.
+// System: services, logs, the time zone, Wi-Fi, password change, reboot / shutdown.
 import { h, icon, clear, fmt, isNum, fmtUptime } from "../dom.js";
 import { api, errText } from "../api.js";
 import { toast, confirmDialog, poll, badge, banner, switchEl } from "../ui.js";
-import { applySettings } from "../store.js";
+import { store, on, applySettings } from "../store.js";
+import { zoneText } from "../devtime.js";
 
 const DEFAULT_UNITS = ["fnav-core", "fnav-camera", "fnav-display", "mediamtx", "gpsd"];
 const SVC_STATE = { active: ["running", "ok"], activating: ["starting", "warn"], inactive: ["stopped", "warn"], failed: ["failed", "bad"], deactivating: ["stopping", "warn"] };
@@ -26,7 +27,7 @@ export function mount(root) {
       clear(sysKv).append(
         ...[["Version", s.version || "—"], ["IP", sys.ip || "—"], ["Wi‑Fi", sys.wifi_ssid ? `${sys.wifi_ssid} (${sys.wifi_signal_pct ?? "?"}%)` : "—"], ["Uptime", fmtUptime(sys.uptime_s)],
           ["CPU temperature", isNum(sys.cpu_temp_c) ? sys.cpu_temp_c.toFixed(1) + " °C" : "—"], ["Disk, free", isNum(d.free_gb) ? `${d.free_gb.toFixed(1)} of ${fmt(d.total_gb, 1)} GB` : "—"],
-          ["Time synchronized", sys.time_synced === true ? "yes" : sys.time_synced === false ? "no" : "—"]]
+          ["Time synchronized", sys.time_synced === true ? "yes" : sys.time_synced === false ? "no" : "—"], ["Time zone", zoneText(sys)]]
           .flatMap(([k, v]) => [h("span.k", null, k), h("span.v", null, v)]),
       );
       if (s.mock || (s.version || "").includes("mock")) sysKv.append(h("span.k", null, "Mode"), h("span.v.amber", null, "mock"));
@@ -35,6 +36,16 @@ export function mount(root) {
     }
   }
   const stopStatus = poll(loadStatus, 5000);
+
+  // ── time zone: follows the van (settings.system.auto_timezone, fnav/core/timezone.py) ──
+  const tzSw = switchEl({ checked: store.settings?.system?.auto_timezone !== false, label: "Time zone follows the van", onchange: async (v) => {
+    try {
+      const res = await api.patch("/api/settings", { system: { auto_timezone: v } });
+      if (res && res.system) applySettings(res);
+      toast("ok", v ? "The time zone will follow the van" : "The time zone stays as it is");
+    } catch (e) { toast("error", errText(e)); tzSw.input.checked = !v; }
+  } });
+  const offSettings = on("settings", (st) => { if (st && st.system) tzSw.input.checked = st.system.auto_timezone !== false; });
 
   // ── logs ──
   const unitSel = h("select", null, DEFAULT_UNITS.map((u) => h("option", { value: u }, u)));
@@ -151,7 +162,10 @@ export function mount(root) {
     h(".page-head", null, h("h1", null, "System")),
     h(".grid.g2", null,
       h(".card", null, h("h2", null, "Services"), h(".tbl-wrap", null, h("table", null, h("thead", null, h("tr", null, h("th", null, "Service"), h("th", null, "State"), h("th.num", null, "systemd"))), svcBody))),
-      h(".card", null, h("h2", null, "Device"), sysKv),
+      h(".card", null, h("h2", null, "Device"), sysKv,
+        h(".btnrow", { style: { marginTop: "12px" } }, tzSw),
+        h(".hint", null, "Recording names, alarm notifications and the car screen clock use the device's time zone. "
+          + "When it follows the van, it changes to the local one some 30–60 min after a border (by the weather forecast for the GPS position).")),
     ),
     h(".card", null,
       h(".card-head", null, h("h2", null, "Logs"), unitSel, linesSel, autoSw, h("button.btn.sm", { type: "button", onclick: () => loadLogs() }, icon("refresh"), "Refresh")),
@@ -170,5 +184,5 @@ export function mount(root) {
         h(".hint", null, "Before cutting power it is better to press \"Shut down\" so the filesystem closes cleanly (recording survives power loss anyway).")),
     ),
   );
-  return () => { stopped = true; stopStatus(); clearInterval(logTimer); };
+  return () => { stopped = true; stopStatus(); offSettings(); clearInterval(logTimer); };
 }

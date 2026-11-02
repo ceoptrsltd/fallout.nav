@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fnav import paths
-from fnav.camera.tsindex import KeyIndex, chunks, sidecar_path, update_index
+from fnav.camera.tsindex import KeyIndex, chunks, read_start, sidecar_path, update_index
 from fnav.camera.tsmux import has_audio_track
 
 _DIR_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
@@ -168,6 +168,7 @@ class Recordings:
         self._root = root
         self._dur_cache: dict[str, tuple[int, float, float | None]] = {}
         self._audio_cache: dict[str, bool] = {}  # запись → есть ли звук (PMT не меняется)
+        self._start_cache: dict[str, float | None] = {}  # запись → истинное начало из .ts.idx (не меняется)
         self._idx_cache: OrderedDict[str, KeyIndex] = OrderedDict()
         self._idx_lock = threading.Lock()
 
@@ -206,14 +207,14 @@ class Recordings:
                     continue
                 rel = f"{dir_rel}/{f.name}"
                 seen.add(rel)
-                start_dt = _parse_start(f.name)
-                items.append(((start_dt.timestamp() if start_dt else st.st_mtime),
-                              self._item(rel, f.path, st, dname, current, now)))
+                it = self._item(rel, f.path, st, dname, current, now)
+                items.append(((_span(it, now) or (st.st_mtime, 0.0))[0], it))
         for k in list(self._dur_cache):
             if k not in seen:
                 del self._dur_cache[k]
-        for k in [k for k in self._audio_cache if k not in seen]:
-            del self._audio_cache[k]
+        for cache in (self._audio_cache, self._start_cache):
+            for k in [k for k in cache if k not in seen]:
+                del cache[k]
         with self._idx_lock:
             for k in [k for k in self._idx_cache if k not in seen]:
                 del self._idx_cache[k]
@@ -237,12 +238,22 @@ class Recordings:
             "camera": camera_of(rel),
             "date": date,
             "start": start_dt.isoformat(timespec="seconds") if start_dt else None,
+            "start_ts": self._start_ts(rel, path, in_prog),
             "size_bytes": st.st_size,
             "duration_s": dur,
             "protected": os.path.exists(path + ".lock"),
             "in_progress": in_prog,
             "audio": self._has_audio(rel, path),
         }
+
+    def _start_ts(self, rel: str, path: str, in_prog: bool) -> float | None:
+        """Истинное начало записи (unix) — регистратор пишет его в .ts.idx; старые записи и nosync — None."""
+        if rel in self._start_cache:
+            return self._start_cache[rel]
+        v = read_start(Path(path))
+        if v is not None or not in_prog:  # у только что начатой индекс мог ещё не появиться
+            self._start_cache[rel] = v
+        return v
 
     def _has_audio(self, rel: str, path: str) -> bool:
         """Запись со звуком (задняя камера с микрофоном): по PMT в начале файла, один раз на файл."""
@@ -349,6 +360,7 @@ class Recordings:
                 except FileNotFoundError:
                     pass
             self._dur_cache.pop(rel, None)
+            self._start_cache.pop(rel, None)
             with self._idx_lock:
                 self._idx_cache.pop(rel, None)
             d = p.parent
@@ -370,12 +382,15 @@ EVENT_MARGIN_S = 2.0  # имя файла — с точностью до сек�
 
 
 def _span(it: dict, now: float) -> tuple[float, float] | None:
-    """Начало (unix, по имени файла — местное время) и длительность записи; без времени (nosync) — None.
-    Текущий сегмент — до «сейчас»."""
-    try:
-        t0 = datetime.fromisoformat(it["start"]).timestamp() if it.get("start") else None
-    except ValueError:
-        return None
+    """Начало (unix) и длительность записи; без времени (nosync) — None. Текущий сегмент — до «сейчас».
+    Начало — start_ts (истинное, из .ts.idx), иначе по имени файла в нынешнем поясе системы: у записей до смены
+    пояса в дороге (и до start_ts в индексе) оно сдвинуто на разницу поясов."""
+    t0 = it.get("start_ts")
+    if not isinstance(t0, int | float):
+        try:
+            t0 = datetime.fromisoformat(it["start"]).timestamp() if it.get("start") else None
+        except ValueError:
+            return None
     if t0 is None:
         return None
     dur = it.get("duration_s") or 0.0
@@ -385,7 +400,7 @@ def _span(it: dict, now: float) -> tuple[float, float] | None:
 
 
 def attach_events(items: list[dict], events: Iterable[Any], now: float | None = None) -> list[dict]:
-    """Метки событий охраны в записях: offset_s = время события − начало сегмента (по имени файла, местное время).
+    """Метки событий охраны в записях: offset_s = время события − начало сегмента (_span).
     Записи без времени (nosync) — без меток. Текущий сегмент — до «сейчас». Пропало видео (video_lost) — метка там,
     где пропало (data.since), а не когда подняли тревогу."""
     now = time.time() if now is None else now

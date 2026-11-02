@@ -401,6 +401,12 @@ class LevelSettings(_Model):
     calibration: LevelCalibration | None = None
 
 
+class SystemSettings(_Model):
+    """Система устройства (fnav/core/timezone.py)."""
+
+    auto_timezone: bool = True  # часовой пояс следует за машиной: пояс точки прогноза Open-Meteo по GPS
+
+
 SETTINGS_VERSION = 2  # 2: клавиша 4 — переключение камер вместо видеовыхода (fnav/core/config.py migrate)
 
 
@@ -422,6 +428,7 @@ class Settings(_Model):
     keypad: KeypadSettings = KeypadSettings()
     alarm: AlarmSettings = AlarmSettings()
     level: LevelSettings = LevelSettings()
+    system: SystemSettings = SystemSettings()
 
 
 # ───────────────────────────── Датчики ─────────────────────────────
@@ -568,6 +575,7 @@ class SystemStatus(_Model):
     internet: bool | None = None  # доступны ли тайлы Esri
     time_synced: bool | None = None
     utc_offset_min: int | None = None  # часовой пояс устройства: часы на экране показывают его время
+    timezone: str | None = None  # его имя IANA («Europe/Warsaw»): админка переводит местное время записей по нему
 
 
 # ───────────────────────────── Радио и Bluetooth ─────────────────────────────

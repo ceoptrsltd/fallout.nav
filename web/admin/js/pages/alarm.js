@@ -18,6 +18,7 @@ import { fmtWhen, agoText } from "../tracking-fmt.js";
 import { eventCamera, eventExtras, actCooldown, ACT_COOL_MS } from "../dash-fmt.js";
 import { eventThumb } from "../snap-view.js";
 import { openPlayer, soundUrl } from "./recordings.js";
+import { recStartMs } from "../rec-play.js";
 import * as push from "../push.js";
 
 const POLL_MS = 1500;
@@ -353,8 +354,8 @@ export function mount(root) {
     btn.disabled = true;
     try {
       const rec = await api.get("/api/recordings/item/" + encPath(seg));
-      const t0 = rec.start ? Date.parse(rec.start) / 1000 : NaN;
-      openPlayer(rec, { at: isNum(t0) && isNum(ts) ? Math.max(0, ts - t0) : null });
+      const t0 = recStartMs(rec); // start_ts, or its local time in the DEVICE's zone (not the phone's)
+      openPlayer(rec, { at: t0 !== null && isNum(ts) ? Math.max(0, ts - t0 / 1000) : null });
     } catch (e) {
       toast(e.status === 404 ? "warn" : "error", e.status === 404 ? "That recording is no longer on the device" : errText(e));
     } finally {

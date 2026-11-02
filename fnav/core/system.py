@@ -16,7 +16,7 @@ import sys
 import time
 from collections import deque
 
-from fnav import paths
+from fnav import paths, tz
 from fnav.core.util import spawn
 from fnav.models import DiskStatus, SystemStatus
 
@@ -152,6 +152,7 @@ class SystemService:
         self.status = SystemStatus()
         self.disk = DiskStatus()
         self._t0 = time.monotonic()
+        self._zone = tz.ZoneWatch()  # пояс сменили (fnav/core/timezone.py или руками) — tzset в этом процессе
 
     # ── статус ──
     async def refresh(self, *, internet: bool | None = None) -> SystemStatus:
@@ -185,7 +186,9 @@ class SystemService:
             st.setdefault("wifi_signal_pct", 72)
             st.setdefault("time_synced", True)
         st["internet"] = internet
+        self._zone.check()
         st["utc_offset_min"] = round((time.localtime().tm_gmtoff or 0) / 60)
+        st["timezone"] = tz.zone_name()
         self.status = SystemStatus(**st)
         return self.status
 
