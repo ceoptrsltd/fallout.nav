@@ -4,7 +4,7 @@
 // - Значок в стопке индикаторов справа внизу (рисует status.js): «ARM 45» — обратный отсчёт, «ARMED»,
 //   «ALARM» — сработала (мигает инверсией).
 // - Крупная мигающая плашка IMPACT / TILTED / MOVING / PERSON / CAMERA — 10 с после нового alarm.seq, пока состояние
-//   «triggered» (события без тревоги — video_back, test, armed, disarmed — её не показывают); снятие с охраны
+//   «triggered» (события без тревоги — video_back, test, armed, disarmed, siren — её не показывают); снятие с охраны
 //   убирает её сразу.
 // - Вспышка ALARM ON / ALARM OFF на 2.5 с при переключении off ↔ не off (как вспышка режима радио): при играющем
 //   радио — в строке трека плашки радио (новейшая из вспышек побеждает), иначе — своя плашка на месте радио
@@ -20,8 +20,8 @@ export const FLASH_S = 2.5; // ALARM ON / ALARM OFF — как вспышка р
 const BANNER_WORD = { impact: "IMPACT", tilt: "TILTED", move: "MOVING", approach: "PERSON", face: "FACE", loiter: "PERSON",
   video_lost: "CAMERA" };
 // события без тревоги: плашку не показывают (камера снова передаёт видео, проверка уведомлений, поставили / сняли с
-// охраны — для этого есть вспышка ALARM ON / ALARM OFF)
-const QUIET_KINDS = new Set(["video_back", "test", "armed", "disarmed"]);
+// охраны — для этого есть вспышка ALARM ON / ALARM OFF, сирена по кнопке из админки)
+const QUIET_KINDS = new Set(["video_back", "test", "armed", "disarmed", "siren"]);
 
 // ── чистые помощники (tests/display/alarm.test.mjs) ───────────────────────
 

@@ -262,6 +262,71 @@ def test_new_events_are_pushed_once(env):
     assert p["tag"] == "test" and h["urgency"] == "normal" and h["topic"] == "test"
 
 
+JPEG = b"\xff\xd8\xff\xe0" + b"thumb" * 900 + b"\xff\xd9"  # «миниатюра» ~4,5 КБ
+
+
+def get_raw(relay: Relay, path: str) -> tuple[int, bytes, dict]:
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(relay.base + path, timeout=10) as r:
+            return r.status, r.read(), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), dict(e.headers)
+
+
+def test_event_snapshot_goes_to_the_phone_as_a_link(env, tmp_path):
+    """Миниатюра кадра (thumb, base64) приходит с событием; в push — только ссылка (предел Web Push ~4 КБ) на
+    неугадываемый адрес, который открывается без входа (картинку уведомления браузер грузит без cookie) и устаревает."""
+    import base64
+
+    env.subscribe("a")
+    thumb = base64.b64encode(JPEG).decode()
+    r = env.alarm([event("s1", "approach", 999.0, thumb=thumb), event("s2", "tilt", 999.5, thumb="not base64!"),
+                   event("s3", "move", 999.7, thumb=base64.b64encode(b"GIF89a").decode())])
+    assert r.data["accepted"] == 3
+    got = {p["tag"]: p for _, p, _ in env.pushes(3)}
+    assert "image" not in got["tilt"] and "image" not in got["move"]  # мусор / не JPEG — push без картинки
+    img = got["approach"]["image"]
+    assert img.startswith("../api/push/snap/") and img.endswith(".jpg") and len(img) < 80
+    assert all(len(g.body) < 4096 for g in env.fake.received)
+    token = img.rsplit("/", 1)[1][:-4]
+    assert len(token) >= 32
+
+    st, body, headers = get_raw(env.relay, f"/fnadmin/api/push/snap/{token}.jpg")  # без cookie
+    assert st == 200 and body == JPEG and headers["Content-Type"] == "image/jpeg"
+    assert headers["Cache-Control"].startswith("private, max-age=") and headers["X-Content-Type-Options"] == "nosniff"
+    assert get_raw(env.relay, f"/api/push/snap/{token}.jpg")[0] == 200  # и без префикса
+    assert get_raw(env.relay, f"/fnadmin/api/push/snap/{token[:-1]}x.jpg")[0] == 404
+    assert get_raw(env.relay, "/fnadmin/api/push/snap/short.jpg")[0] == 401  # не адрес снимка — обычный вход
+    assert env.relay.call("POST", f"/fnadmin/api/push/snap/{token}.jpg", {}).status == 405
+    assert list((tmp_path / "push_snaps").glob("*.jpg")) == [tmp_path / "push_snaps" / f"{token}.jpg"]
+
+    from fnav_relay.snaps import SNAP_TTL_S
+
+    env.clock.t += SNAP_TTL_S + 1  # устарел
+    assert get_raw(env.relay, f"/fnadmin/api/push/snap/{token}.jpg")[0] == 404
+
+
+def test_snap_store_prunes_old_and_extra(tmp_path):
+    from fnav_relay.snaps import SnapStore, decode_thumb
+
+    now = [1000.0]
+    s = SnapStore(tmp_path / "snaps", ttl_s=100, max_files=3, clock=lambda: now[0])
+    tokens = []
+    for _ in range(4):
+        tokens.append(s.put(JPEG))
+        now[0] += 10
+    assert s.get(tokens[0]) is None and [s.get(t)[0] for t in tokens[1:]] == [JPEG] * 3  # сверх max_files — старые
+    assert s.get(tokens[3])[1] == 100 - 10
+    now[0] += 75  # 1115: первому оставшемуся (1010) — 105 с
+    s.put(JPEG)  # запись чистит устаревшие
+    assert len(list((tmp_path / "snaps").glob("*.jpg"))) == 3 and not (tmp_path / "snaps" / f"{tokens[1]}.jpg").exists()
+    assert s.get("../../etc/passwd") is None and s.get("x" * 10) is None
+    assert decode_thumb(None) is None and decode_thumb("") is None and decode_thumb("A" * 100_000) is None
+
+
 def test_gone_and_failing_subscriptions(env):
     for name in ("a", "b", "c"):
         env.subscribe(name)

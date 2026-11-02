@@ -126,10 +126,14 @@ Pi (fnav-tunnel.service: ssh -N -R 127.0.0.1:18080:127.0.0.1:8090 -R 127.0.0.1:1
 Форматы, тексты и поведение — `docs/contracts/alarm.md`, разделы 5–6; здесь только как это проходит через сервер.
 
 - Браузер → `https://<server>/fnadmin/api/push/…` → nginx `location ^~ /fnadmin/api/push/` → fnav-relay (всегда сервер,
-  в т.ч. когда Pi в сети; длиннее общего `^~ /fnadmin/api/`, поэтому выигрывает). Вход — cookie сессии, как у Tracking.
+  в т.ч. когда Pi в сети; длиннее общего `^~ /fnadmin/api/`, поэтому выигрывает). Вход — cookie сессии, как у Tracking;
+  кроме снимков к push `GET /fnadmin/api/push/snap/<token>.jpg` — без входа (неугадываемая ссылка на 2 суток, alarm.md
+  раздел 6), тем же `location`, nginx менять не надо.
   Push работает только по HTTPS (service worker и Push API — в защищённом контексте), поэтому только удалённо.
 - Устройство → `POST {FNAV_RELAY_URL}/device/alarm` через тот же `-L` туннель, что и журнал (`/device/samples`), с
   `X-Fnav-Device-Token`; nginx не участвует.
+- Кнопка Silence в уведомлении (Android) — `POST /fnadmin/api/alarm/silence` из service worker'а: общий
+  `^~ /fnadmin/api/` → Pi, с cookie сессии, как запросы страниц; Pi не в сети — 503 relay «Device is offline».
 - fnav-relay сам ходит к push-сервисам (FCM, Mozilla, Apple) наружу по HTTPS: исходящий 443 с сервера должен быть открыт.
 - Зависимость: apt `python3-cryptography` (`server/install.sh` ставит, если её нет). Без неё relay работает, но
   `/api/push/{key,subscribe,test}` → 503 `{"detail":"Push needs python3-cryptography on the server"}`.

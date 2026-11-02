@@ -743,8 +743,9 @@ class BtState(_Model):
 # ───────────────────────────── Охрана и уровень (MPU-6050) ─────────────────────────────
 
 AlarmStateName = Literal["off", "arming", "armed", "triggered"]
+# armed / disarmed — не тревога: поставили / сняли с охраны (data.source); siren — сирена по кнопке (data.source), тоже
 AlarmKind = Literal["impact", "tilt", "move", "approach", "face", "loiter", "video_lost", "video_back", "test",
-                    "armed", "disarmed"]  # armed / disarmed — не тревога: поставили / сняли с охраны (data.source)
+                    "armed", "disarmed", "siren"]
 
 
 class AlarmEvent(_Model):
@@ -821,6 +822,8 @@ class AlarmStatus(_Model):
     vision: AlarmVision = AlarmVision()
     cameras: list[AlarmCameraVideo] = []
     storage_error: str | None = None  # журнал / состояние / outbox не пишутся на карту (охрана работает)
+    seq: int = 0  # как Telemetry.alarm.seq
+    events_rev: int = 0  # меняется при любой правке журнала (новое событие, снимок к нему, очистка): ?events=0 + events
 
 
 class AlarmLast(_Model):

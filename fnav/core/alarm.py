@@ -9,6 +9,7 @@ Bluetooth (mpv радио), push через fnav-relay (outbox SQLite, как у
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import io
 import json
@@ -81,7 +82,10 @@ VIDEO_BACK_S = 10.0  # пропавшая камера «вернулась», �
 HEARTBEAT_S = 60.0
 RETRY_MIN_S = 5.0
 OUTBOX_MAX_ROWS = 1000
+OUTBOX_RETRY_S = 60.0  # база outbox не работала — снова пробовать её открыть не чаще
 BATCH = 50
+PUSH_THUMB_WAIT_S = 3.0  # push ждёт кадр к событию (миниатюра в уведомлении) не дольше; сирена и аварийка — не ждут
+PUSH_THUMB_MAX = 32_000  # миниатюра больше — push без картинки (обычно ~5 КБ)
 SIREN_RATE = 16000
 SIREN_SECONDS = 8.0  # файл короткий, играет по кругу siren_s секунд
 EPS = 1e-9
@@ -400,7 +404,7 @@ def _gap_text(s: float) -> str:
 
 def make_event(kind: str, data: dict, ts: float) -> AlarmEvent:
     """Тексты push и журнала (по-английски); время — местное устройства, HH:MM. События камеры с задней
-    (data.camera == "rear") — свои тексты: «за фургоном». armed / disarmed — откуда (data.source)."""
+    (data.camera == "rear") — свои тексты: «за фургоном». armed / disarmed / siren — откуда (data.source)."""
     hm = time.strftime("%H:%M", time.localtime(ts))
     url = "#/alarm"
     rear = kind in VISION_KINDS and data.get("camera") == "rear"
@@ -448,6 +452,12 @@ def make_event(kind: str, data: dict, ts: float) -> AlarmEvent:
             body += f", active in {delay:.0f} s"
         elif kind == "disarmed" and data.get("was") == "triggered":
             body += " while the alarm was going off"
+    elif kind == "siren":
+        how = SOURCE_TEXT.get(str(data.get("source")), "")
+        title, body = "Siren sounded", " ".join(x for x in ("Sounded", how, f"at {hm}") if x)
+        secs = data.get("seconds")
+        if isinstance(secs, (int, float)) and secs > 0:
+            body += f" for {secs:.0f} s"
     else:
         title, body = "Test alarm", f"Alarm notifications work ({hm})"
     return AlarmEvent(id=uuid.uuid4().hex, ts=round(ts, 3), kind=kind, title=title, body=body, url=url,  # type: ignore[arg-type]
@@ -489,6 +499,7 @@ class Siren:
         self.radio = radio
         self.wav_path = wav_path
         self.allowed = allowed  # охрану могли выключить, пока сирена собиралась зазвучать
+        self.skipped: str | None = None  # почему последний start() не включил сирену
         self._task: asyncio.Task | None = None
         self._busy = asyncio.Lock()
 
@@ -507,22 +518,29 @@ class Siren:
         os.replace(tmp, self.wav_path)
         return self.wav_path
 
-    async def start(self, seconds: float) -> bool:
+    async def start(self, seconds: float, manual: bool = False) -> bool:
+        """manual — по кнопке хозяина: в любом состоянии охраны (allowed не спрашивается). Не зазвучала — почему,
+        в self.skipped."""
         async with self._busy:
+            self.skipped = None
             if self.sounding:
                 return True
-            if not self.allowed():
+            if not manual and not self.allowed():
+                self.skipped = "the alarm is off"
                 return False
             if self.radio is None:
+                self.skipped = "no radio player"
                 log.info("alarm: siren skipped - no radio player")
                 return False
             try:
                 path = await asyncio.to_thread(self.ensure_wav)
             except OSError as e:
+                self.skipped = f"cannot write the siren sound: {e}"
                 log.warning("alarm: siren skipped - cannot write %s: %s", self.wav_path, e)
                 return False
             why = await self.radio.play_alert(str(path), volume=100)
             if why:
+                self.skipped = why
                 log.info("alarm: siren skipped - %s", why)
                 return False
             log.warning("alarm: siren on for %.0f s", seconds)
@@ -552,6 +570,10 @@ class Siren:
 class HazardLights:
     """Аварийка: RC-реле параллельно её кнопке (с фиксацией) замкнуто, пока мигаем (docs/contracts/alarm.md,
     «Аварийка»). Мигание длится до срока, новое событие его продлевает.
+
+    Вывод открывается и закрывается в потоке, не в event loop: у аппаратного ШИМ это ожидание прав от udev и импульсы
+    «выкл» перед снятием сигнала. Погасить незажжённое — ничего не делать: выключенная аварийка ШИМ не трогает
+    (без dtoverlay=pwm это не ошибка, пока её не включили); удачное открытие или переключение стирает прошлую ошибку.
     """
 
     def __init__(self, get_cfg: Callable[[], HazardSettings],
@@ -567,52 +589,61 @@ class HazardLights:
         self._until = 0.0  # monotonic: когда погасить
         self._task: asyncio.Task | None = None  # мигание по тревоге / тест
         self._blink: asyncio.Task | None = None  # подтверждение Arm/Disarm
-        self._lock = asyncio.Lock()  # переключения реле — по одному
+        self._lock = asyncio.Lock()  # вывод и переключения реле — по одному
 
     @property
     def active(self) -> bool:
         return any(t is not None and not t.done() for t in (self._task, self._blink))
 
-    def _output(self, cfg: HazardSettings) -> HazardOutput | None:
-        """Открыть вывод (или заново — сменились вывод/сигнал); ошибка — в self.error."""
+    async def _output(self, cfg: HazardSettings) -> HazardOutput | None:
+        """Открыть вывод (или заново — сменились импульсы); ошибка — в self.error. Только под self._lock."""
         key = output_key(cfg)
         if self._out is not None and key == self._key:
             return self._out
-        self._close_output()
+        await self._close_output()
         try:
-            self._out, self._key = self.open_output(cfg), key
-            self.error = None
-            log.info("alarm: hazard relay ready (pulses %d / %d us)", cfg.on_us, cfg.off_us)
-        except Exception as e:  # noqa: BLE001 — нет gpiozero, вывод занят и т.п.
+            out = await asyncio.to_thread(self.open_output, cfg)
+        except Exception as e:  # noqa: BLE001 — нет dtoverlay=pwm, нет прав и т.п.
             if self.error != str(e):
                 log.warning("alarm: hazard relay unavailable: %s", e)
             self.error = str(e)
-        return self._out
+            return None
+        self._out, self._key, self.error = out, key, None
+        log.info("alarm: hazard relay ready (pulses %d / %d us)", cfg.on_us, cfg.off_us)
+        return out
 
-    def _close_output(self) -> None:
-        if self._out is not None:
+    async def _close_output(self) -> None:
+        out, self._out, self._key, self.lit = self._out, None, None, False
+        if out is not None:
             with contextlib.suppress(Exception):
-                self._out.close()
-        self._out, self._key, self.lit = None, None, False
+                await asyncio.to_thread(out.close)
 
-    def apply(self, cfg: HazardSettings) -> None:
+    async def apply(self, cfg: HazardSettings) -> None:
         """Настройки: включена — держать вывод открытым (у RC-реле — импульсы «выкл»), выключена — отпустить."""
-        if self.active:
-            return  # мигает (или тест) — вывод отпустим/переоткроем после
-        if cfg.enabled:
-            self._output(cfg)
-        else:
-            self._close_output()
-            self.error = None
+        async with self._lock:
+            if self.active:
+                return  # мигает (или тест) — вывод отпустим/переоткроем после
+            if cfg.enabled:
+                await self._output(cfg)
+            else:
+                await self._close_output()
+                self.error = None
 
     async def _switch(self, on: bool) -> None:
-        cfg = self.get_cfg()
         async with self._lock:
-            out = self._output(cfg)
-            if out is None or self.lit == on:
+            if self.lit == on:
+                return  # уже так: погасить незажжённое — вывод не открывать
+            out = await self._output(self.get_cfg())
+            if out is None:
                 return
-            out.set(on)
-            self.lit = on
+            try:
+                out.set(on)
+            except Exception as e:  # noqa: BLE001 — sysfs ШИМ пропал / нет прав
+                self.error = _err_text(e)
+                log.warning("alarm: hazard relay failed: %s", self.error)
+                await self._close_output()
+                return
+            self.lit, self.error = on, None
 
     def flash(self, seconds: float) -> None:
         """Мигать seconds (уже мигает — продлить до now + seconds)."""
@@ -637,18 +668,19 @@ class HazardLights:
             await asyncio.shield(self._switch(False))
             if was:
                 log.info("alarm: hazard lights off")
-            self._after()
+            await asyncio.shield(self._after())
 
-    def _after(self) -> None:
-        if not self.get_cfg().enabled:
-            self._close_output()  # тест при выключенной аварийке — вывод не держим
+    async def _after(self) -> None:
+        async with self._lock:
+            if not self.get_cfg().enabled:
+                await self._close_output()  # тест при выключенной аварийке — вывод не держим
 
     async def stop(self) -> None:
         self._until = 0.0
         await cancel_tasks(self._task, self._blink)
         self._task = self._blink = None
         await self._switch(False)
-        self._after()
+        await self._after()
 
     def confirm(self, times: int) -> None:
         """Мигнуть times раз (Arm — 1, Disarm — 2), если не мигаем по тревоге."""
@@ -670,15 +702,22 @@ class HazardLights:
             await asyncio.shield(self._switch(False))
 
     async def test(self) -> str | None:
-        """Мигнуть HAZARD_TEST_S текущими настройками (даже выключенной). None — пошло, иначе — почему нет."""
-        if self._output(self.get_cfg()) is None:
-            return self.error or "hazard relay unavailable"
+        """Мигнуть HAZARD_TEST_S текущими настройками (даже выключенной). None — пошло, иначе — почему нет.
+        Выключенная не открылась — причина только в ответе: в статусе она не «сломана» (ею не пользуются)."""
+        cfg = self.get_cfg()
+        async with self._lock:
+            if await self._output(cfg) is None:
+                why = self.error or "hazard relay unavailable"
+                if not cfg.enabled:
+                    self.error = None
+                return why
         self.flash(HAZARD_TEST_S)
         return None
 
     async def close(self) -> None:
         await self.stop()
-        self._close_output()
+        async with self._lock:
+            await self._close_output()
 
     def status(self) -> AlarmHazard:
         return AlarmHazard(enabled=self.get_cfg().enabled, active=self.active, error=self.error)
@@ -699,45 +738,70 @@ def _db_broken(e: BaseException) -> bool:
 
 class AlarmOutbox:
     """Очередь событий для fnav-relay: SQLite (переживает обрывы и перезагрузки), а когда база не открывается или не
-    пишется — в памяти (push уходит, пока жив процесс). Битый файл при старте (пропало питание) — в сторону
-    (*.bad-<время>) и новая база; не вышло и так (карта только для чтения, полна) — память, error — почему.
-    Строки — ((«db» | «mem», id), событие); сервер события с известным id не дублирует, повтор не страшен."""
+    пишется — в памяти (push уходит, пока жив процесс). Битый файл (пропало питание) — в сторону (*.bad-<время>) и
+    новая база; не вышло и так (карта только для чтения, полна, чужой владелец файла) — память, error — почему.
+    Базу пробуем открыть снова не чаще OUTBOX_RETRY_S (retry): заработала — очередь из памяти уходит в неё. Пока база не
+    работает, очередь из памяти лежит и в маленьком запасном файле (spill, без миниатюр), если его можно записать:
+    после перезапуска она снова в очереди. Строки — ((«db» | «mem», id), событие); сервер события с известным id не
+    дублирует, повтор не страшен."""
 
-    def __init__(self, path: Path, max_rows: int = OUTBOX_MAX_ROWS) -> None:
+    def __init__(self, path: Path, max_rows: int = OUTBOX_MAX_ROWS, mono: Callable[[], float] = time.monotonic) -> None:
         self.path = path
         self.max_rows = max_rows
+        self.mono = mono
         self.db: Outbox | None = Outbox(path, max_rows=max_rows)
-        self.error: str | None = None  # база не работает — очередь в памяти до перезапуска
+        self.error: str | None = None  # база не работает — очередь в памяти
         self.moved: Path | None = None  # куда убран битый файл
+        self.spill = path.with_name(path.name + ".pending.json")  # запасная копия очереди из памяти
+        self.spilled = False  # копия очереди из памяти сейчас в self.spill (переживёт перезапуск)
+        self._spill_error: str | None = None
+        self._retry_at = 0.0  # monotonic: раньше базу снова не открывать
         self._mem: list[tuple[int, dict]] = []
         self._seq = 0
         self._lock = threading.RLock()
 
     def open(self) -> None:
-        """При старте: открыть базу; битая — в сторону и заново; не вышло — память."""
+        """При старте: открыть базу; битая — в сторону и заново; не вышло — память. Очередь из запасного файла
+        (с прошлого раза) — туда же."""
         with self._lock:
             if self.db is None:
                 return
-            try:
-                self.db.count()
-                return
-            except Exception as e:  # noqa: BLE001 — sqlite3.Error, OSError
-                why = _err_text(e)
-                broken = _db_broken(e)
-            if broken:
+            left = self._read_spill()
+            why = self._connect(self.db)
+            if why is None and left:
                 try:
-                    self.moved = self._move_aside()
-                    log.error("alarm: outbox %s is broken (%s) - moved to %s, starting a new one",
-                              self.path, why, self.moved.name)
-                    self.db.count()
-                    return
-                except Exception as e:  # noqa: BLE001
-                    why = f"{why}; no new one: {_err_text(e)}" if self.moved is None else _err_text(e)
+                    for b in left:
+                        self.db.add(b)
+                    left = []
+                except Exception as e:  # noqa: BLE001 — недописанное повторится: сервер дубли по id отбросит
+                    why = _err_text(e)
+            if why is None:
+                self._drop_spill()
+                return
+            self._mem = self._numbered([*left, *(b for _, b in self._mem)])
             self._fail(why, salvage=False)  # читать из неё нечего (а рядом может лежать чужой журнал WAL)
 
-    def _move_aside(self) -> Path:
-        assert self.db is not None
-        self.db.close()
+    def _connect(self, db: Outbox) -> str | None:
+        """Проверить базу; битая — в сторону и новая. None — работает, иначе — почему нет."""
+        try:
+            db.count()
+            return None
+        except Exception as e:  # noqa: BLE001 — sqlite3.Error, OSError
+            why = _err_text(e)
+            if not _db_broken(e):
+                return why
+        moved: Path | None = None
+        try:
+            moved = self._move_aside(db)
+            self.moved = moved
+            log.error("alarm: outbox %s is broken (%s) - moved to %s, starting a new one", self.path, why, moved.name)
+            db.count()
+            return None
+        except Exception as e:  # noqa: BLE001
+            return f"{why}; no new one: {_err_text(e)}" if moved is None else _err_text(e)
+
+    def _move_aside(self, db: Outbox) -> Path:
+        db.close()
         bad = self.path.with_name(f"{self.path.name}.bad-{time.strftime('%Y%m%d-%H%M%S')}")
         os.replace(self.path, bad)
         for sfx in ("-wal", "-shm"):  # журнал битой базы к новой не относится
@@ -749,8 +813,9 @@ class AlarmOutbox:
     def _fail(self, why: str, salvage: bool = True) -> None:
         """База не работает (why — почему): дальше — память; что из базы ещё читается (salvage) — туда же."""
         self.error = why
-        log.error("alarm: outbox %s unusable (%s) - events wait for the server in memory until restart",
-                  self.path, self.error)
+        log.error("alarm: outbox %s unusable (%s) - events wait for the server in memory, retry in %.0f s",
+                  self.path, self.error, OUTBOX_RETRY_S)
+        self._retry_at = self.mono() + OUTBOX_RETRY_S
         old: list[tuple[int, dict]] = []
         if self.db is not None:
             if salvage:
@@ -760,6 +825,36 @@ class AlarmOutbox:
                 self.db.close()
         self.db = None
         self._mem = self._numbered([*(b for _, b in old), *(b for _, b in self._mem)])
+        self._spill_mem()
+
+    def retry(self) -> bool:
+        """База не работала: открыть снова (не чаще OUTBOX_RETRY_S). Вышло — очередь из памяти в неё, запасной файл
+        удаляется. → работает ли база."""
+        with self._lock:
+            if self.db is not None:
+                return True
+            now = self.mono()
+            if now < self._retry_at:
+                return False
+            self._retry_at = now + OUTBOX_RETRY_S
+            db = Outbox(self.path, max_rows=self.max_rows)
+            why = self._connect(db)
+            if why is None:
+                try:
+                    for _, b in self._mem:
+                        db.add(b)
+                except Exception as e:  # noqa: BLE001 — недописанное повторится: сервер дубли по id отбросит
+                    why = _err_text(e)
+            if why is not None:
+                with contextlib.suppress(Exception):
+                    db.close()
+                self.error = why
+                return False
+            log.warning("alarm: outbox %s works again (%d event(s) moved there from memory)", self.path,
+                        len(self._mem))
+            self.db, self._mem, self.error = db, [], None
+            self._drop_spill()
+            return True
 
     def _numbered(self, bodies: list[dict]) -> list[tuple[int, dict]]:
         """Новые id (больше всех прежних: недосланная пачка со старыми id ничего лишнего не удалит)."""
@@ -769,6 +864,43 @@ class AlarmOutbox:
             out.append((self._seq, b))
         return out
 
+    # ── запасной файл ──
+    def _spill_mem(self) -> None:
+        """Очередь из памяти → запасной файл (без миниатюр: файл маленький), пусто — удалить. Не пишется — в лог."""
+        if not self._mem:
+            self._drop_spill()
+            return
+        try:
+            atomic_write_text(self.spill, json.dumps([{k: v for k, v in b.items() if k != "thumb"}
+                                                      for _, b in self._mem], ensure_ascii=False))
+        except Exception as e:  # noqa: BLE001 — карта «только чтение» / полна: очередь только в памяти
+            msg = _err_text(e)
+            if msg != self._spill_error:
+                log.error("alarm: cannot keep the queue in %s either: %s", self.spill, msg)
+            self._spill_error, self.spilled = msg, False
+            return
+        self._spill_error, self.spilled = None, True
+
+    def _drop_spill(self) -> None:
+        with contextlib.suppress(OSError):
+            self.spill.unlink(missing_ok=True)
+        self.spilled = False
+
+    def _read_spill(self) -> list[dict]:
+        """При старте: очередь, оставшаяся в запасном файле (база в прошлый раз не работала)."""
+        try:
+            raw = json.loads(self.spill.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError) as e:
+            log.error("alarm: cannot read %s: %s", self.spill, _err_text(e))
+            return []
+        rows = raw if isinstance(raw, list) else []
+        bodies = [b for b in rows if isinstance(b, dict) and isinstance(b.get("ts"), (int, float))]
+        log.warning("alarm: %d event(s) for the server left in %s from the last run", len(bodies), self.spill.name)
+        return bodies
+
+    # ── очередь ──
     def add(self, ev: dict) -> None:
         with self._lock:
             if self.db is not None:
@@ -778,6 +910,7 @@ class AlarmOutbox:
                 except Exception as e:  # noqa: BLE001
                     self._fail(_err_text(e))
             self._mem = [*self._mem, *self._numbered([ev])][-self.max_rows:]
+            self._spill_mem()
 
     def peek(self, n: int = BATCH) -> list[tuple[tuple[str, int], dict]]:
         with self._lock:
@@ -802,6 +935,8 @@ class AlarmOutbox:
             if mem_ids:
                 last = max(mem_ids)
                 self._mem = [r for r in self._mem if r[0] > last]
+                if self.db is None:
+                    self._spill_mem()
 
     def count(self) -> int:
         with self._lock:
@@ -853,16 +988,21 @@ class AlarmService:
         self.video = VideoWatch()
         self.siren = Siren(radio, data_dir / "alarm_siren.wav", allowed=lambda: self.state in DETECTED)
         self.hazard = HazardLights(lambda: self.get_settings().hazard, open_hazard, mono=mono)
-        self.outbox = AlarmOutbox(data_dir / "alarm_outbox.db", max_rows=OUTBOX_MAX_ROWS)
+        self.outbox = AlarmOutbox(data_dir / "alarm_outbox.db", max_rows=OUTBOX_MAX_ROWS, mono=mono)
         self._transport = transport
         self._client: httpx.AsyncClient | None = None  # создаётся при первой отправке (сервер может быть не настроен)
         self._io = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fnav-alarm-io")  # записи файлов — по порядку
         self.state = "off"
         self.armed_at: float | None = None
         self._arm_deadline: float | None = None  # monotonic
+        # то же по часам (unix): в alarm_state.json — перезапуск посреди отсчёта продолжает его, а не ставит сразу
+        self._arm_until: float | None = None
         self._last_event_mono: float | None = None
         self.events: list[AlarmEvent] = []  # новые первыми
         self.seq = 0
+        # правка журнала (событие, снимок к нему, очистка): админка берёт журнал, только когда номер сменился; с часов
+        # старта — после перезапуска не совпадёт с прежним
+        self.events_rev = int(clock() * 1000) % 1_000_000_000_000
         self._last_push: dict[str, float] = {}  # kind (события камер — kind:камера) → monotonic
         self._pending = 0
         self._notify = get_settings().notify_offline
@@ -884,13 +1024,15 @@ class AlarmService:
             await self._run_io(self._load)
         except Exception:
             log.exception("alarm: cannot load the saved state")
-        if self.state != "off":
+        if self.state == "arming":
+            log.info("alarm: arming resumed after restart, %s s left", self._arm_in())
+        elif self.state != "off":
             self.detector.rebase()  # база наклона — через 2 с после старта
             log.info("alarm: armed (restored after restart)")
         try:
             await asyncio.to_thread(self.outbox.open)  # битая база — в сторону и новая; не вышло — очередь в памяти
             self._pending = await asyncio.to_thread(self.outbox.count)
-            self.hazard.apply(self.get_settings().hazard)
+            await self.hazard.apply(self.get_settings().hazard)
         except Exception:
             log.exception("alarm start")
         if self.siren.radio is not None:  # WAV сирены — заранее: карта «только чтение» потом не помешает сирене
@@ -918,7 +1060,8 @@ class AlarmService:
 
     def apply_settings(self, s: AlarmSettings) -> None:
         self.detector.configure(s)
-        self.hazard.apply(s.hazard)
+        if self._loop is not None:  # до start() — вывод аварийки откроет сам start()
+            spawn(self.hazard.apply(s.hazard), name="alarm-hazard-apply")
         if s.notify_offline != self._notify:
             self._notify = s.notify_offline
             self._kick.set()
@@ -935,7 +1078,7 @@ class AlarmService:
         if isinstance(d, dict):
             with contextlib.suppress(TypeError, ValueError):
                 self.seq = int(d.get("seq") or 0)
-            if d.get("on"):
+            if d.get("on") and not self._resume_arming(d.get("arm_until")):
                 self.state = "armed"
                 try:
                     self.armed_at = float(d["armed_at"]) if d.get("armed_at") else self.clock()
@@ -951,6 +1094,19 @@ class AlarmService:
             with contextlib.suppress(ValidationError, TypeError):
                 events.append(AlarmEvent.model_validate(e))
         self.events = events[:JOURNAL_MAX]
+
+    def _resume_arming(self, until: Any) -> bool:
+        """Перезапуск посреди отсчёта постановки (arm_until — срок по часам): досчитать остаток, а не ставить сразу —
+        иначе база наклона берётся, пока ещё закрывают двери (удар / наклон → сирена). Срок прошёл — False (сразу
+        armed). Остаток — не дольше arm_delay_s: часы после перезагрузки без RTC могут отставать."""
+        if isinstance(until, bool) or not isinstance(until, (int, float)) or not math.isfinite(until):
+            return False
+        left = min(float(until) - self.clock(), float(self.get_settings().arm_delay_s))
+        if left <= 0:
+            return False
+        self.state, self.armed_at = "arming", None
+        self._arm_deadline, self._arm_until = self.mono() + left, self.clock() + left
+        return True
 
     async def _write(self, path: Path, text: str) -> bool:
         """Записать файл охраны. Не вышло (карта полна, перемонтирована «только чтение») — в лог и в
@@ -968,7 +1124,8 @@ class AlarmService:
         return True
 
     async def _save_state(self) -> bool:
-        d = {"on": self.state != "off", "armed_at": self.armed_at, "seq": self.seq, "move": self.move.to_dict()}
+        d = {"on": self.state != "off", "armed_at": self.armed_at, "seq": self.seq, "move": self.move.to_dict(),
+             "arm_until": self._arm_until if self.state == "arming" else None}
         return await self._write(self.state_path, json.dumps(d))
 
     async def _save_events(self) -> bool:
@@ -980,7 +1137,9 @@ class AlarmService:
         parts = []
         if self._write_errors:
             parts.append("Alarm state and log are not saved: " + next(iter(self._write_errors.values())))
-        if self.outbox.error:
+        if self.outbox.error and self.outbox.spilled:
+            parts.append(f"Notifications wait in memory and in {self.outbox.spill.name}: {self.outbox.error}")
+        elif self.outbox.error:
             parts.append(f"Notifications wait in memory only (lost on restart): {self.outbox.error}")
         return "; ".join(parts) or None
 
@@ -990,7 +1149,7 @@ class AlarmService:
         await self._save_state()
 
     def _set_armed(self) -> None:
-        self.state, self.armed_at, self._arm_deadline = "armed", self.clock(), None
+        self.state, self.armed_at, self._arm_deadline, self._arm_until = "armed", self.clock(), None, None
         self._last_event_mono = None
         self.detector.rebase()
         self.move.reset()
@@ -1009,6 +1168,7 @@ class AlarmService:
                 self._set_armed()
             else:
                 self.state, self._arm_deadline, self.armed_at = "arming", self.mono() + delay, None
+                self._arm_until = self.clock() + delay
                 log.info("alarm: arming in %d s", delay)
             await self._journal("armed", {"source": source, "delay_s": max(0, delay)}, push=source != "web")
             await self._changed()
@@ -1019,6 +1179,7 @@ class AlarmService:
         тревоги (хозяин должен узнать, что сирену заглушили в кабине)."""
         was = self.state
         self.state, self.armed_at, self._arm_deadline, self._last_event_mono = "off", None, None, None
+        self._arm_until = None
         self.detector.clear_base()
         self.move.reset()
         self.video.reset()
@@ -1039,6 +1200,21 @@ class AlarmService:
         await self.siren.stop()
         await self.hazard.stop()
         return self.status()
+
+    async def sound_siren(self, source: str = "web") -> str | None:
+        """Сирена по кнопке хозяина (паника: на снимке события камеры — человек у двери, а такие события сирену не
+        включают): siren_s секунд в любом состоянии охраны и даже при settings.alarm.siren = false. Не тревога:
+        состояние, аварийка, записи — как были; в журнал — siren (data.source), push — не из админки.
+        None — звучит, иначе — почему нет (нет колонки…). Уже звучит — None без новой записи."""
+        if self.siren.sounding:
+            return None
+        secs = self.get_settings().siren_s
+        if not await self.siren.start(secs, manual=True):
+            return self.siren.skipped or "the siren did not start"
+        log.warning("alarm: siren sounded by hand (%s)", source)
+        await self._journal("siren", {"source": source, "seconds": secs}, push=source != "web")
+        await self._save_state()  # seq
+        return None
 
     async def hazard_test(self) -> str | None:
         """Мигнуть аварийкой 3 с текущими настройками. None — пошло, иначе — почему нет."""
@@ -1120,11 +1296,13 @@ class AlarmService:
     def _record(self, ev: AlarmEvent) -> None:
         self.events = [ev, *self.events][:JOURNAL_MAX]
         self.seq += 1
+        self.events_rev += 1
 
     async def _fire(self, det: Detection) -> None:
-        """Событие охраны: сирена и аварийка → outbox (push не чаще push_cooldown_s на вид) → журнал и состояние на
-        карту, защита записи и снимки. Сначала то, что от карты памяти не зависит: полная или «только чтение» карта не
-        оставит без сирены, аварийки и push; каждый шаг сам по себе (ошибка — в лог, записи — в storage_error)."""
+        """Событие охраны: сирена и аварийка → outbox (push не чаще push_cooldown_s на вид; с миниатюрой кадра, если он
+        успел за PUSH_THUMB_WAIT_S) → журнал и состояние на карту, защита записи и снимки. Сначала то, что от карты
+        памяти не зависит: полная или «только чтение» карта не оставит без сирены, аварийки и push; каждый шаг сам по
+        себе (ошибка — в лог, записи — в storage_error). Кадры и защита записи запрашиваются сразу, не дожидаясь push."""
         if self.state not in DETECTED:
             return
         cfg = self.get_settings()
@@ -1139,17 +1317,23 @@ class AlarmService:
             self.hazard.flash(cfg.hazard.seconds)
         if first:
             self._kick.set()  # новое состояние — серверу сразу
-        await self._enqueue(ev, cooldown=True)
         try:
             plan = self._camera_plan(det)
         except Exception:
             log.exception("alarm: camera plan")
             plan = {}
         front, rear = plan.get("front"), plan.get("rear")
+        grabs = {cam: spawn(self._grab(cam, take), name=f"alarm-snapshot-{cam}") for cam, take in plan.items()}
+        protects = [spawn(self._protect(cam, take), name=f"alarm-protect-{cam}") for cam, take in
+                    (("front", front), ("rear", rear))]
+        thumb: tuple[str, bytes] | None = None
+        if self._push_due(ev, cooldown=True):
+            thumb = await self._push_thumb(det, grabs)
+            await self._queue(ev, thumb[1] if thumb else None)
         res = await asyncio.gather(
             self._save_state(), self._save_events(),
-            self._protect("front", front), self._save_snapshot(ev.id, "front", front),
-            self._protect("rear", rear), self._save_snapshot(ev.id, "rear", rear), return_exceptions=True)
+            protects[0], self._store_snapshot(ev.id, "front", grabs.get("front"), thumb),
+            protects[1], self._store_snapshot(ev.id, "rear", grabs.get("rear"), thumb), return_exceptions=True)
         for r in res:
             if isinstance(r, BaseException):
                 log.error("alarm: %s - step failed: %s", det.kind, _err_text(r))
@@ -1163,6 +1347,7 @@ class AlarmService:
         if snap_rear:
             ev.data["snapshot_rear"] = True
         if seg or snap or seg_rear or snap_rear:
+            self.events_rev += 1
             await self._save_events()
 
     async def _note(self, det: Detection) -> None:
@@ -1177,9 +1362,9 @@ class AlarmService:
         await self._save_events()
 
     async def _journal(self, kind: str, data: dict, push: bool) -> None:
-        """Запись журнала «поставили / сняли с охраны» (SWITCH_KINDS): не тревога — без сирены, аварийки, защиты
-        записи и снимков; push — если push (без паузы push_cooldown_s: «сняли» вслед за «поставили» не теряется).
-        Состояние сохраняет вызывающий (_changed)."""
+        """Запись журнала «поставили / сняли с охраны» (SWITCH_KINDS) и «сирена по кнопке» (siren): не тревога — без
+        аварийки, защиты записи и снимков; push — если push (без паузы push_cooldown_s: «сняли» вслед за «поставили»
+        не теряется). Состояние сохраняет вызывающий (_changed)."""
         ev = make_event(kind, data, self.clock())
         self._record(ev)
         log.info("alarm: %s - %s", ev.title, ev.body)
@@ -1221,11 +1406,14 @@ class AlarmService:
             return None
         return p if p.is_file() else None
 
-    @staticmethod
-    def _write_thumb(src: Path, dst: Path) -> None:
+    @classmethod
+    def _write_thumb(cls, src: Path, dst: Path) -> None:
         from fnav.camera.jpeg import thumbnail_jpeg
 
-        data = thumbnail_jpeg(src.read_bytes())
+        cls._put_thumb(dst, thumbnail_jpeg(src.read_bytes()))
+
+    @staticmethod
+    def _put_thumb(dst: Path, data: bytes) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp = dst.with_name(f".{dst.name}.tmp")
         tmp.write_bytes(data)
@@ -1252,30 +1440,76 @@ class AlarmService:
                 plan[cam] = CameraTake(SNAPSHOT_BEFORE_S)
         return plan
 
-    async def _save_snapshot(self, event_id: str, camera: str = "front", take: CameraTake | None = None) -> bool:
+    async def _grab(self, camera: str, take: CameraTake | None) -> bytes | None:
+        """Кадр камеры к событию (JPEG) или None: камеры нет / кадров тогда не было."""
         fn = self.snapshot_rear if camera == "rear" else self.snapshot
         if fn is None or take is None:
-            return False
+            return None
         try:
             jpg = await fn(before_s=take.before_s)
         except Exception as e:  # noqa: BLE001 — камеры нет: событие идёт дальше
-            log.info("alarm: no snapshot: %s", e)
+            log.info("alarm: no %s snapshot: %s", camera, e)
+            return None
+        return jpg or None
+
+    @staticmethod
+    def _push_camera(det: Detection, cams: Any) -> str | None:
+        """Чей кадр — в push: камеры, поднявшей событие (data.camera; «обе пропали» — передней), иначе передней."""
+        cam = det.data.get("camera")
+        for c in ([cam] if cam in CAMERA_NAMES else []) + ["front", "rear"]:
+            if c in cams:
+                return c
+        return None
+
+    async def _push_thumb(self, det: Detection, grabs: dict[str, asyncio.Task]) -> tuple[str, bytes] | None:
+        """Миниатюра кадра к событию для push (camera, JPEG ~5 КБ) — ждём кадр не дольше PUSH_THUMB_WAIT_S (камера
+        не отвечает — push уходит без картинки; сам снимок сохранится, когда придёт)."""
+        cam = self._push_camera(det, grabs)
+        if cam is None:
+            return None
+        try:
+            jpg = await asyncio.wait_for(asyncio.shield(grabs[cam]), PUSH_THUMB_WAIT_S)
+        except TimeoutError:
+            log.info("alarm: push without a picture - no %s snapshot in %.0f s", cam, PUSH_THUMB_WAIT_S)
+            return None
+        except Exception:  # noqa: BLE001 — _grab ошибок не бросает; на всякий случай — push без картинки
+            return None
+        if not jpg:
+            return None
+        from fnav.camera.jpeg import thumbnail_jpeg
+
+        try:
+            small = await asyncio.to_thread(thumbnail_jpeg, jpg)
+        except Exception as e:  # noqa: BLE001 — битый кадр: без картинки
+            log.info("alarm: no thumbnail for the push: %s", e)
+            return None
+        return (cam, small) if 0 < len(small) <= PUSH_THUMB_MAX else None
+
+    async def _store_snapshot(self, event_id: str, camera: str, grab: asyncio.Task | None,
+                              thumb: tuple[str, bytes] | None = None) -> bool:
+        """Кадр (grab) → alarm_snaps на карту; миниатюра, уже сделанная для push, — рядом (не делать её второй раз)."""
+        if grab is None:
             return False
+        jpg = await grab
         if not jpg:
             return False
+        small = thumb[1] if thumb and thumb[0] == camera else None
         try:
-            await self._run_io(self._write_snapshot, event_id, jpg, camera)
+            await self._run_io(self._write_snapshot, event_id, jpg, camera, small)
         except Exception as e:  # noqa: BLE001 — карта полна / «только чтение»: событие идёт дальше
             log.error("alarm: cannot save the %s snapshot: %s", camera, _err_text(e))
             return False
         return True
 
-    def _write_snapshot(self, event_id: str, jpg: bytes, camera: str = "front") -> None:
+    def _write_snapshot(self, event_id: str, jpg: bytes, camera: str = "front", thumb: bytes | None = None) -> None:
         self.snap_dir.mkdir(parents=True, exist_ok=True)
         name = _snap_name(event_id, camera)
         tmp = self.snap_dir / f".{name}.tmp"
         tmp.write_bytes(jpg)
         tmp.replace(self.snap_dir / name)
+        if thumb:
+            with contextlib.suppress(OSError):  # не вышло — сделается при первом запросе
+                self._put_thumb(self.snap_dir / THUMBS_DIR / name, thumb)
         old = sorted(self.snap_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime)[:-SNAPSHOTS_MAX * 2]
         for p in old:
             with contextlib.suppress(OSError):
@@ -1296,8 +1530,14 @@ class AlarmService:
         return seg if isinstance(seg, str) and seg else None
 
     async def _enqueue(self, ev: AlarmEvent, cooldown: bool) -> None:
+        if self._push_due(ev, cooldown):
+            await self._queue(ev)
+
+    def _push_due(self, ev: AlarmEvent, cooldown: bool) -> bool:
+        """Отправлять ли событие на сервер (push): сервер настроен и (cooldown) прошла пауза push_cooldown_s этого
+        вида — тогда пауза начинается заново."""
         if not self.relay.configured:
-            return
+            return False
         if cooldown:
             # события камер — порознь по камерам: «подходит сзади» после «подходит спереди» — новость
             cam = ev.data.get("camera")
@@ -1305,10 +1545,17 @@ class AlarmService:
             now, last = self.mono(), self._last_push.get(key)
             if last is not None and now - last < self.get_settings().push_cooldown_s:
                 log.info("alarm: no push for %s (cooldown)", key)
-                return
+                return False
             self._last_push[key] = now
+        return True
+
+    async def _queue(self, ev: AlarmEvent, thumb: bytes | None = None) -> None:
+        """В outbox; thumb — миниатюра кадра (JPEG): едет к серверу в поле thumb (base64), в журнал не попадает."""
+        body = ev.model_dump(mode="json")
+        if thumb:
+            body["thumb"] = base64.b64encode(thumb).decode("ascii")
         try:  # база не пишется — AlarmOutbox держит событие в памяти; сюда — только совсем неожиданное
-            await asyncio.to_thread(self.outbox.add, ev.model_dump(mode="json"))
+            await asyncio.to_thread(self.outbox.add, body)
         except Exception:
             log.exception("alarm: cannot queue %s for the server", ev.kind)
             return
@@ -1326,6 +1573,7 @@ class AlarmService:
 
     async def clear_events(self) -> AlarmStatus:
         self.events = []
+        self.events_rev += 1
         await self._save_events()
         await self._run_io(self._clear_snapshots)
         return self.status()
@@ -1366,7 +1614,10 @@ class AlarmService:
         return {"armed": self.state != "off", "notify_offline": self.get_settings().notify_offline}
 
     async def send_once(self) -> int:
-        """Состояние + события из outbox (пачками); события удаляются только после ответа 2xx."""
+        """Состояние + события из outbox (пачками); события удаляются только после ответа 2xx. База outbox не
+        работала — сначала попытка открыть её снова (не чаще OUTBOX_RETRY_S)."""
+        if self.outbox.db is None:
+            await asyncio.to_thread(self.outbox.retry)
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0), transport=self._transport,
                                              trust_env=False)
@@ -1420,7 +1671,15 @@ class AlarmService:
         v = self.detector.take_level(key)
         return None if v is None or not self.imu.ok else round(v, 3)
 
-    def status(self) -> AlarmStatus:
+    def journal(self, limit: int = STATUS_EVENTS) -> dict:
+        """GET /api/alarm/events: журнал (новые первыми, ≤ JOURNAL_MAX) и его номер правки."""
+        return {"rev": self.events_rev, "seq": self.seq,
+                "events": [e.model_dump(mode="json") for e in self.events[:max(0, min(limit, JOURNAL_MAX))]]}
+
+    def status(self, events: int | None = None) -> AlarmStatus:
+        """events — сколько последних событий журнала (None — STATUS_EVENTS; 0 — без журнала: опрос страницы охраны
+        берёт журнал отдельно, когда сменился events_rev)."""
+        events = STATUS_EVENTS if events is None else events
         angle = self.detector.angle
         return AlarmStatus(
             state=self.state, armed_at=self.armed_at, arm_in_s=self._arm_in(),  # type: ignore[arg-type]
@@ -1428,7 +1687,8 @@ class AlarmService:
                                error=self.imu.error),
             level_g=self._level("status"),
             tilt_deg=round(angle, 1) if angle is not None and self.state in DETECTED else None,
-            siren=self.siren.sounding, events=self.events[:STATUS_EVENTS],
+            siren=self.siren.sounding, events=self.events[:max(0, min(events, STATUS_EVENTS))],
+            seq=self.seq, events_rev=self.events_rev,
             relay=AlarmRelay(configured=self.relay.configured, pending=self._pending),
             hazard=self.hazard.status(),
             vision=self.vision_status() if self.vision_status else AlarmVision(

@@ -44,7 +44,7 @@ async def test_hold_flash_is_extended_then_released():
     cfg = HazardSettings(enabled=True)
     outs = Outputs()
     hz = HazardLights(lambda: cfg, outs)
-    hz.apply(cfg)  # включена — вывод открыт сразу (у RC-реле пошли импульсы «выкл»)
+    await hz.apply(cfg)  # включена — вывод открыт сразу (у RC-реле пошли импульсы «выкл»)
     assert len(outs.made) == 1 and outs.last.on is False
     hz.flash(0.3)
     await until(lambda: outs.last.on)
@@ -61,14 +61,18 @@ async def test_test_works_disabled_and_reports_errors():
     cfg = HazardSettings(enabled=False)
     outs = Outputs()
     hz = HazardLights(lambda: cfg, outs)
-    hz.apply(cfg)
+    await hz.apply(cfg)
     assert outs.made == []  # выключена — вывод не держим
     assert await hz.test() is None
     await until(lambda: outs.last.on)
     await hz.stop()
     assert outs.last.closed  # после теста выключенную — отпустили
     bad = HazardLights(lambda: cfg, Outputs(fail="GPIO19 is busy"))
-    assert await bad.test() == "GPIO19 is busy" and bad.status().error == "GPIO19 is busy"
+    # выключенная: причина — в ответе проверки, а в статусе она не «сломана» (ею не пользуются)
+    assert await bad.test() == "GPIO19 is busy" and bad.status().error is None
+    on = HazardSettings(enabled=True)
+    bad_on = HazardLights(lambda: on, Outputs(fail="GPIO19 is busy"))
+    assert await bad_on.test() == "GPIO19 is busy" and bad_on.status().error == "GPIO19 is busy"
 
 
 def make_alarm(tmp_path, outs: Outputs, **hazard):
@@ -112,6 +116,72 @@ async def test_confirm_blinks_on_arm_and_disarm(tmp_path):
     await svc.stop()
 
 
+async def test_disabled_hazard_lights_leave_the_pwm_alone(tmp_path):
+    """Аварийка выключена, dtoverlay=pwm нет: disarm / silence / тревога вывод не открывают — нет вечной ошибки
+    «Hazard lights error» на главной (раньше stop() открывал ШИМ и оставлял error навсегда)."""
+    calls: list[HazardSettings] = []
+
+    def no_pwm(cfg: HazardSettings):
+        calls.append(cfg)
+        raise RuntimeError("hardware PWM is off: add dtoverlay=pwm,pin=19,func=2 to config.txt and reboot")
+
+    cfg = AlarmSettings(siren=False, arm_delay_s=0, hazard=HazardSettings(enabled=False))
+    imu = ImuService(lambda: cfg, open_source=lambda b, a: None)
+    svc = AlarmService(tmp_path, lambda: cfg, imu, RelayConfig(), get_fix=GpsFix, open_hazard=no_pwm)
+    await svc.start(background=False)
+    await svc.silence()  # выключенная охрана: «Stop» — тоже без ШИМ
+    await svc.disarm()
+    await svc.arm()
+    await svc._fire(Detection("impact", {"peak_g": 0.5}))
+    await svc.silence()
+    await svc.disarm()
+    await svc.stop()
+    assert calls == [] and svc.status().hazard.error is None
+
+
+async def test_hazard_error_clears_after_a_good_switch():
+    cfg = HazardSettings(enabled=True)
+    outs = Outputs(fail="permission denied")
+    hz = HazardLights(lambda: cfg, outs)
+    await hz.apply(cfg)
+    assert hz.status().error == "permission denied"
+    outs.fail = None  # права появились (udev), а настройки не менялись
+    hz.flash(0.2)
+    await until(lambda: outs.made and outs.last.on)
+    assert hz.status().error is None
+    outs.last.set = lambda on: (_ for _ in ()).throw(OSError(19, "No such device"))  # sysfs ШИМ пропал
+    await until(lambda: not hz.active)
+    assert "No such device" in hz.status().error and outs.last.closed
+    hz.flash(0.1)  # снова открылся и переключился — ошибки нет
+    await until(lambda: len(outs.made) == 2 and outs.last.on)
+    assert hz.status().error is None
+    await hz.close()
+
+
+async def test_hazard_output_opens_and_closes_off_the_event_loop():
+    """Открытие (ожидание прав от udev) и закрытие (импульсы «выкл» ~0,1 с) ШИМ — в потоке, не в event loop."""
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen: list[tuple[str, int]] = []
+
+    class SlowPwm(FakeHazard):
+        def __init__(self, cfg: HazardSettings) -> None:
+            seen.append(("open", threading.get_ident()))
+            super().__init__(cfg)
+
+        def close(self) -> None:
+            seen.append(("close", threading.get_ident()))
+            time.sleep(0.05)
+            super().close()
+
+    cfg = HazardSettings(enabled=False)
+    hz = HazardLights(lambda: cfg, SlowPwm)
+    assert await hz.test() is None
+    await hz.stop()  # тест выключенной — вывод закрывается сразу после
+    assert [k for k, _ in seen] == ["open", "close"] and all(t != loop_thread for _, t in seen)
+
+
 async def test_hazard_test_api(data_dir):
     async with running_app() as c:
         await login(c)
@@ -121,7 +191,7 @@ async def test_hazard_test_api(data_dir):
         core = c.app.state.core
         core.alarm.hazard.open_output = Outputs(fail="GPIO19 is busy")
         await core.alarm.hazard.stop()
-        core.alarm.hazard._close_output()
+        await core.alarm.hazard._close_output()
         r = await c.post("/api/alarm/hazard/test")
         assert r.status_code == 503 and r.json()["detail"] == "Hazard relay: GPIO19 is busy"
 

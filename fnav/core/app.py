@@ -825,17 +825,28 @@ def _mock_sound_clip(start: float, dur_s: float) -> dict:
 
 
 def _register_alarm(app: FastAPI, core: Core) -> None:
-    async def status() -> dict:
+    async def status(events: int | None = None) -> dict:
         await core.alarm.poll()
-        return core.alarm.status().model_dump(mode="json")
+        return core.alarm.status(events).model_dump(mode="json")
 
     @app.get("/api/alarm")
     async def alarm_status(events: int | None = None):
-        """?events=N — только N последних событий журнала (дашборд: меньше трафика с телефона)."""
-        st = await status()
-        if events is not None:
-            st["events"] = st["events"][:max(0, events)]
-        return st
+        """?events=N — только N последних событий журнала (дашборд: меньше трафика с телефона); ?events=0 — без
+        журнала (опрос страницы охраны: журнал — GET /api/alarm/events, когда сменился events_rev)."""
+        return await status(events)
+
+    @app.get("/api/alarm/events")
+    async def alarm_events(limit: int = 100):
+        """Журнал охраны (новые первыми) и номер его правки (rev — как events_rev в статусе)."""
+        return core.alarm.journal(limit)
+
+    @app.post("/api/alarm/siren")
+    async def alarm_siren():
+        """Сирена по кнопке (паника) на siren_s секунд в любом состоянии охраны; не зазвучала — 503 с причиной."""
+        why = await core.alarm.sound_siren(source="web")
+        if why:
+            return _err(503, f"Siren: {why}")
+        return await status()
 
     @app.post("/api/alarm/arm")
     async def alarm_arm():

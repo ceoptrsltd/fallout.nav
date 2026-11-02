@@ -6,7 +6,7 @@ import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logVal, roundG, impactToSlider, sliderToImpact,
   logTicks, fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, isIos, deviceName,
   pushMode, b64uToBytes, bytesToB64u, pushErrorText, toUnix, hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, IMPACT_STEPS,
-  markLabel, marksSummary, eventDetail, peakText, gapText, eventMoment, camerasText,
+  markLabel, marksSummary, eventDetail, peakText, gapText, eventMoment, camerasText, journalPlan,
 } from "../../web/admin/js/alarm-fmt.js";
 
 const UA = {
@@ -272,6 +272,19 @@ test("armed / disarmed: a quiet note in the log, with where it came from", () =>
   assert.equal(eventDetail({ kind: "disarmed", data: { source: "web", was: "armed" } }), "app");
   assert.equal(eventDetail({ kind: "disarmed", data: { source: "keypad", was: "triggered" } }), "keypad · during the alarm");
   assert.equal(eventDetail({ kind: "disarmed", data: {} }), "");
+});
+
+test("siren sounded by hand: a quiet note in the log, with where it came from", () => {
+  assert.deepEqual(kindInfo("siren"), { label: "Siren sounded", icon: "alarm", kind: "" });
+  assert.equal(eventDetail({ kind: "siren", data: { source: "web", seconds: 30 } }), "app");
+});
+
+test("light poll: the log only when events_rev changes; an older device — full polls", () => {
+  assert.deepEqual(journalPlan({ state: "armed", events: [], events_rev: 7 }, null), { light: true, fetch: true });
+  assert.deepEqual(journalPlan({ state: "armed", events: [], events_rev: 7 }, 7), { light: true, fetch: false });
+  assert.deepEqual(journalPlan({ state: "armed", events: [], events_rev: 8 }, 7), { light: true, fetch: true });
+  assert.deepEqual(journalPlan({ state: "armed", events: [] }, 7), { light: false, fetch: false }); // no events_rev
+  assert.deepEqual(journalPlan(null, null), { light: false, fetch: false });
 });
 
 test("lost camera: labels, the gap, where to watch from, the cameras line", () => {

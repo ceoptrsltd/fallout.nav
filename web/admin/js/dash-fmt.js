@@ -38,7 +38,13 @@ export function alarmLive(t, st, telAt, stAt) {
 /** Buttons of the alarm card: [{what, label, icon, cls, title}] — what is the api/alarm/<what> action. */
 export function alarmActions({ state, siren, hazard, hazardEnabled }) {
   if (!state) return [];
-  if (state === "off") return [{ what: "arm", label: "Arm", icon: "lock", cls: "primary", title: "Turn the alarm on" }];
+  const arm = { what: "arm", label: "Arm", icon: "lock", cls: "primary", title: "Turn the alarm on" };
+  if (state === "off") { // the siren sounded by hand (or the hazard test) with the alarm off: Stop too
+    return siren || hazard
+      ? [{ what: "silence", label: silenceLabel({ siren, hazard, hazardEnabled: false }), icon: "vol", cls: "primary",
+        title: "Stop the siren and the hazard lights" }, arm]
+      : [arm];
+  }
   const out = [];
   if (siren || hazard) {
     out.push({ what: "silence", label: silenceLabel({ siren, hazard, hazardEnabled }), icon: "vol", cls: "primary",

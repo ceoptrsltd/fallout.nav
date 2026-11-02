@@ -1535,6 +1535,7 @@ class FakeAlarm:
         self.arm_until = 0.0
         self.events: list[dict] = []  # newest first (journal: last 200)
         self.seq = 0
+        self.rev = 1  # events_rev: any change of the log (the Alarm page fetches it only then)
         self.last: dict | None = None
         self.siren_until = 0.0
         self.hazard_until = 0.0  # hazard lights relay (alarm.md, «Аварийка»)
@@ -1569,7 +1570,7 @@ class FakeAlarm:
         return max(0, math.ceil(self.arm_until - time.time())) if self.state == "arming" else None
 
     def siren(self) -> bool:
-        return self.state in ("armed", "triggered") and time.time() < self.siren_until
+        return time.time() < self.siren_until  # disarm / silence reset it; by hand (api/alarm/siren) — in any state
 
     def hazard(self) -> bool:
         return time.time() < self.hazard_until
@@ -1614,6 +1615,7 @@ class FakeAlarm:
             "tilt": ("Van tilted", f"Tilted {data.get('tilt_deg', 0):.1f}° at {hm}"),
             "move": ("Van is moving", f"{data.get('distance_m', 0):.0f} m from the parking spot at {hm}"),
             "test": ("Test alarm", f"Alarm notifications work ({hm})"),
+            "siren": ("Siren sounded", f"Sounded from the app at {hm} for {data.get('seconds', 0):.0f} s"),
         }[kind]
         return {"id": secrets.token_hex(16), "ts": round(ts, 3), "kind": kind, "title": title, "body": body,
                 "url": "#/tracking" if kind == "move" else "#/alarm", "data": data}
@@ -1639,9 +1641,26 @@ class FakeAlarm:
     def test(self) -> None:
         self._log(self._event("test", {}))
 
+    def sound_siren(self) -> str | None:
+        """By hand (panic): siren_s in any state; a note in the log (no push from the app). None — sounding."""
+        if self.siren():
+            return None
+        if not bt.output_connected():
+            return "no Bluetooth speaker is connected"
+        secs = self.cfg().siren_s
+        self.siren_until = time.time() + secs
+        ev = self._event("siren", {"source": "web", "seconds": secs})
+        self.events.insert(0, ev)
+        del self.events[200:]
+        self.seq += 1
+        self.rev += 1
+        self.last = {"kind": "siren", "ts": ev["ts"], "title": ev["title"]}
+        return None
+
     def _log(self, ev: dict) -> None:
         self.events.insert(0, ev)
         del self.events[200:]
+        self.rev += 1
         if self.relay_configured:
             self.pending += 1
             self.sent_at = time.time()
@@ -1664,7 +1683,7 @@ class FakeAlarm:
             gps = hub.snapshot().gps
             self.fire("move", {"distance_m": c.move_m + 50, "lat": gps.lat, "lon": gps.lon})
 
-    def status(self) -> dict:
+    def status(self, events: int | None = None) -> dict:
         self.tick()
         c = self.cfg()
         return {
@@ -1673,8 +1692,9 @@ class FakeAlarm:
                        "error": None if self.sensor_ok else "I2C bus 1, 0x68: [Errno 121] Remote I/O error"},
             "level_g": self.level_g(), "tilt_deg": self.tilt_deg(), "siren": self.siren(),
             "hazard": {"enabled": c.hazard.enabled, "active": self.hazard(), "error": self.hazard_error},
-            "events": self.events[:100],
+            "events": self.events[:100 if events is None else max(0, min(events, 100))],
             "relay": {"configured": self.relay_configured, "pending": self.pending},
+            "seq": self.seq, "events_rev": self.rev,
         }
 
     def compact(self) -> dict:
@@ -1879,7 +1899,20 @@ level = FakeLevel()
 
 
 @app.get("/api/alarm")
-async def alarm_status():
+async def alarm_status(events: int | None = None):
+    return alarm.status(events)
+
+
+@app.get("/api/alarm/events")
+async def alarm_events(limit: int = 100):
+    return {"rev": alarm.rev, "seq": alarm.seq, "events": alarm.events[:max(0, min(limit, 200))]}
+
+
+@app.post("/api/alarm/siren")
+async def alarm_siren():
+    why = alarm.sound_siren()
+    if why:
+        return err(503, f"Siren: {why}")
     return alarm.status()
 
 
@@ -1919,6 +1952,7 @@ async def alarm_test():
 @app.delete("/api/alarm/events")
 async def alarm_clear():
     alarm.events.clear()
+    alarm.rev += 1
     return alarm.status()
 
 

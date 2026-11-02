@@ -12,9 +12,11 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from . import webpush
 from .config import Config, valid_vapid_sub
+from .snaps import SnapStore, decode_thumb
 from .store import Store, _num
 
 log = logging.getLogger("fnav_relay.alarm")
@@ -47,9 +49,17 @@ def clean_event(e: object) -> dict | None:
             "body": _text(e.get("body"), 500), "url": url}
 
 
-def message(title: str, body: str, tag: str, url: str, ts: float) -> dict:
-    """Тело push (JSON), его читает sw.js админки."""
-    return {"title": title, "body": body, "tag": tag, "url": url, "ts": ts}
+def message(title: str, body: str, tag: str, url: str, ts: float, image: str | None = None) -> dict:
+    """Тело push (JSON), его читает sw.js админки. image — ссылка на снимок к событию относительно каталога админки
+    (как url): `../api/push/snap/<token>.jpg`."""
+    msg = {"title": title, "body": body, "tag": tag, "url": url, "ts": ts}
+    if image:
+        msg["image"] = image
+    return msg
+
+
+def snap_url(token: str) -> str:
+    return f"../api/push/snap/{token}.jpg"
 
 
 def public_host(host: str | None) -> str | None:
@@ -70,8 +80,11 @@ def _duration(s: float) -> str:
 
 class Notifier:
     def __init__(self, store: Store, cfg: Config, clock: Callable[[], float] = time.time,
-                 watch_every_s: float = WATCH_EVERY_S, offline_after_s: float = OFFLINE_AFTER_S) -> None:
+                 watch_every_s: float = WATCH_EVERY_S, offline_after_s: float = OFFLINE_AFTER_S,
+                 snaps: SnapStore | None = None) -> None:
         self.store, self.cfg, self.clock = store, cfg, clock
+        # снимки к push — рядом с базой (на сервере — StateDirectory /var/lib/fnav-relay)
+        self.snaps = snaps or SnapStore(Path(cfg.db_path).parent / "push_snaps", clock=clock)
         self.watch_every_s, self.offline_after_s = watch_every_s, offline_after_s
         self._q: queue.Queue[tuple[dict, str] | None] = queue.Queue()
         self._stop = threading.Event()
@@ -207,11 +220,13 @@ class Notifier:
 
     # ── устройство ──
     def device_report(self, state: dict, events: list) -> int:
-        """POST /device/alarm: состояние охраны (пульс) и события. Новые события — в очередь рассылки.
+        """POST /device/alarm: состояние охраны (пульс) и события. Новые события — в очередь рассылки; миниатюра
+        кадра (поле thumb, base64 JPEG) — в SnapStore, в push — ссылка на неё (image).
 
         Возвращает число новых (ещё не виденных) событий. Битые события пропускаются.
         """
         now = self.clock()
+        thumbs = {e["id"]: e.get("thumb") for e in events if isinstance(e, dict) and isinstance(e.get("id"), str)}
         clean = [c for c in map(clean_event, events) if c is not None]
         if len(clean) < len(events):
             log.warning("alarm: %d malformed event(s) skipped", len(events) - len(clean))
@@ -232,7 +247,10 @@ class Notifier:
                 latest[e["kind"]] = e
         for e in sorted(latest.values(), key=lambda e: e["ts"]):
             log.info("alarm event %s: %s", e["kind"], e["body"] or e["title"])
-            self._enqueue(message(e["title"], e["body"], e["kind"], e["url"], e["ts"]),
+            jpeg = decode_thumb(thumbs.get(e["id"]))
+            token = self.snaps.put(jpeg) if jpeg else None
+            image = snap_url(token) if token else None
+            self._enqueue(message(e["title"], e["body"], e["kind"], e["url"], e["ts"], image),
                           "normal" if e["kind"] == "test" else "high")
         return len(new)
 

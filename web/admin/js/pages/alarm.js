@@ -1,7 +1,8 @@
-// Alarm (docs/contracts/alarm.md): state and Arm / Disarm / Stop siren & lights, the live vibration level from telemetry
-// (alarm.level_g) with the impact threshold and a peak hold — knock on the body to pick impact_g —, the tilt angle
-// (GET api/alarm, polled while the page is open), settings.alarm, push notifications on this device (sw.js +
-// api/push/* answered by the server behind https …/fnadmin/), the event log and the hazard lights relay
+// Alarm (docs/contracts/alarm.md): state and Arm / Disarm / Stop siren & lights, Sound siren (a panic siren by hand:
+// POST api/alarm/siren), the live vibration level from telemetry (alarm.level_g) with the impact threshold and a peak
+// hold — knock on the body to pick impact_g —, the tilt angle (GET api/alarm?events=0, polled while the page is open;
+// the event log — api/alarm/events — only when its events_rev changes), settings.alarm, push notifications on this
+// device (sw.js + api/push/* answered by the server behind https …/fnadmin/), the event log and the hazard lights relay
 // (settings.alarm.hazard, test: POST api/alarm/hazard/test).
 import { h, icon, clear, isNum } from "../dom.js";
 import { api, appUrl, encPath, errText } from "../api.js";
@@ -12,7 +13,7 @@ import {
   IMPACT_MIN, IMPACT_MAX, SLIDER_STEPS, METER_MIN, METER_MAX, logPos, logTicks, impactToSlider, sliderToImpact,
   fmtG, peakHold, alarmStateText, armLeft, relayText, kindInfo, eventsKey, eventLink, pushErrorText, toUnix,
   hazardStatus, silenceLabel, visionStatus, thresholdAt, stepThreshold, markLabel, marksSummary, eventDetail, peakText,
-  camerasText, eventMoment,
+  camerasText, eventMoment, journalPlan,
 } from "../alarm-fmt.js";
 import { fmtWhen, agoText } from "../tracking-fmt.js";
 import { eventCamera, eventExtras, actCooldown, ACT_COOL_MS } from "../dash-fmt.js";
@@ -22,14 +23,18 @@ import { recStartMs } from "../rec-play.js";
 import * as push from "../push.js";
 
 const POLL_MS = 1500;
+const EV_LIMIT = 100; // events fetched for the log
 const PEAK_HOLD_S = 30;
 const nowS = () => Date.now() / 1000;
 
 export function mount(root) {
   root.classList.add("al-page");
   let stopped = false;
-  let st = null; // AlarmStatus (GET api/alarm)
+  let st = null; // AlarmStatus (GET api/alarm; the poll comes without the log)
   let stAt = 0; // Date.now() when st arrived
+  let evs = null; // the event log: GET api/alarm/events, or the events of a full status (the answer of an action)
+  let evRev = null; // its revision (events_rev)
+  let light = true; // poll without the log; false — an older device without events_rev: full polls as before
   let busy = null; // action in flight
   let doneAt = null; // Date.now() of the last action's answer: then the buttons are inert for ACT_COOL_MS
   let coolTimer = null;
@@ -49,6 +54,10 @@ export function mount(root) {
   const stSub = h(".al-sub");
   const armBar = h(".progress.al-armbar", { hidden: true }, h("i"));
   const btns = h(".btnrow.al-btns");
+  // panic siren by hand: someone at the van on a camera snapshot — camera events raise no siren themselves
+  const sirenBtn = h("button.btn", { type: "button", onclick: () => soundSiren(),
+    title: "Sound the siren through the Bluetooth speaker now, armed or not" }, icon("alarm"), "Sound siren");
+  const sirenRow = h(".btnrow.al-panic", { hidden: true, style: { marginTop: "8px" } }, sirenBtn);
   const stHint = h(".hint");
   const stKv = h(".kv.al-kv");
   const sensorWarn = h("div");
@@ -71,7 +80,8 @@ export function mount(root) {
       setStatus(r);
       if (what === "arm") toast("ok", r.state === "arming" ? `Arming — the alarm is on in ${r.arm_in_s ?? "a few"} s` : "Alarm armed");
       else if (what === "disarm") toast("ok", "Alarm off");
-      else if (what === "silence") toast("ok", "Siren and hazard lights stopped — the alarm stays armed");
+      else if (what === "silence") toast("ok", r.state === "off" ? "Siren and hazard lights stopped" : "Siren and hazard lights stopped — the alarm stays armed");
+      else if (what === "siren") toast("ok", "Siren on — Stop silences it");
     } catch (e) {
       toast("error", errText(e));
     } finally {
@@ -83,6 +93,17 @@ export function mount(root) {
       }
     }
   }
+  async function soundSiren() {
+    if (busy) return;
+    const secs = settings() && isNum(settings().siren_s) ? settings().siren_s : null;
+    const ok = await confirmDialog({
+      title: "Sound the siren?",
+      text: `The siren sounds through the Bluetooth speaker${secs ? ` for ${secs} s` : ""} — loud, in the van and around it — whether the alarm is armed or not. Stop silences it.`,
+      okText: "Sound siren", danger: true,
+    });
+    if (ok && !stopped) act("siren");
+  }
+
   // the cool-down ends: the buttons come alive
   function coolSoon() {
     clearTimeout(coolTimer);
@@ -140,8 +161,11 @@ export function mount(root) {
       clear(btns);
       const b = (what, cls, ic, text, title) => h("button.btn" + cls, { type: "button", disabled: !!busy || cool, title, onclick: () => act(what) },
         busy === what ? h("span.spin") : icon(ic), text);
-      if (l.state === "off") btns.append(b("arm", ".primary.al-big", "lock", "Arm", "Turn the alarm on"));
-      else {
+      if (l.state === "off") {
+        // the siren sounded by hand (or the hazard test) while the alarm is off: Stop too
+        if (l.siren || l.hazard) btns.append(b("silence", ".primary.al-big", "vol", silenceLabel({ siren: l.siren, hazard: l.hazard, hazardEnabled: false }), "Stop the siren and the hazard lights"));
+        btns.append(b("arm", ".primary.al-big", "lock", "Arm", "Turn the alarm on"));
+      } else {
         if (l.siren || l.hazard) {
           btns.append(b("silence", ".primary.al-big", "vol", silenceLabel({ siren: l.siren, hazard: l.hazard, hazardEnabled: hzOn }),
             "Stop the siren and the hazard lights, the alarm stays armed"));
@@ -151,6 +175,10 @@ export function mount(root) {
     }
     // the cool-down ends: the same buttons come alive (not rebuilt under the finger)
     if (!busy) for (const x of btns.children) if (x.disabled !== cool) x.disabled = cool;
+    // Sound siren: a smaller button of its own under them, while the siren is quiet (it asks first)
+    sirenRow.hidden = l.siren;
+    sirenBtn.disabled = !!busy || cool;
+    clear(sirenBtn).append(busy === "siren" ? h("span.spin") : icon("alarm"), "Sound siren");
     const delay = settings() ? settings().arm_delay_s : null;
     stHint.textContent = l.state === "off"
       ? (delay === 0 ? "The alarm arms at once." : isNum(delay) ? `The alarm arms ${delay} s after you press Arm — time to close the doors and walk away.` : "")
@@ -375,7 +403,7 @@ export function mount(root) {
   }
 
   function renderEvents(force) {
-    const list = (st && st.events) || [];
+    const list = evs || [];
     const k = eventsKey(list);
     if (!force && k === evKey) return;
     evKey = k;
@@ -513,10 +541,15 @@ export function mount(root) {
   }
 
   // ───── data ─────
-  function setStatus(s) {
+  /** withEvents: s carries the log (a full status: the answer of an action, the poll of an older device). */
+  function setStatus(s, withEvents = true) {
     if (!s || typeof s !== "object") return;
     st = s;
     stAt = Date.now();
+    if (withEvents && Array.isArray(s.events)) {
+      evs = s.events;
+      evRev = isNum(s.events_rev) ? s.events_rev : null;
+    }
     unavail.hidden = true;
     renderState(false); // rebuilt only when something shown changed: a button must not vanish under the finger
     renderTilt();
@@ -525,10 +558,29 @@ export function mount(root) {
     renderVision();
   }
 
+  // The poll comes without the log (~1 KB instead of ~35 KB every 1.5 s — through the tunnel too): the log is fetched
+  // only when events_rev changes (a new event, a snapshot attached to it, Clear); a new telemetry seq polls at once.
   async function load() {
     try {
-      const s = await api.get("/api/alarm");
-      if (!stopped) setStatus(s);
+      let s = await api.get(light ? "/api/alarm?events=0" : "/api/alarm");
+      if (stopped) return;
+      const plan = light ? journalPlan(s, evRev) : null;
+      if (plan && !plan.light) { // an older device: no events_rev — the full status, as before
+        light = false;
+        s = await api.get("/api/alarm");
+        if (stopped) return;
+      }
+      if (!light) setStatus(s);
+      else {
+        setStatus(s, false);
+        if (plan.fetch) {
+          const j = await api.get("/api/alarm/events?limit=" + EV_LIMIT);
+          if (stopped) return;
+          evs = Array.isArray(j.events) ? j.events : [];
+          evRev = isNum(j.rev) ? j.rev : null;
+          renderEvents(false);
+        }
+      }
       if (mkBox.open) loadMarks();
     } catch (e) {
       if (stopped) return;
@@ -962,6 +1014,7 @@ export function mount(root) {
         h(".al-main", null, stIcon, h("div", null, stWord, stSub)),
         armBar,
         btns,
+        sirenRow,
         stHint,
         sensorWarn,
         stKv),

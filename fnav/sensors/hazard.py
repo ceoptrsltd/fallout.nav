@@ -28,6 +28,9 @@ def output_key(cfg: HazardSettings) -> tuple:
 
 
 class HazardOutput(Protocol):
+    """Открытие и close() могут ждать (права udev, импульсы «выкл» перед снятием сигнала) — их зовут из потока;
+    set() — быстрая запись, её можно из event loop."""
+
     def set(self, on: bool) -> None: ...
     def close(self) -> None: ...
 

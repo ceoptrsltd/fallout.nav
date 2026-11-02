@@ -522,14 +522,40 @@ async def test_state_and_journal_survive_restart(tmp_path):
     await svc2.disarm()
     await svc2.stop()
 
-    svc3, _, _ = make_alarm(tmp_path, arm_delay_s=60)
+    svc3, clk3, _ = make_alarm(tmp_path, arm_delay_s=60)
     await svc3.start(background=False)
     assert svc3.state == "off"
-    await svc3.arm()  # перезапуск во время arming — сразу armed
+    await svc3.arm()
+    clk3.tick(20)
     await svc3.stop()
-    svc4, _, _ = make_alarm(tmp_path)
+    assert json.loads((tmp_path / "alarm_state.json").read_text())["arm_until"] == clk3.wall + 40
+    # перезапуск во время arming — отсчёт продолжается: база наклона — не пока ещё закрывают двери
+    svc4, _, _ = make_alarm(tmp_path, clk=clk3, arm_delay_s=60)
     await svc4.start(background=False)
-    assert svc4.state == "armed" and svc4.armed_at is not None
+    assert svc4.state == "arming" and svc4.status().arm_in_s == 40 and svc4.armed_at is None
+    assert svc4.detector.base is None and svc4.detector._base_acc is None
+    await svc4.test()  # запись состояния посреди отсчёта срок не теряет
+    clk3.tick(39)
+    await svc4.poll()
+    assert svc4.state == "arming"
+    clk3.tick(1)
+    await svc4.poll()
+    assert svc4.state == "armed" and svc4.armed_at == clk3.wall and svc4.detector._base_acc is not None
+    await svc4.disarm()
+    await svc4.arm()
+    await svc4.stop()
+    clk3.tick(61)  # срок прошёл, пока ядро стояло — сразу armed (база наклона — через 2 с после старта)
+    svc4, _, _ = make_alarm(tmp_path, clk=clk3, arm_delay_s=60)
+    await svc4.start(background=False)
+    assert svc4.state == "armed" and svc4.armed_at is not None and svc4.detector._base_acc is not None
+    await svc4.disarm()
+    await svc4.arm()
+    await svc4.stop()
+    behind = Clock()  # после перезагрузки без RTC часы отстают на час: отсчёт не дольше arm_delay_s
+    behind.wall, behind.m = clk3.wall - 3600, 5.0
+    svc4, _, _ = make_alarm(tmp_path, clk=behind, arm_delay_s=60)
+    await svc4.start(background=False)
+    assert svc4.state == "arming" and svc4.status().arm_in_s == 60
     await svc4.stop()
     (tmp_path / "alarm_state.json").write_text("{broken")
     (tmp_path / "alarm_events.json").write_text('[{"id": 1}, "junk"]')
@@ -1015,7 +1041,7 @@ async def test_event_goes_out_when_the_card_cannot_be_written(tmp_path, monkeypa
     """Карта полна / перемонтирована «только чтение»: файлы охраны, снимки и outbox не пишутся — сирена, аварийка и
     push всё равно (раньше ошибка записи до сирены отменяла всё)."""
     relay = FakeRelay()
-    svc, _clk, _ = make_alarm(tmp_path, arm_delay_s=0, siren=True, hazard=HazardSettings(enabled=True, seconds=5),
+    svc, clk, _ = make_alarm(tmp_path, arm_delay_s=0, siren=True, hazard=HazardSettings(enabled=True, seconds=5),
                               relay=RelayConfig("http://relay", "tok"), transport=httpx.MockTransport(relay))
     sirens: list[float] = []
 
@@ -1050,11 +1076,18 @@ async def test_event_goes_out_when_the_card_cannot_be_written(tmp_path, monkeypa
     assert [e["kind"] for e in relay.bodies[-1]["events"]] == ["impact"] and relay.bodies[-1]["state"]["armed"]
     await svc._fire(Detection("tilt", {"tilt_deg": 4.0}))  # и дальше — через память
     assert await svc.send_once() == 1 and svc.outbox.count() == 0
-    monkeypatch.undo()  # карта снова пишется — ошибка файлов уходит из статуса (outbox — в памяти до перезапуска)
+    assert not svc.outbox.spill.exists()  # запасной файл на такой карте тоже не пишется
+    monkeypatch.undo()  # карта снова пишется — ошибка файлов уходит из статуса, очередь из памяти — и в запасной файл
     await svc.silence()
     await svc.test()
-    assert svc.status().storage_error.startswith("Notifications wait in memory only")
+    st = svc.status()
+    assert st.storage_error == ("Notifications wait in memory and in alarm_outbox.db.pending.json: "
+                                "OperationalError: attempt to write a readonly database")
     assert json.loads((tmp_path / "alarm_events.json").read_text())[0]["kind"] == "test"
+    assert [e["kind"] for e in json.loads(svc.outbox.spill.read_text())] == ["test"]
+    clk.tick(61)  # базу снова открываем не чаще раза в минуту: открылась — очередь из памяти в неё, файл не нужен
+    assert await svc.send_once() == 1 and [e["kind"] for e in relay.bodies[-1]["events"]] == ["test"]
+    assert svc.outbox.db is not None and svc.status().storage_error is None and not svc.outbox.spill.exists()
     await svc.stop()
 
 
@@ -1102,6 +1135,48 @@ async def test_outbox_that_cannot_be_opened_keeps_events_in_memory(tmp_path, mon
     assert svc2.outbox.db is None and svc2.outbox.error.startswith("DatabaseError: file is not a database; no new one")
     assert (d / "alarm_outbox.db").read_bytes() == b"garbage" * 100
     await svc2.stop()
+
+
+async def test_outbox_retries_its_database_and_keeps_a_spare_file(tmp_path):
+    """База outbox не открывается (вместо файла — каталог; бывает и чужой владелец файла): очередь — в памяти и в
+    маленьком запасном файле, она переживает перезапуск; базу пробуем открыть снова раз в минуту, открылась — очередь
+    уходит в неё (раньше — только при следующем старте, а недосланное терялось)."""
+    (tmp_path / "alarm_outbox.db").mkdir()
+    svc, _, _ = make_alarm(tmp_path, arm_delay_s=0, relay=RelayConfig("http://relay", "tok"), transport=FakeRelayDown())
+    await svc.start(background=False)
+    await svc.arm()
+    await svc._fire(Detection("impact", {"peak_g": 0.4}))
+    await svc.test()
+    assert svc.outbox.db is None and svc.outbox.count() == 2 and svc.outbox.spilled
+    assert svc.status().storage_error.startswith("Notifications wait in memory and in alarm_outbox.db.pending.json: ")
+    with pytest.raises(httpx.HTTPError):
+        await svc.send_once()  # сервер недоступен — ничего не потеряно
+    await svc.stop()
+
+    relay = FakeRelay()
+    svc2, clk2, _ = make_alarm(tmp_path, relay=RelayConfig("http://relay", "tok"), transport=httpx.MockTransport(relay))
+    await svc2.start(background=False)  # база всё ещё не открывается: очередь из запасного файла — снова в памяти
+    assert svc2.outbox.db is None and svc2.outbox.count() == 2 and svc2.status().relay.pending == 2
+    (tmp_path / "alarm_outbox.db").rmdir()  # починили
+    clk2.tick(30)
+    assert svc2.outbox.retry() is False  # не чаще раза в OUTBOX_RETRY_S
+    clk2.tick(31)
+    assert await svc2.send_once() == 2  # сначала — снова база: открылась, очередь из памяти в неё
+    assert [e["kind"] for e in relay.bodies[-1]["events"]] == ["impact", "test"]
+    assert svc2.outbox.db is not None and svc2.status().storage_error is None and not svc2.outbox.spill.exists()
+    await svc2.test()
+    assert svc2.outbox.db.count() == 1  # дальше — снова база
+    await svc2.stop()
+
+
+async def test_outbox_spare_file_goes_into_a_working_database_on_start(tmp_path):
+    spare = tmp_path / "alarm_outbox.db.pending.json"
+    spare.write_text(json.dumps([{"id": "a" * 32, "ts": 1.8e9, "kind": "impact"}, {"junk": 1}, "x"]))
+    svc, _, _ = make_alarm(tmp_path, relay=RelayConfig("http://relay", "tok"), transport=FakeRelayDown())
+    await svc.start(background=False)
+    assert svc.outbox.db is not None and [e["id"] for _, e in svc.outbox.peek()] == ["a" * 32]
+    assert not spare.exists() and svc.status().relay.pending == 1 and svc.status().storage_error is None
+    await svc.stop()
 
 
 def test_outbox_memory_fallback_keeps_unsent_rows(tmp_path):
@@ -1199,4 +1274,160 @@ async def test_arm_disarm_journal_and_push(tmp_path):
     assert svc.state == "arming" and svc.events[0].data == {"source": "keypad", "delay_s": 30}
     await svc.arm()  # уже включена — без записи
     assert svc.events[0].kind == "armed" and svc.seq == 8
+    await svc.stop()
+
+
+# ── сирена по кнопке (паника) ──
+
+
+def test_manual_siren_text():
+    ts = time.mktime((2026, 10, 27, 14, 3, 0, 0, 0, -1))
+    e = make_event("siren", {"source": "web", "seconds": 30}, ts)
+    assert (e.title, e.body, e.url) == ("Siren sounded", "Sounded from the app at 14:03 for 30 s", "#/alarm")
+
+
+async def test_manual_siren_in_any_state_without_an_alarm(tmp_path):
+    """Сирена по кнопке из админки: в любом состоянии охраны и при выключенной сирене тревоги (siren = false);
+    не тревога — состояние, аварийка и push как были; в журнал — siren с source. Stop / Disarm её глушат."""
+    radio, p = await make_radio(tmp_path)
+    relay = FakeRelay()
+    svc, _, _ = make_alarm(tmp_path, radio=radio, siren_s=45, arm_delay_s=0, relay=RelayConfig("http://relay", "tok"),
+                           transport=httpx.MockTransport(relay))
+    await svc.start(background=False)
+    rev = svc.events_rev
+    assert await svc.sound_siren() is None
+    assert svc.siren.sounding and radio.alert_active and p.volume == 100 and svc.state == "off"
+    ev = svc.events[0]
+    assert ev.kind == "siren" and ev.data == {"source": "web", "seconds": 45} and ev.body.endswith(" for 45 s")
+    assert svc.seq == 1 and svc.events_rev == rev + 1 and svc.outbox.count() == 0  # из админки — без push
+    assert json.loads((tmp_path / "alarm_state.json").read_text())["seq"] == 1
+    assert await svc.sound_siren() is None and len(svc.events) == 1  # уже звучит — без новой записи
+    assert (await svc.disarm()).siren is False and not radio.alert_active  # выключенная охрана: Disarm — тоже стоп
+    assert [e.kind for e in svc.events] == ["siren"]
+    await svc.arm()
+    assert await svc.sound_siren() is None and svc.state == "armed" and not svc.hazard.active
+    assert (await svc.silence()).state == "armed" and not svc.siren.sounding
+    radio.set_output(RadioOutput(address="AA:BB:CC:DD:EE:FF", name="JBL", connected=False))
+    await settle()
+    assert await svc.sound_siren() == "no Bluetooth speaker is connected"
+    assert [e.kind for e in svc.events] == ["siren", "armed", "siren"]
+    await svc.stop()
+    await radio.stop()
+
+
+async def test_manual_siren_api_and_light_status(data_dir):
+    async with running_app() as c:
+        assert (await c.post("/api/alarm/siren")).status_code == 401
+        await login(c)
+        core = c.app.state.core
+        st = (await c.get("/api/alarm", params={"events": 0})).json()
+        assert st["events"] == [] and st["seq"] == 0 and isinstance(st["events_rev"], int)
+        core.alarm.siren.radio = None
+        r = await c.post("/api/alarm/siren")
+        assert r.status_code == 503 and r.json()["detail"] == "Siren: no radio player"
+
+        async def start(seconds, manual=False):
+            assert manual
+            core.alarm.siren._task = asyncio.get_running_loop().create_task(asyncio.sleep(30))
+            return True
+
+        core.alarm.siren.start = start
+        st = (await c.post("/api/alarm/siren")).json()
+        assert st["siren"] is True and st["events"][0]["kind"] == "siren" and st["seq"] == 1
+        light = (await c.get("/api/alarm", params={"events": 0})).json()
+        assert light["events"] == [] and light["events_rev"] == st["events_rev"] and light["seq"] == 1
+        j = (await c.get("/api/alarm/events")).json()
+        assert j["rev"] == st["events_rev"] and j["seq"] == 1 and [e["kind"] for e in j["events"]] == ["siren"]
+        assert (await c.post("/api/alarm/test")).json()["events_rev"] == j["rev"] + 1
+        assert len((await c.get("/api/alarm/events", params={"limit": 1})).json()["events"]) == 1
+        cleared = (await c.delete("/api/alarm/events")).json()
+        assert cleared["events_rev"] == j["rev"] + 2 and cleared["seq"] == 2  # очистка — новый rev, seq тот же
+        core.alarm.siren._task.cancel()
+
+
+# ── журнал: номер правки (опрос страницы охраны без журнала) ──
+
+
+async def test_events_rev_changes_with_every_journal_edit(tmp_path):
+    async def protect():
+        return {"segment": "x.ts"}
+
+    svc, clk, _ = make_alarm(tmp_path, arm_delay_s=0, protect=protect)
+    await svc.start(background=False)
+    r0 = svc.events_rev
+    await svc.arm()
+    assert svc.events_rev == r0 + 1
+    await svc._fire(Detection("impact", {"peak_g": 0.5}))
+    assert svc.events_rev == r0 + 3  # событие и защищённая запись к нему (приходит чуть позже)
+    assert svc.status(events=0).events == [] and len(svc.status().events) == 2
+    assert svc.journal(1)["events"][0]["kind"] == "impact" and svc.journal()["rev"] == svc.events_rev
+    await svc.stop()
+    clk.tick(5)
+    svc2, _, _ = make_alarm(tmp_path, clk=clk)
+    await svc2.start(background=False)
+    assert svc2.events_rev != svc.events_rev  # после перезапуска номер другой: админка возьмёт журнал заново
+    await svc2.stop()
+
+
+# ── миниатюра кадра в push ──
+
+
+def _jpeg(w: int, h: int) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.effect_noise((w, h), 60).convert("RGB").save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
+async def test_push_carries_a_thumbnail_of_the_event_camera(tmp_path, monkeypatch):
+    """Миниатюра (~5 КБ, как в журнале) едет с событием к серверу (поле thumb, base64), в журнал не попадает; кадр
+    камеры, поднявшей событие; камера не успела за PUSH_THUMB_WAIT_S — push без картинки, снимок всё равно сохранится."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    from fnav.models import VisionSettings
+
+    front, rear = _jpeg(768, 576), _jpeg(640, 480)
+    delay = {"front": 0.0}
+
+    async def snap_front(before_s: float = 0.0) -> bytes:
+        await asyncio.sleep(delay["front"])
+        return front
+
+    async def snap_rear(before_s: float = 0.0) -> bytes:
+        return rear
+
+    relay = FakeRelay()
+    svc, _, _ = make_alarm(tmp_path, arm_delay_s=0, push_cooldown_s=0, vision=VisionSettings(enabled=True, rear=True),
+                           relay=RelayConfig("http://relay", "tok"), transport=httpx.MockTransport(relay))
+    svc.snapshot, svc.snapshot_rear = snap_front, snap_rear
+    await svc.start(background=False)
+    await svc.arm()
+    await svc._fire(Detection("impact", {"peak_g": 0.5}))
+    assert await svc.vision_event("approach", {"camera": "rear"})
+    assert await svc.send_once() == 2
+    sizes = []
+    for e in relay.bodies[-1]["events"]:
+        with Image.open(io.BytesIO(base64.b64decode(e["thumb"]))) as im:
+            sizes.append((e["kind"], im.size))
+    assert sizes == [("impact", (192, 144)), ("approach", (160, 120))]  # передняя / задняя — у события камеры
+    assert all("thumb" not in e.model_dump() and "thumb" not in e.data for e in svc.events)
+    ev = svc.events[1]  # миниатюра для журнала уже лежит рядом со снимком — второй раз её не делают
+    assert ev.data["snapshot"] and (tmp_path / "alarm_snaps" / "thumbs" / f"{ev.id}.jpg").is_file()
+
+    monkeypatch.setattr(alarm_mod, "PUSH_THUMB_WAIT_S", 0.05)
+    delay["front"] = 0.3  # камера тормозит
+    await svc._fire(Detection("tilt", {"tilt_deg": 4.0}))
+    assert await svc.send_once() == 1 and "thumb" not in relay.bodies[-1]["events"][0]
+    assert svc.events[0].data["snapshot"] is True  # снимок дождались и сохранили
+
+    ob = AlarmOutbox(tmp_path / "x" / "outbox.db")  # база не работает: в запасной файл — без миниатюр
+    ob._fail("test", salvage=False)
+    ob.add({"id": "a", "ts": 1.0, "thumb": "AAAA"})
+    assert json.loads(ob.spill.read_text()) == [{"id": "a", "ts": 1.0}] and ob.peek()[0][1]["thumb"] == "AAAA"
     await svc.stop()

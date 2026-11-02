@@ -41,6 +41,10 @@ test("alarm buttons: Arm when off; Disarm otherwise; Stop first while the siren 
   assert.equal(alarmActions({ state: "triggered", siren: false, hazard: true })[0].label, "Stop the lights");
   assert.equal(alarmActions({ state: "triggered", siren: true, hazard: false, hazardEnabled: false })[0].label, "Stop the siren");
   assert.deepEqual(alarmActions({ state: null }), []);
+  // the siren sounded by hand from the app (POST api/alarm/siren) with the alarm off: Stop, then Arm
+  const off = alarmActions({ state: "off", siren: true, hazard: false, hazardEnabled: true });
+  assert.deepEqual(off.map((a) => a.what), ["silence", "arm"]);
+  assert.equal(off[0].label, "Stop the siren");
 });
 
 test("alarm words, armed time, countdown bar, arm hint", () => {

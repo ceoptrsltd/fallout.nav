@@ -143,4 +143,8 @@ test("armed / disarmed in the log: no banner, only the ALARM ON / OFF flash", ()
   const odd = A("triggered", 7, { last: { kind: "disarmed", ts: 3, title: "x" } });
   updateAlarmTrack(t, odd, 80);
   assert.equal(alarmBanner(t, odd, 80.1), null);
+  // the siren sounded by hand from the app in the middle of the alarm: a note, no new banner
+  const siren = A("triggered", 8, { siren: true, last: { kind: "siren", ts: 4, title: "Siren sounded" } });
+  updateAlarmTrack(t, siren, 90);
+  assert.equal(alarmBanner(t, siren, 90.1), null);
 });

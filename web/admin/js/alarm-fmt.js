@@ -165,8 +165,10 @@ const KINDS = {
   // armed / disarmed from the app or the keypad (data.source): a note in the log, not an alarm
   armed: { label: "Armed", icon: "lock", kind: "" },
   disarmed: { label: "Disarmed", icon: "unlock", kind: "" },
+  // the siren sounded by hand from the app (POST api/alarm/siren): a note, not an alarm
+  siren: { label: "Siren sounded", icon: "alarm", kind: "" },
 };
-// where the alarm was armed / disarmed from (data.source)
+// where the alarm was armed / disarmed (or the siren sounded) from (data.source)
 const SOURCES = { keypad: "keypad", web: "app" };
 
 /** Event kind for the log: {label, icon, kind}. */
@@ -244,7 +246,7 @@ export function marksSummary(counts) {
 }
 
 /** The one figure worth showing next to an event's time (the title already says what it was): "0.18 g", "3.2°",
- *  "120 m", "8 s"; armed / disarmed — where from ("keypad", "app · during the alarm"); "" — nothing to add. */
+ *  "120 m", "8 s"; armed / disarmed / siren — where from ("keypad", "app · during the alarm"); "" — nothing to add. */
 export function eventDetail(ev) {
   const d = ev && ev.data && typeof ev.data === "object" ? ev.data : {};
   const n = (v) => typeof v === "number" && Number.isFinite(v);
@@ -253,12 +255,20 @@ export function eventDetail(ev) {
   if (ev.kind === "move" && n(d.distance_m)) return `${Math.round(d.distance_m)} m`;
   if (ev.kind === "loiter" && n(d.held_s)) return `${Math.round(d.held_s)} s`;
   if (ev.kind === "video_back" && n(d.lost_s)) return `off ${gapText(d.lost_s)}`;
-  if (ev.kind === "armed" || ev.kind === "disarmed") {
+  if (ev.kind === "armed" || ev.kind === "disarmed" || ev.kind === "siren") {
     const src = SOURCES[d.source] || "";
     const during = ev.kind === "disarmed" && d.was === "triggered" ? "during the alarm" : "";
     return [src, during].filter(Boolean).join(" · ");
   }
   return "";
+}
+
+/** The Alarm page polls GET api/alarm?events=0 (no log: ~1 KB instead of ~35 KB) and fetches the log
+ *  (api/alarm/events) only when its revision changes. st — that light status, haveRev — the revision of the log the
+ *  page has. → {light: false} — an older device without events_rev: poll the full status as before. */
+export function journalPlan(st, haveRev) {
+  if (!st || typeof st !== "object" || typeof st.events_rev !== "number") return { light: false, fetch: false };
+  return { light: true, fetch: st.events_rev !== haveRev };
 }
 
 /** Change marker of the event list (re-render the log only when it changed). */

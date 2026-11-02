@@ -22,6 +22,7 @@ MAX_BODY = 2 * 1024 * 1024
 _PLACE_RE = re.compile(r"^/api/tracking/places/(\d+)$")
 _TRACKING_GET = {"/api/tracking/places", "/api/tracking/track", "/api/tracking/last"}
 _PUSH_SUB_RE = re.compile(r"^/api/push/subscriptions/(\d+)$")
+_PUSH_SNAP_RE = re.compile(r"^/api/push/snap/([A-Za-z0-9_-]{24,64})\.jpg$")
 
 
 class ApiError(Exception):
@@ -197,6 +198,10 @@ class Handler(BaseHTTPRequestHandler):
             if not (self._has_device_token() or self._logged_in()):
                 raise ApiError(401, "Login required")
             return self._tracking(method, path, qs)
+        m = _PUSH_SNAP_RE.match(path)
+        if m:  # картинка уведомления: браузер грузит её без cookie — неугадываемая ссылка с ограниченным сроком
+            self._method(method, "GET")
+            return self._push_snap(m.group(1))
         if path == "/api/push" or path.startswith("/api/push/"):
             if not (self._has_device_token() or self._logged_in()):
                 raise ApiError(401, "Login required")
@@ -313,6 +318,19 @@ class Handler(BaseHTTPRequestHandler):
             res = notifier.broadcast(notifier.test_message(), endpoint=endpoint, urgency="normal")
             return self._send(200, {"ok": True, **res})
         raise ApiError(404, "Not found")
+
+    def _push_snap(self, token: str) -> None:
+        got = self.server.notifier.snaps.get(token)
+        if got is None:
+            raise ApiError(404, "Not found")
+        data, left = got
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", f"private, max-age={int(left)}")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _push_subscribe(self) -> None:
         data = self._json_body()
