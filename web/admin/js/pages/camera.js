@@ -410,7 +410,9 @@ export function mount(root) {
         : true,
   });
   const f = (spec) => form.add(spec);
+  const frontScrSlot = h("div.cam-scrslot"); // "Car screen shows" sits here on the Front tab (setTab moves it)
   const settingsCard = section("Camera settings",
+    frontScrSlot,
     banner("warn", "Applying these settings restarts recording: the current segment is closed and there will be a gap of a few seconds in the footage."),
     h("div", { style: { height: "6px" } }),
     f({ path: "camera.bitrate_kbps", label: "Bitrate", hint: "Quality and file size", type: "number", min: 500, max: 25000, step: 100, unit: "kbit/s", help: "Rule of thumb: 6000 kbit/s ≈ 2.7 GB per hour." }),
@@ -616,7 +618,9 @@ export function mount(root) {
   const urlRow = rf({ path: "rear_camera.url", label: "RTSP address", hint: "the camera's main stream, without the login", type: "text", placeholder: "rtsp://192.168.1.60:554/stream1",
     validate: (v) => rtspProblem(v, { required: !!rform.get("rear_camera.enabled") }),
     help: "From the camera's manual or app. The camera joins the van's Wi-Fi: give it a fixed IP address there, so the address does not change." });
+  const rearScrSlot = h("div.cam-scrslot"); // …and here on the Rear tab
   const rearCard = section("Rear camera settings",
+    rearScrSlot,
     enRow,
     urlRow,
     rf({ path: "rear_camera.lores_url", label: "Second stream", hint: "optional: the camera's smaller sub-stream", type: "text", placeholder: "rtsp://192.168.1.60:554/stream2",
@@ -688,7 +692,7 @@ export function mount(root) {
   let scrBusy = false;
   let scrExpect = null; // {camera, until}: the answer of the last switch, until telemetry shows it
   const scrSeg = segmented({ name: "cam-screen", options: [{ value: "front", label: "Front" }, { value: "rear", label: "Rear" }], value: null, onchange: (v) => setScreen(v) });
-  const screenCard = h(".card.cam-screen", { title: "The same as key 4 on the keypad" },
+  const screenCard = h(".cam-screen", { title: "The same as key 4 on the keypad" },
     h("span.cam-scric", null, icon("screen")),
     h(".cam-scrtxtbox", null, h(".cam-scrlbl", null, "Car screen shows"), scrText),
     scrSeg);
@@ -709,6 +713,7 @@ export function mount(root) {
   }
   function renderScreen() {
     screenCard.hidden = !hasRear || !rearOn();
+    for (const slot of [frontScrSlot, rearScrSlot]) slot.hidden = screenCard.hidden || !slot.contains(screenCard);
     if (screenCard.hidden) return;
     const d = store.online && store.telemetry ? store.telemetry.display : null;
     let si = screenInfo(d);
@@ -731,6 +736,8 @@ export function mount(root) {
     tab = lastTab = v;
     frontPane.hidden = v !== "front";
     rearPane.hidden = v !== "rear";
+    (v === "rear" ? rearScrSlot : frontScrSlot).append(screenCard); // the settings of the tab on show
+    renderScreen();
     history.replaceState(null, "", "#/camera" + (v === "rear" ? "?cam=rear" : ""));
     syncPlayers();
     renderRearStatus();
@@ -779,12 +786,12 @@ export function mount(root) {
   root.append(
     h(".page-head", null, h("h1", null, "Camera"), hasRear ? tabSeg : null),
     warnBox,
-    hasRear ? screenCard : null,
     frontPane,
     hasRear ? rearPane : null,
   );
   frontPane.hidden = tab !== "front";
   rearPane.hidden = tab !== "rear";
+  (tab === "rear" ? rearScrSlot : frontScrSlot).append(screenCard);
 
   renderStatus();
   renderRearMode();

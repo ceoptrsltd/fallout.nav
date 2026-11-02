@@ -1194,7 +1194,8 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
 .cam-dot.rec { background: var(--red); box-shadow: 0 0 6px rgba(255, 90, 74, .7); animation: blink 1.2s steps(2, jump-none) infinite; }
 .seg label.sel .cam-dot { box-shadow: 0 0 0 1.5px #1a1100; }
 /* the car screen: what it shows, Front | Rear (the same as key 4) */
-.cam-screen { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 10px 14px; }
+.cam-screen { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 2px 0 12px; }
+.cam-scrslot { margin-bottom: 12px; border-bottom: 1px solid var(--line); }
 .cam-scric { display: inline-flex; flex: none; color: var(--amber); }
 .cam-scric svg { width: 24px; height: 24px; filter: drop-shadow(0 0 5px rgba(255, 182, 46, .35)); }
 .cam-scrtxtbox { flex: 1 1 160px; min-width: 0; display: flex; flex-direction: column; }
@@ -1228,7 +1229,7 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
   .cam-page .page-head h1 { min-width: 0; }
   .cam-tabs { flex: none; flex-wrap: nowrap; }
   .cam-tabs label { padding: 6px 13px; }
-  .cam-screen { padding: 10px 12px; }
+  .cam-screen { padding: 2px 0 12px; }
   .cam-screen .seg { flex: 1 1 100%; flex-wrap: nowrap; }
   .cam-screen .seg label { flex: 1 1 0; justify-content: center; }
   .cam-off { padding: 14px 13px; gap: 12px; }
