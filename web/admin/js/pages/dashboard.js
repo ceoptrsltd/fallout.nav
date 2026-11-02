@@ -16,6 +16,7 @@ import {
   EVENTS_N, ACT_COOL_MS, pollDelay, alarmLive, alarmActions, actCooldown, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
   recentEvents, recentKey, eventExtras, eventCamera, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
+  nextVolume, VOL_STEP,
   newerAlarm, serverPos, videoAction, SCREEN_MODES, screenNowText, quickConfirm, protectedText,
 } from "../dash-fmt.js";
 
@@ -397,12 +398,36 @@ export function mount(root) {
   const prevBtn = rBtn("prev", "Previous station", () => radio("/api/radio/step", { delta: -1 }));
   const nextBtn = rBtn("next", "Next station", () => radio("/api/radio/step", { delta: 1 }));
   const playBtn = rBtn("play", "Play", () => radio(radioInfo(store.telemetry && store.telemetry.radio).active ? "/api/radio/stop" : "/api/radio/resume", {}));
+  // volume −/+ (5 %, like the keypad knob): each tap is sent at once; quick taps step from the value just sent, not
+  // from telemetry that hasn't caught up yet
+  let volPending = null;
+  let volPendingT = null;
+  const volDn = rBtn("minus", "Volume down", () => stepVolume(-VOL_STEP));
+  const volUp = rBtn("plus", "Volume up", () => stepVolume(VOL_STEP));
+  volDn.classList.add("db-vbtn");
+  volUp.classList.add("db-vbtn");
+  async function stepVolume(delta) {
+    const r = store.telemetry && store.telemetry.radio;
+    const v = nextVolume(volPending, r ? r.volume : null, delta);
+    if (v === null) return;
+    volPending = v;
+    clearTimeout(volPendingT);
+    volPendingT = setTimeout(() => { volPending = null; if (!stopped) renderRadio(false); }, 1500);
+    put(vol, `vol ${v}`);
+    try {
+      await api.post("/api/radio/volume", { volume: v });
+    } catch (e) {
+      toast("error", "Volume: " + errText(e));
+      volPending = null;
+      if (!stopped) renderRadio(false);
+    }
+  }
   const radioTile = h(".db-tile.db-radio.wide", null,
     h("a.db-rtop", { href: "#/radio" },
       h(".db-tl", null, icon("radio"), h("span", null, "Radio"), spk, h("span.db-go", null, "›")),
       h(".db-np", null, eq, rTitle),
       rLine),
-    h(".db-rctl", null, prevBtn, playBtn, nextBtn, h("span.grow"), vol));
+    h(".db-rctl", null, prevBtn, playBtn, nextBtn, h("span.grow"), h(".db-volgrp", null, volDn, vol, volUp)));
 
   async function radio(url, body) {
     if (rBusy) return;
@@ -668,7 +693,7 @@ export function mount(root) {
     cls(rLine, "db-ts db-track " + (ri.track ? "green" : kindCls(ri.lineKind)));
     eq.classList.toggle("on", ri.playing);
     eq.classList.toggle("wait", ri.active && !ri.playing);
-    put(vol, ri.volume === null ? "" : `vol ${ri.volume}`);
+    if (volPending === null) put(vol, ri.volume === null ? "" : `vol ${ri.volume}`);
     const sp = speakerInfo(r);
     const ssig = `${sp.text}|${sp.kind}`;
     if (spk.dataset.sig !== ssig) {
@@ -691,6 +716,7 @@ export function mount(root) {
       playBtn.disabled = !ri.active && !ri.canPlay;
       prevBtn.disabled = nextBtn.disabled = !r;
     }
+    volDn.disabled = volUp.disabled = !r || ri.volume === null;
   }
 
   // ───── data ─────
@@ -804,6 +830,7 @@ export function mount(root) {
     clearTimeout(coolTimer);
     clearTimeout(qTimer);
     clearTimeout(noteTimer);
+    clearTimeout(volPendingT);
     clearInterval(tick);
     document.removeEventListener("visibilitychange", onVis);
     offTel();

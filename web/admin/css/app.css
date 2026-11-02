@@ -1082,7 +1082,10 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
 .db-track { font-family: var(--f-num); font-size: 14px; letter-spacing: .02em; }
 .db-rctl { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line2); }
 .db-rbtn { min-width: 48px; min-height: 44px; padding: 5px 10px; }
-.db-vol { font-family: var(--f-num); color: var(--dim); font-size: 13px; letter-spacing: .03em; white-space: nowrap; }
+.db-vol { font-family: var(--f-num); color: var(--dim); font-size: 13px; letter-spacing: .03em; white-space: nowrap; min-width: 46px; text-align: center; }
+.db-volgrp { display: flex; align-items: center; gap: 4px; flex: none; }
+.db-volgrp .db-vol { min-width: 44px; }
+.db-vbtn { min-width: 40px; padding: 5px 6px; }
 .db-spk { display: inline-flex; align-items: center; gap: 4px; min-width: 0; font-family: var(--sans); font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--dim); }
 .db-spk.green { color: var(--green); }
 .db-spk.amber { color: var(--amber); }

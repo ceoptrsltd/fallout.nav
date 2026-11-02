@@ -361,6 +361,17 @@ export function levelInfo(l) {
 const RADIO_ACTIVE = new Set(["playing", "connecting", "waiting_output"]);
 
 /** Radio tile: {active, playing, title, off, line, lineKind, canPlay, volume}. */
+/** Volume step of the dashboard radio buttons — the same as the keypad knob (5 %). */
+export const VOL_STEP = 5;
+
+/** Next radio volume after a −/+ tap: from the value just sent (taps faster than telemetry) or the reported one;
+ * clamped to 0–100; null — nothing to step from yet. */
+export function nextVolume(pending, reported, delta) {
+  const cur = Number.isFinite(pending) ? pending : Number.isFinite(reported) ? reported : null;
+  if (cur === null) return null;
+  return Math.max(0, Math.min(100, Math.round(cur + delta)));
+}
+
 export function radioInfo(r) {
   if (!r || typeof r !== "object") return { active: false, playing: false, title: "Radio", off: true, line: "Not reported", lineKind: "", canPlay: false, volume: null };
   const state = r.state || "stopped";
