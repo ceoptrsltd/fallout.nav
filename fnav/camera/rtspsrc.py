@@ -308,6 +308,7 @@ class RtspCameraSource:
         self._sub: _Helper | None = None
         self._sub_used = 0.0
         self.main_error: str | None = None  # основной поток отвалился (второй живёт) — почему; None — идёт
+        self.quiet = False  # камеры давно нет (сервис ставит перед start): обрывы помощников — в debug, не в журнал
         self.picture_mono = 0.0  # последний кадр с любого потока (монотонные часы); 0 — ещё не было
         self._main_fails = 0
         self._main_retry_at = 0.0
@@ -502,7 +503,8 @@ class RtspCameraSource:
                 delay = retry_delay(self._sub_fails, SUB_RETRY_S, SUB_RETRY_MAX_S)
                 self._sub_retry_at = self.mono() + delay
             if self._sub_fails <= 3:
-                log.warning("rear camera: second stream stopped: %s (again in %.0f s)", error or "process exited", delay)
+                (log.debug if self.quiet else log.warning)(
+                    "rear camera: second stream stopped: %s (again in %.0f s)", error or "process exited", delay)
             return
         if not self.lores_url:  # картинка — только с основного: перезапуск всего конвейера
             self.sink.on_error(f"Rear camera: {msg}")
@@ -514,8 +516,9 @@ class RtspCameraSource:
             delay = retry_delay(self._main_fails, MAIN_RETRY_S, MAIN_RETRY_MAX_S)
             self._main_retry_at = self.mono() + delay
         if msg != self.main_error:
-            log.warning("rear camera: main stream: %s — not recording, the second stream keeps the picture "
-                        "(again in %.0f s)", msg, delay)
+            (log.debug if self.quiet else log.warning)(
+                "rear camera: main stream: %s — not recording, the second stream keeps the picture (again in %.0f s)",
+                msg, delay)
         self.main_error = msg
         lost = getattr(self.sink, "on_main_lost", None)
         if lost is not None:

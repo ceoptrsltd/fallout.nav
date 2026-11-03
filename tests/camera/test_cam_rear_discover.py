@@ -203,3 +203,67 @@ def test_discovery_runs_off_the_reader_thread(tmp_path: Path):
     assert time.monotonic() - t0 < 0.5 and _wait(lambda: net.sweeps)
     gate.set()
     assert _wait(lambda: not svc._discovering)
+
+
+def test_sweeps_slow_down_while_the_camera_stays_away(tmp_path: Path):
+    """Камеры нет долго (выключена, питание от зажигания): первые SWEEP_FAST_N обходов — раз в минуту, дальше — раз
+    в 5 мин; камера снова работает (learn) — следующая пропажа опять с частых обходов."""
+    from fnav.camera.discover import SWEEP_FAST_N, SWEEP_MIN_S, SWEEP_SLOW_S
+
+    net = Net()
+    f = net.finder(RearState(tmp_path / "camera_rear.json"))
+    f.learn(OLD)
+    net.table = {}
+    for _ in range(SWEEP_FAST_N):
+        assert f.sweep_interval() == SWEEP_MIN_S and f.may_sweep()
+        assert f.find(OLD) is None
+        net.t[0] += SWEEP_MIN_S
+    assert len(net.sweeps) == SWEEP_FAST_N and f.sweep_interval() == SWEEP_SLOW_S
+    assert not f.may_sweep() and f.find(OLD) is None and len(net.sweeps) == SWEEP_FAST_N  # минута — уже рано
+    net.t[0] += SWEEP_SLOW_S
+    assert f.may_sweep()
+    net.table = {OLD: (MAC, "REACHABLE")}
+    f.learn(OLD)  # камера снова работает
+    assert f.sweep_interval() == SWEEP_MIN_S
+
+
+def _rear_svc(tmp_path: Path) -> CameraService:
+    settings = tmp_path / "settings.json"
+    settings.write_text(Settings(rear_camera=RearCameraSettings(enabled=True, url=f"rtsp://{OLD}:8554/profile0"))
+                        .model_dump_json(), encoding="utf-8")
+    return CameraService(root=tmp_path / "rec", settings_path=settings, rtsp_url=None, camera_id="rear",
+                         ring_path=tmp_path / "ring", rear_state_path=tmp_path / "st.json", sound_dir=tmp_path / "c")
+
+
+def test_rear_retries_back_off_to_five_minutes(tmp_path: Path):
+    """Задней нет: 5, 10, 20, 40, 80, 160 с, дальше — раз в 5 мин (а не каждые полминуты весь день)."""
+    from fnav.camera.service import REAR_RETRY_MAX_S
+
+    svc = _rear_svc(tmp_path)
+    got = []
+    for n in range(1, 10):
+        svc._fails = n
+        got.append(svc._retry_delay())
+    assert got == [5, 10, 20, 40, 80, 160, REAR_RETRY_MAX_S, REAR_RETRY_MAX_S, REAR_RETRY_MAX_S] and REAR_RETRY_MAX_S == 300
+
+
+def test_backoff_ends_as_soon_as_the_camera_answers(tmp_path: Path, monkeypatch):
+    """Пауза до 5 мин не держит включённую камеру: раз в REAR_PROBE_S — тихая проверка порта; ответил — сразу новая
+    попытка с короткими паузами. Порт отвечал и до паузы (логин, кодек) — ждём паузу целиком."""
+    from fnav.camera import service
+
+    monkeypatch.setattr(service, "REAR_PROBE_S", 0.02)
+    svc = _rear_svc(tmp_path)
+    calls: list[tuple[str, int]] = []
+    answers = iter([False, False, False, True])
+    svc.probe_fn = lambda host, port: calls.append((host, port)) or next(answers, True)
+    svc._fails = 7
+    t0 = time.monotonic()
+    svc._backoff_wait(5.0)
+    assert time.monotonic() - t0 < 1.0, "should return when the port answers, not after 5 s"
+    assert calls[0] == (OLD, 8554) and len(calls) == 4 and svc._fails == 0
+
+    svc.probe_fn = lambda host, port: True  # порт отвечает, камера всё равно не пускает — ждать паузу
+    t0 = time.monotonic()
+    svc._backoff_wait(0.2)
+    assert time.monotonic() - t0 >= 0.19

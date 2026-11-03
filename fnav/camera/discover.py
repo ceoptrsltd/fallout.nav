@@ -33,6 +33,8 @@ log = logging.getLogger("fnav.camera.rear")
 STATE_FILE = "camera_rear.json"  # в каталоге данных: MAC и адрес камеры, измеренный битрейт задней
 UNREACHABLE_FAILS = 3  # столько неудач «недоступна» подряд — искать камеру по MAC
 SWEEP_MIN_S = 60.0  # обход подсети — не чаще
+SWEEP_SLOW_S = 300.0  # камеры нет долго (выключена, питание от зажигания) — обходить реже
+SWEEP_FAST_N = 10  # столько безуспешных обходов подряд — с частотой SWEEP_MIN_S, дальше — SWEEP_SLOW_S
 ARP_WAIT_S = 1.5  # ждём ответов ARP после обхода
 LEARN_EVERY_S = 600.0  # MAC работающей камеры перепроверяем не чаще
 BITRATE_FRESH_S = 3600.0  # измеренный битрейт задней старше — не верим (камера давно не писала)
@@ -237,7 +239,8 @@ class CameraFinder:
                  local_ip_fn: Callable[[str], str | None] = local_ipv4_for,
                  mono: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
-                 wait_s: float = ARP_WAIT_S, sweep_min_s: float = SWEEP_MIN_S) -> None:
+                 wait_s: float = ARP_WAIT_S, sweep_min_s: float = SWEEP_MIN_S,
+                 sweep_slow_s: float = SWEEP_SLOW_S) -> None:
         self.state = state
         self.neighbours_fn = neighbours_fn
         self.sweep_fn = sweep_fn
@@ -246,7 +249,9 @@ class CameraFinder:
         self.sleep = sleep
         self.wait_s = wait_s
         self.sweep_min_s = sweep_min_s
+        self.sweep_slow_s = sweep_slow_s
         self._last_sweep: float | None = None
+        self._misses = 0  # безуспешных обходов подряд (камера работает или нашлась — заново)
         self._no_mac_logged = False
 
     @property
@@ -262,14 +267,19 @@ class CameraFinder:
         if entry is None:
             return None
         mac = entry[0]
+        self._misses = 0  # камера на месте: следующая пропажа — снова с частых обходов
         d = self.state.get()
         if d.get("mac") != mac or d.get("host") != host:
             log.info("rear camera: MAC %s at %s remembered (to find the camera if its address changes)", mac, host)
             self.state.update(mac=mac, host=host)
         return mac
 
+    def sweep_interval(self) -> float:
+        """Пауза между обходами: первые SWEEP_FAST_N — sweep_min_s, камеры всё нет — sweep_slow_s."""
+        return self.sweep_min_s if self._misses < SWEEP_FAST_N else self.sweep_slow_s
+
     def may_sweep(self) -> bool:
-        return self._last_sweep is None or self.mono() - self._last_sweep >= self.sweep_min_s
+        return self._last_sweep is None or self.mono() - self._last_sweep >= self.sweep_interval()
 
     def find(self, host: str) -> str | None:
         """Камера не отвечает по host: обойти свою /24 и найти её MAC на другом адресе. Не чаще sweep_min_s.
@@ -298,8 +308,13 @@ class CameraFinder:
         found = [(_GOOD_STATES.get(st, 3), ip) for ip, (m, st) in self.neighbours_fn().items()
                  if m == mac and ip != host and ipaddress.IPv4Address(ip) in net]
         if not found:
-            log.info("rear camera: MAC %s not found in %s (%d addresses asked)", mac, net, n)
+            self._misses += 1
+            if self._misses == 1:  # дальше — молча: сколько камеры нет, пишет сервис (раз в 15 мин)
+                log.info("rear camera: MAC %s not found in %s (%d addresses asked)", mac, net, n)
+            elif self._misses == SWEEP_FAST_N:
+                log.info("rear camera: still not found by MAC — looking once every %.0f min now", self.sweep_slow_s / 60)
             return None
+        self._misses = 0
         new = min(found)[1]
         log.warning("rear camera: not reachable at %s — found it by MAC %s at %s", host, mac, new)
         self.state.update(host=new)

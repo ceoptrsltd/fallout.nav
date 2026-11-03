@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import logging
+import socket
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fnav import paths
 from fnav.core.secretsfile import KEY_REAR_CAMERA_PASSWORD, read_secrets
@@ -51,6 +53,9 @@ LAST_SEGMENT_S = 600.0  # сегмента сейчас нет (камера п�
 LOOP_MIN_S = 3600.0  # петлю (незащищённые записи) лимит объёма не сокращает меньше часа записи (camera.md)
 # измеренный средний битрейт записи (задняя — VBR, часто много меньше потолка из настроек): окно и минимум данных
 KBPS_WINDOW_S, KBPS_MIN_S = 600.0, 60.0
+REAR_RETRY_MAX_S = 300.0  # задней нет долго (выключена, питание от зажигания): попытки — не чаще раза в 5 мин
+REAR_PROBE_S = 10.0  # в паузе между попытками — тихая проверка порта: камера ответила — подключаемся сразу
+OUTAGE_LOG_S = 900.0  # камеры всё нет — одна строка в журнал раз в 15 мин (первые 3 неудачи — каждая)
 RESERVE_HEADROOM = 1.25  # резерв под сегмент по измеренному — с запасом на всплески VBR (ночь, движение)
 
 SourceFactory = Callable[[Settings, FrameSink], Source]
@@ -156,7 +161,10 @@ class CameraService(FrameSink):
         self.retry_s = retry_s
         # IP-камера по Wi-Fi подключается дольше (RTSP, до 10 с)
         self.frame_timeout_s = max(frame_timeout_s, 15.0) if self.rear else frame_timeout_s
-        self._fails = 0  # подряд неудачных запусков: задняя камера недоступна — пауза растёт до 30 с
+        self._fails = 0  # подряд неудачных запусков: задняя камера недоступна — пауза растёт до 5 мин
+        self._outage_since: float | None = None  # задней нет с (monotonic) — для «нет N мин» / «вернулась»
+        self._outage_logged = 0.0
+        self.probe_fn: Callable[[str, int], bool] = _tcp_open  # «порт камеры отвечает?» (тесты подменяют)
         self.housekeeping_s = housekeeping_s
         self.hub = MjpegHub()
         # живое видео (/live.ts): второй энкодер на lores, только пока есть зрители
@@ -707,6 +715,8 @@ class CameraService(FrameSink):
         if self.rear:  # адрес, найденный по MAC, — сразу (в настройки его запишет ядро)
             s = s.model_copy(update={"rear_camera": self._rear_effective(s.rear_camera)})
         p.source = self.source_factory(s, self)
+        if self.rear and hasattr(p.source, "quiet"):
+            p.source.quiet = self._fails >= 3  # камеры давно нет: обрывы — не в журнал, сводка раз в 15 мин
         self._apply_exposure_limit(p)  # до start(): предел попадёт в начальные controls
         self._aac_on = False  # новый источник: AAC у него ещё не просили
         p.source.start()
@@ -753,9 +763,37 @@ class CameraService(FrameSink):
                     log.info("the next segment will still be protected after the restart")
 
     def _retry_delay(self) -> float:
+        """Пауза перед следующей попыткой: передняя — retry_s; задняя — 5, 10, 20 … до REAR_RETRY_MAX_S (камера бывает
+        выключена часами: не дёргать её и журнал раз в полминуты)."""
         if not self.rear:
             return self.retry_s
-        return min(30.0, self.retry_s * 2 ** max(0, min(self._fails - 1, 4)))
+        return min(REAR_RETRY_MAX_S, self.retry_s * 2 ** max(0, min(self._fails - 1, 8)))
+
+    def _camera_addr(self) -> tuple[str, int] | None:
+        """(хост, порт) RTSP задней — с адресом, найденным по MAC; нет адреса — None."""
+        url = self._rear_effective(self.settings.rear_camera).url
+        try:
+            parts = urlsplit(url)
+            host, port = parts.hostname, parts.port or 554
+        except ValueError:
+            return None
+        return (host, port) if host else None
+
+    def _backoff_wait(self, delay: float) -> None:
+        """Пауза перед новой попыткой (прерывает её restart()/stop через _wake). Задняя, которой не было по сети:
+        раз в REAR_PROBE_S молча стучимся в её порт — ответила (включили) — сразу пробуем, с короткими паузами
+        заново, а не ждём до 5 мин. Порт отвечал и раньше (логин, кодек…) — просто ждём."""
+        target = self._camera_addr() if self.rear and delay > REAR_PROBE_S else None
+        was_up = target is None or self.probe_fn(*target)
+        end = time.monotonic() + delay
+        while not self._stop.is_set():
+            left = end - time.monotonic()
+            if left <= 0 or self._wake.wait(min(REAR_PROBE_S, left)):
+                return
+            if not was_up and target is not None and self.probe_fn(*target):
+                log.info("rear camera answers again at %s:%d — reconnecting", *target)
+                self._fails = 0
+                return
 
     def _supervise(self) -> None:
         label = "Rear camera" if self.rear else "Camera"
@@ -789,7 +827,7 @@ class CameraService(FrameSink):
                     self._error = f"{label}: {e}"
                     self._stop_pipeline()
                     self._state_starting = False
-                    self._wake.wait(self._retry_delay())
+                    self._backoff_wait(self._retry_delay())
                     self._wake.clear()
                     continue
                 finally:
@@ -808,17 +846,26 @@ class CameraService(FrameSink):
             if problem:
                 self._fails += 1
                 delay = self._retry_delay()
+                if self._outage_since is None:  # начало пропажи (повторы после «порт ответил» — та же пропажа)
+                    self._outage_since, self._outage_logged = now, now
                 if self._fails <= 3 or not self.rear:
                     log.error("%s — restarting in %.0f s", problem, delay)
+                elif now - self._outage_logged >= OUTAGE_LOG_S:
+                    self._outage_logged = now
+                    log.warning("%s: still no camera for %.0f min (%s); trying every %.0f s and as soon as it answers",
+                                label, (now - (self._outage_since or now)) / 60, problem, delay)
                 self._error = problem
                 self._stop_pipeline()
                 # пауза; restart() (задняя нашлась по MAC на новом адресе, новые настройки) — сразу
                 self._wake.clear()
-                self._wake.wait(delay)
+                self._backoff_wait(delay)
                 if self._stop.is_set():
                     break
                 continue
             if picture:
+                if self.rear and self._outage_since is not None and now - self._outage_since >= 60:
+                    log.info("%s is back after %.0f min", label, (now - self._outage_since) / 60)
+                self._outage_since = None
                 self._fails = 0
                 if now - picture < 3.0:
                     self._unreachable = 0  # кадры идут: неудачи подключения больше не «подряд»
@@ -919,6 +966,15 @@ class CameraService(FrameSink):
                 except Exception:
                     log.exception("housekeeping failed")
             self._hk_wake.wait(min(10.0, self.housekeeping_s))
+
+
+def _tcp_open(host: str, port: int, timeout: float = 1.0) -> bool:
+    """Порт отвечает (TCP-соединение установилось) — камера в сети."""
+    try:
+        socket.create_connection((host, port), timeout).close()
+        return True
+    except OSError:
+        return False
 
 
 LIVE_PARAMS = ("live_bitrate_kbps", "max_exposure_ms_driving", "max_exposure_ms_parked")
