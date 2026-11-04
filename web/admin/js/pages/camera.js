@@ -12,7 +12,7 @@ import { store, on } from "../store.js";
 import { banner, confirmDialog, segmented, switchEl, toast } from "../ui.js";
 import {
   camFromHash, camDot, rearStatus, screenInfo, rtspProblem, passwordInfo, takePassword, rearConfirm, snapName,
-  protectedInfo, storageWarning,
+  protectedInfo, storageWarning, sizeText, deleteAllText, deletedText,
 } from "../camera-fmt.js";
 
 const CAM_STATE = { starting: "starting", recording: "recording", stopped: "stopped", error: "error" };
@@ -398,6 +398,51 @@ export function mount(root) {
     warnBox.replaceChildren(...(w ? [banner("warn", w)] : []));
   }
 
+  // ── delete all recordings of both cameras (POST api/recordings/delete-all): next to the recordings limit ──
+  const delAllBtn = h("button.btn.sm.danger", { type: "button", onclick: () => deleteAll() }, icon("trash"), "Delete all…");
+  const delAllRow = h(".field", null,
+    h(".lab", null, h("b", null, "All recordings"), h("span", null, "Both cameras; the segments being recorded now stay")),
+    h(".ctl", null, delAllBtn));
+  async function deleteAll() {
+    let est;
+    delAllBtn.disabled = true;
+    try {
+      est = await api.post("/api/recordings/delete-all", { dry_run: true });
+    } catch (e) {
+      toast("error", errText(e));
+      return;
+    } finally {
+      delAllBtn.disabled = false;
+    }
+    if (!deleteAllText(est, false)) {
+      toast("ok", "There are no recordings to delete");
+      return;
+    }
+    const msg = h("div");
+    const keep = est.protected > 0
+      ? switchEl({ checked: false, label: `Keep the protected ones (${est.protected}, ${sizeText(est.protected_bytes)})`, onchange: () => render() })
+      : null;
+    const render = () => { msg.textContent = deleteAllText(est, !!keep?.input.checked) || "Nothing will be deleted: every recording is protected."; };
+    render();
+    const ok = await confirmDialog({
+      title: "Delete all recordings?",
+      text: h("div", null, msg,
+        keep ? h("div", { style: { marginTop: "10px" } }, keep) : null,
+        h("div.dim", { style: { marginTop: "10px", fontSize: "13px" } }, "The segments being recorded right now stay. Alarm events stay in the log, without their video.")),
+      okText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    delAllBtn.disabled = true;
+    try {
+      toast("ok", deletedText(await api.post("/api/recordings/delete-all", { keep_protected: !!keep?.input.checked })));
+    } catch (e) {
+      toast("error", errText(e));
+    } finally {
+      delAllBtn.disabled = false;
+    }
+  }
+
   // ── settings ──
   const form = new SettingsForm({
     beforeSave: (patch) =>
@@ -421,6 +466,7 @@ export function mount(root) {
       : null,
     f({ path: "camera.segment_minutes", label: "Segment length", hint: "Recording is split into files of this length", type: "number", min: 1, max: 60, step: 1, unit: "min" }),
     f({ path: "storage.max_recordings_gb", label: "Recordings limit", hint: "All recordings together; the oldest are deleted first, protected ones are kept", type: "number", min: 1, max: 500, step: 1, unit: "GB", help: "At 6000 kbit/s, 10 GB ≈ 3.5 hours of driving." }),
+    delAllRow,
     f({ path: "camera.hflip", label: "Mirror horizontally", type: "switch" }),
     f({ path: "camera.vflip", label: "Flip vertically", type: "switch" }),
     f({ path: "camera.exposure_mode", label: "Exposure", type: "select", options: [

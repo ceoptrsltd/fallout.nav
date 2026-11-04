@@ -158,6 +158,46 @@ async def test_recordings_api(data_dir):
         assert (root / (CURRENT + ".lock")).exists()
 
 
+async def test_delete_all_recordings(data_dir):
+    """Кнопка «Delete all recordings» в настройках камеры: подсчёт без удаления, затем удаление — кроме пишущейся
+    сейчас записи и (по выбору) защищённых; боковые файлы и осиротевшие .ts.gps/.ts.idx/.ts.lock — тоже."""
+    root = paths.recordings_dir()
+    files = make_files(root)
+    old = time.time() - 3600
+    rear = {"rear/2026-10-20/2026-10-20_16-40-00.ts": b"R" * 2000, "rear/2026-10-20/2026-10-20_16-50-00.ts": b"S" * 300}
+    extra = ["rear/2026-10-20/2026-10-20_16-40-00.ts.gps", "rear/2026-10-20/2026-10-20_16-40-00.ts.idx",
+             "rear/2026-10-20/2026-10-20_16-50-00.ts.lock", "2026-10-20/2026-10-20_15-00-00.ts.gps"]  # последний — сирота
+    for rel, data in rear.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(data)
+    for rel in [*rear, *extra]:
+        (root / rel).touch()
+        os.utime(root / rel, (old, old))
+    cam = FakeUpstream(camera_handler)
+    async with running_app(make_opts(local_transport=cam.transport)) as c:
+        assert (await c.post("/api/recordings/delete-all", json={})).status_code == 401
+        await login(c)
+        r = await c.post("/api/recordings/delete-all", json={"dry_run": True})
+        assert r.status_code == 200 and r.json() == {"deleted": 5, "freed_bytes": 1000 + 10240 + 188 + 2000 + 300,
+                                                     "kept_protected": 0, "kept_recording": 1,
+                                                     "protected": 2, "protected_bytes": 1300}
+        assert all((root / rel).exists() for rel in [*files, *rear, *extra])  # подсчёт ничего не трогает
+        r = await c.post("/api/recordings/delete-all", json={"keep_protected": True})
+        assert r.json() == {"deleted": 3, "freed_bytes": 10240 + 188 + 2000, "kept_protected": 2, "kept_recording": 1,
+                            "protected": 2, "protected_bytes": 1300}
+        assert not (root / "rear/2026-10-20/2026-10-20_16-40-00.ts").exists()
+        assert not any((root / rel).exists() for rel in extra[:2] + extra[3:])  # её трек, индекс и сирота
+        assert (root / "2026-10-19/2026-10-19_10-00-00.ts").exists()  # защищённые остались
+        assert (root / "rear/2026-10-20/2026-10-20_16-50-00.ts.lock").exists()
+        r = await c.post("/api/recordings/delete-all", json={})
+        assert r.json() == {"deleted": 2, "freed_bytes": 1000 + 300, "kept_protected": 0, "kept_recording": 1,
+                            "protected": 2, "protected_bytes": 1300}
+        assert [i["path"] for i in (await c.get("/api/recordings")).json()] == [CURRENT]
+        assert (root / CURRENT).exists()  # пишется сейчас — не трогаем
+        assert not (root / "rear/2026-10-20").exists() and not (root / "nosync").exists()  # опустевшие дни — тоже
+        assert (root / "2026-10-19/notes.txt").exists()  # чужие файлы не трогаем (и их каталог)
+
+
 SPS_IDR = b"\x00\x00\x00\x01\x67\x42\x00\x1e\x00\x00\x00\x01\x65"
 SLICE = b"\x00\x00\x00\x01\x41"
 

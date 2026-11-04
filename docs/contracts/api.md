@@ -176,6 +176,11 @@ push test, журнал и т.п.) и понятной ошибкой «No answe
   либо файл менялся меньше 3 с назад (camera.md «Хранилище» у задней).
 - `DELETE /api/recordings/file/{path}` — запрещено для `in_progress` (`409`) и защищённых без `?force=1`;
   вместе с записью удаляются `.lock`, индекс `.ts.idx` и трек `.ts.gps`.
+- `POST /api/recordings/delete-all` `{"keep_protected":false,"dry_run":false}` — кнопка «Delete all…» в настройках
+  камеры: все записи обеих камер, кроме пишущихся сейчас (как `in_progress`) и, при `keep_protected`, защищённых; с
+  боковыми файлами, осиротевшие `.ts.idx`/`.ts.gps`/`.ts.lock` и опустевшие каталоги дней (кроме сегодняшнего) —
+  тоже. `dry_run` — только подсчёт для подтверждения. Ответ: `{deleted, freed_bytes, kept_protected, kept_recording,
+  protected, protected_bytes}` (`protected*` — защищённые среди не пишущихся, удалённые или нет). Гостю — `403`.
 - Удар на ходу (MPU-6050, `settings.impact`) защищает текущие записи обеих камер, как `protect-current`, и оставляет
   метку `impact` — camera.md «Удар на ходу».
 - Защита от выхода за каталог (`..`, абсолютные пути) обязательна.

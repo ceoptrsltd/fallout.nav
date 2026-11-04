@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 import {
   CAMS, camName, camFromHash, camState, camDot, codecInfo, rearStatus, screenInfo, rtspProblem, passwordInfo,
-  takePassword, rearConfirm, snapName, protectedInfo, storageWarning,
+  takePassword, rearConfirm, snapName, protectedInfo, storageWarning, sizeText, deleteAllText, deletedText,
 } from "../../web/admin/js/camera-fmt.js";
 
 test("tabs: names and the camera from the page link", () => {
@@ -171,4 +171,19 @@ test("storage warning: protected recordings take X of the Y GB limit, only ~N mi
   assert.equal(storageWarning({ over_limit: false, protected_gb: 9 }, { over_limit: false }, 10), null);
   assert.equal(storageWarning(null, null, 10), null);
   assert.equal(storageWarning({ state: "recording" }, undefined, 10), null); // older camera service: no field
+});
+
+test("delete all recordings: confirmation from the server's count and the result", () => {
+  const est = { deleted: 41, freed_bytes: 10.63e9, protected: 3, protected_bytes: 0.9e9, kept_recording: 2 };
+  assert.equal(deleteAllText(est, false), "41 recordings of both cameras (10.6 GB) will be deleted permanently.");
+  assert.equal(deleteAllText(est, true), "38 recordings of both cameras (9.7 GB) will be deleted permanently.");
+  assert.equal(deleteAllText({ deleted: 1, freed_bytes: 45e6 }, false), "1 recording of both cameras (45 MB) will be deleted permanently.");
+  assert.equal(deleteAllText({ deleted: 2, freed_bytes: 5e8, protected: 2, protected_bytes: 5e8 }, true), null); // all protected
+  assert.equal(deleteAllText({ deleted: 0, freed_bytes: 0 }, false), null);
+  assert.equal(deleteAllText(null, false), null);
+  assert.equal(deletedText({ deleted: 38, freed_bytes: 9.73e9, kept_protected: 3 }), "Deleted 38 recordings, 9.7 GB freed · 3 protected kept");
+  assert.equal(deletedText({ deleted: 1, freed_bytes: 2e5, kept_protected: 0 }), "Deleted 1 recording, 1 MB freed");
+  assert.equal(deletedText({ deleted: 0 }), "Nothing was deleted");
+  assert.equal(sizeText(0), "0 MB");
+  assert.equal(sizeText(undefined), "0 MB");
 });

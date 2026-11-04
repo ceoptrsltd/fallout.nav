@@ -97,6 +97,36 @@ export function storageWarning(front, rear, limitGb) {
   return `Protected recordings ${take} ${limit}: only the newest ${kept} of unprotected footage is kept, older driving is deleted. Unprotect recordings you no longer need.`;
 }
 
+/** 3.2 GB / 45 MB (decimal, like the recordings limit). */
+export function sizeText(bytes) {
+  const b = num(bytes) && bytes > 0 ? bytes : 0;
+  return b >= 1e9 ? `${(Math.round(b / 1e8) / 10).toFixed(1)} GB` : `${Math.max(b ? 1 : 0, Math.round(b / 1e6))} MB`;
+}
+
+const recs = (n) => `${n} recording${n === 1 ? "" : "s"}`;
+
+/**
+ * "Delete all recordings" confirmation from the server's count (POST api/recordings/delete-all {dry_run: true}:
+ * deleted, freed_bytes — everything that is not being recorded, protected, protected_bytes — of them protected).
+ * keep — keep the protected ones. null — nothing to delete.
+ */
+export function deleteAllText(est, keep) {
+  const s = est && typeof est === "object" ? est : {};
+  const n = (num(s.deleted) ? s.deleted : 0) - (keep && num(s.protected) ? s.protected : 0);
+  const b = (num(s.freed_bytes) ? s.freed_bytes : 0) - (keep && num(s.protected_bytes) ? s.protected_bytes : 0);
+  if (n <= 0) return null;
+  return `${recs(n)} of both cameras (${sizeText(b)}) will be deleted permanently.`;
+}
+
+/** Toast after deleting: "Deleted 41 recordings, 10.6 GB freed · 3 protected kept". */
+export function deletedText(res) {
+  const s = res && typeof res === "object" ? res : {};
+  const n = num(s.deleted) ? s.deleted : 0;
+  if (!n) return "Nothing was deleted";
+  const kept = num(s.kept_protected) && s.kept_protected ? ` · ${s.kept_protected} protected kept` : "";
+  return `Deleted ${recs(n)}, ${sizeText(s.freed_bytes)} freed${kept}`;
+}
+
 /** What the car screen shows (telemetry display): {camera, text}; the rear view overrides the map / camera logic. */
 export function screenInfo(d) {
   if (!d || typeof d !== "object") return { camera: null, text: "—" };

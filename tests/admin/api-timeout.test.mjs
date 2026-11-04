@@ -14,6 +14,7 @@ test("requestTimeout: a sane default, longer where the device or the server real
   assert.equal(requestTimeout("POST", "/api/bluetooth/scan"), 120_000);
   assert.equal(requestTimeout("GET", "/api/bluetooth/state"), TIMEOUT_MS);
   assert.equal(requestTimeout("POST", "/api/push/test"), 60_000);
+  assert.equal(requestTimeout("POST", "/api/recordings/delete-all"), 60_000);
   assert.equal(requestTimeout("POST", "/api/push/subscribe"), 30_000);
   assert.equal(requestTimeout("POST", "/api/gps/configure"), 60_000);
   assert.equal(requestTimeout("post", "/api/system/wifi"), 60_000);

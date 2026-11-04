@@ -62,6 +62,11 @@ class ProtectBody(BaseModel):
     protected: bool = True
 
 
+class DeleteAllBody(BaseModel):
+    keep_protected: bool = False
+    dry_run: bool = False  # только посчитать, что будет удалено
+
+
 class WifiBody(BaseModel):
     ssid: str
     password: str = ""
@@ -512,6 +517,16 @@ def _register_recordings(app: FastAPI, core: Core) -> None:
     async def rec_delete(path: str, force: int = 0):
         await core.recordings.delete(path, current=core.current_segment(), force=bool(force))
         return {"ok": True}
+
+    @app.post("/api/recordings/delete-all")
+    async def rec_delete_all(body: DeleteAllBody):
+        """Все записи обеих камер, кроме пишущихся сейчас (и защищённых, если keep_protected); dry_run — подсчёт."""
+        res = await core.recordings.delete_all(current=core.current_segment(), keep_protected=body.keep_protected,
+                                               dry_run=body.dry_run)
+        if not body.dry_run:
+            log.warning("recordings: all deleted from the admin: %d files, %.2f GB (kept: %d protected, %d recording)",
+                        res["deleted"], res["freed_bytes"] / 1e9, res["kept_protected"], res["kept_recording"])
+        return res
 
     @app.post("/api/recordings/protect")
     async def rec_protect(body: ProtectBody):

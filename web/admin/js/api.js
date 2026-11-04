@@ -82,6 +82,7 @@ const SLOW = [
   ["GET", /^\/api\/system\/logs$/, 30000],
   ["GET", /^\/api\/radio\/stations$/, 30000], // radio-browser on the internet
   ["DELETE", /^\/api\/recordings\/file\//, 30000],
+  ["POST", /^\/api\/recordings\/delete-all$/, 60000], // every recording of both cameras off the SD card
   ["POST", /^\/api\/system\/password$/, 30000], // scrypt on the Pi
   ["POST", /^\/api\/camera\/(rear\/)?(restart|credentials)$/, 30000],
   ["POST", /^\/api\/(alarm\/hazard\/test|alarm\/test|level\/calibration\/)/, 30000],

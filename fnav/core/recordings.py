@@ -75,6 +75,15 @@ def lock_path(f: Path) -> Path:
     return f.with_name(f.name + ".lock")
 
 
+def _unlink(p: Path) -> bool:
+    """Удалить файл; нет его — False, не удалось (права, ввод-вывод) — False."""
+    try:
+        p.unlink()
+    except OSError:
+        return False
+    return True
+
+
 # ── HLS ──
 
 
@@ -389,6 +398,73 @@ class Recordings:
                     pass
 
         await asyncio.to_thread(_do)
+
+    async def delete_all(self, *, current: str | None, keep_protected: bool, dry_run: bool = False) -> dict:
+        """Удалить все записи обеих камер (кнопка в настройках камеры). Пишущиеся сейчас — никогда; защищённые — если
+        не keep_protected. dry_run — только посчитать (для подтверждения). Ответ: deleted, freed_bytes,
+        kept_protected, kept_recording; protected, protected_bytes — сколько среди них защищённых (удалённых или нет)."""
+        return await asyncio.to_thread(self._delete_all, current, keep_protected, dry_run)
+
+    def _drop_caches(self, rel: str) -> None:
+        self._dur_cache.pop(rel, None)
+        self._start_cache.pop(rel, None)
+        self._audio_cache.pop(rel, None)
+        with self._idx_lock:
+            self._idx_cache.pop(rel, None)
+
+    def _delete_all(self, current: str | None, keep_protected: bool, dry_run: bool) -> dict:
+        cur = self._current(current)
+        now = time.time()
+        today = datetime.now().strftime("%Y-%m-%d")
+        out = {"deleted": 0, "freed_bytes": 0, "kept_protected": 0, "kept_recording": 0, "protected": 0,
+               "protected_bytes": 0}
+        for dir_rel, dir_path in self._date_dirs():
+            try:
+                entries = list(os.scandir(dir_path))
+            except OSError:
+                continue
+            names = {f.name for f in entries}
+            for f in entries:
+                if not f.is_file() or f.name.startswith("."):
+                    continue
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                fresh = now - st.st_mtime < IN_PROGRESS_MTIME_S
+                if not _FILE_RE.match(f.name):
+                    # .ts.idx / .ts.gps / .ts.lock без своей записи (её уже удалили) — тоже мусор
+                    base = f.name.rsplit(".", 1)[0]
+                    if (not dry_run and not fresh and f.name.endswith((".ts.idx", ".ts.gps", ".ts.lock"))
+                            and base not in names):
+                        _unlink(Path(f.path))
+                    continue
+                rel = f"{dir_rel}/{f.name}"
+                p = Path(f.path)
+                if rel in cur or fresh:
+                    out["kept_recording"] += 1
+                    continue
+                lk = lock_path(p)
+                if lk.exists():
+                    out["protected"] += 1
+                    out["protected_bytes"] += st.st_size
+                    if keep_protected:
+                        out["kept_protected"] += 1
+                        continue
+                if not dry_run:
+                    if not _unlink(p):
+                        continue
+                    for extra in (lk, sidecar_path(p), gps_path(p)):
+                        _unlink(extra)
+                    self._drop_caches(rel)
+                out["deleted"] += 1
+                out["freed_bytes"] += st.st_size
+            if not dry_run and Path(dir_path).name != today:
+                try:
+                    os.rmdir(dir_path)  # только если опустел
+                except OSError:
+                    pass
+        return out
 
     def newest(self) -> str | None:
         items = self._scan(None)
