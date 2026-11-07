@@ -54,6 +54,9 @@ LOOP_MIN_S = 3600.0  # петлю (незащищённые записи) лим
 # измеренный средний битрейт записи (задняя — VBR, часто много меньше потолка из настроек): окно и минимум данных
 KBPS_WINDOW_S, KBPS_MIN_S = 600.0, 60.0
 REAR_RETRY_MAX_S = 300.0  # задней нет долго (выключена, питание от зажигания): попытки — не чаще раза в 5 мин
+# задняя: нет картинки дольше frame_timeout_s, но второй поток сам переподключается (rtspsrc.reconnecting) — ждём
+# ещё не дольше этого, потом перезапуск конвейера как обычно
+RECONNECT_GRACE_S = 15.0
 REAR_PROBE_S = 10.0  # в паузе между попытками — тихая проверка порта: камера ответила — подключаемся сразу
 OUTAGE_LOG_S = 900.0  # камеры всё нет — одна строка в журнал раз в 15 мин (первые 3 неудачи — каждая)
 RESERVE_HEADROOM = 1.25  # резерв под сегмент по измеренному — с запасом на всплески VBR (ночь, движение)
@@ -653,6 +656,14 @@ class CameraService(FrameSink):
         except Exception:
             log.exception("rear camera: MAC lookup failed")
 
+    @staticmethod
+    def _source_reconnecting(p: _Pipeline) -> bool:
+        fn = getattr(p.source, "reconnecting", None)
+        try:
+            return bool(fn()) if fn is not None else False
+        except Exception:  # noqa: BLE001 — источник без ответа — как «не переподключается»
+            return False
+
     def _picture_mono(self, p: _Pipeline | None) -> float:
         """Когда пришёл последний кадр с камеры — с любого потока (у задней экран живёт на втором); 0 — не было."""
         src_t = getattr(p.source, "picture_mono", 0.0) if p is not None and p.source is not None else 0.0
@@ -839,7 +850,13 @@ class CameraService(FrameSink):
             now = time.monotonic()
             picture = self._picture_mono(p)
             last = max(rec.last_frame_mono if rec else 0.0, picture)
-            if problem is None and now - max(last, p.started_mono) > self.frame_timeout_s:
+            quiet_s = now - max(last, p.started_mono)
+            # второй поток задней уже переподключается сам (обрыв Wi-Fi): не обрывать его и не ждать ещё 5 с
+            quiet = quiet_s > self.frame_timeout_s
+            if quiet and self.rear and quiet_s <= self.frame_timeout_s + RECONNECT_GRACE_S and \
+                    self._source_reconnecting(p):
+                quiet = False
+            if problem is None and quiet:
                 main_error = getattr(p.source, "main_error", None)
                 problem = f"{label}: {main_error}" if main_error else \
                     f"{label}: no video for {self.frame_timeout_s:.0f} s"

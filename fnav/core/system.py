@@ -60,6 +60,36 @@ async def run(*args: str, timeout: float = 5.0) -> tuple[int, str, str]:
     return proc.returncode or 0, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
+def wifi_level_dbm(path: str = "/proc/net/wireless", iface: str | None = None) -> int | None:
+    """Уровень сигнала Wi-Fi (дБм) из /proc/net/wireless: первый (или iface) интерфейс; нет файла / связи — None."""
+    try:
+        with open(path, encoding="ascii", errors="replace") as f:
+            lines = f.read().splitlines()[2:]
+    except OSError:
+        return None
+    for ln in lines:
+        name, _, rest = ln.partition(":")
+        if iface is not None and name.strip() != iface:
+            continue
+        parts = rest.split()
+        if len(parts) < 3:
+            continue
+        try:
+            level = int(float(parts[2].rstrip(".")))
+        except ValueError:
+            continue
+        if level > 0 and level >= 110:  # старый WEXT: 8 бит без знака
+            level -= 256
+        return level if -120 < level < 0 else None
+    return None
+
+
+def level_to_pct(dbm: int) -> int:
+    """дБм → % как у NetworkManager (nm_wifi_utils_level_to_quality: −40 и лучше — 100 %, −100 — 0 %)."""
+    val = abs(max(-100, min(-40, dbm)) + 40)
+    return max(0, min(100, 100 - int(100.0 * val / 60.0)))
+
+
 def nmcli_split(line: str) -> list[str]:
     """Разбор строки `nmcli -t` (разделитель `:`, экранирование `\\:` и `\\\\`)."""
     out, cur, esc = [], [], False
@@ -163,7 +193,10 @@ class SystemService:
             rc, out, _ = await run("vcgencmd", "get_throttled", timeout=2)
             if rc == 0 and "=" in out:
                 st["throttled"] = out.strip().split("=", 1)[1]
-            rc, out, _ = await run("nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi", timeout=3)
+            # --rescan no: без него nmcli пересканирует эфир, если список старше 30 с, — а мы спрашиваем раз в 5 с:
+            # радио каждые ~34 с уходило с канала на 2–5 с, и весь Wi-Fi (задняя камера, туннель) замирал
+            rc, out, _ = await run("nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi", "list", "--rescan", "no",
+                                   timeout=3)
             if rc == 0:
                 for line in out.splitlines():
                     f = nmcli_split(line)
@@ -174,6 +207,9 @@ class SystemService:
                         except ValueError:
                             pass
                         break
+            dbm = await asyncio.to_thread(wifi_level_dbm)  # сила сигнала — живая, от драйвера (список без сканов стареет)
+            if dbm is not None and st.get("wifi_ssid"):
+                st["wifi_signal_pct"] = level_to_pct(dbm)
             rc, out, _ = await run("timedatectl", "show", "-p", "NTPSynchronized", "--value", timeout=2)
             if rc == 0:
                 st["time_synced"] = out.strip() == "yes"

@@ -463,6 +463,77 @@ class _MainDropSource:
         self.sink.on_error(msg)
 
 
+class _BlackoutSource(_MainDropSource):
+    """Обрыв Wi-Fi: пропали оба потока (ни видео, ни картинки); reconnecting — второй поток переподключается сам."""
+
+    def __init__(self, cam, sink) -> None:
+        super().__init__(cam, sink)
+        self.dark = threading.Event()
+        self.reconnect = True
+
+    def reconnecting(self) -> bool:
+        return self.dark.is_set() and self.reconnect
+
+    def on_video(self, au, key, ts) -> None:
+        if not self.dark.is_set():
+            self.picture_mono = time.monotonic()
+            self.sink.on_video(au, key, ts)
+
+
+def test_wifi_blackout_waits_for_the_second_stream_instead_of_restarting(tmp_path: Path, monkeypatch):
+    """Оба потока задней замолчали (обрыв Wi-Fi), второй переподключается сам: конвейер не перезапускается ещё
+    RECONNECT_GRACE_S сверх frame_timeout_s (раньше перезапуск обрывал почти готовое подключение и ждал 5 с — камера
+    пропадала на ~25 с, дольше порога тревоги). Не переподключается — перезапуск, как раньше."""
+    import fnav.camera.service as service_mod
+
+    monkeypatch.setattr(service_mod, "RECONNECT_GRACE_S", 2.5)
+    svc = _rear_service(tmp_path, enabled=True)
+    svc.frame_timeout_s = 1.0
+    made: list[_BlackoutSource] = []
+
+    def factory(_s, sink):
+        made.append(_BlackoutSource(small_cam(), sink))
+        return made[-1]
+
+    svc.source_factory = factory
+    svc.start()
+    try:
+        assert _wait(lambda: svc.status().state == "recording")
+        src = made[-1]
+        src.dark.set()
+        time.sleep(2.5)  # дольше frame_timeout_s, меньше frame_timeout_s + RECONNECT_GRACE_S
+        assert len(made) == 1 and svc._p is not None and svc._p.source is src, "waits for the second stream"
+        src.dark.clear()  # второй поток подключился
+        assert _wait(lambda: svc.status().state == "recording")
+        time.sleep(1.5)
+        assert len(made) == 1
+        src.reconnect = False
+        src.dark.set()  # камера пропала, и переподключения нет — перезапуск конвейера через frame_timeout_s
+        assert _wait(lambda: len(made) == 2, 10)
+    finally:
+        svc.stop()
+
+
+def test_source_reconnecting_window():
+    import fnav.camera.rtspsrc as rs
+
+    clk = {"t": 100.0}
+    rear = RearCameraSettings(enabled=True, url="rtsp://cam/main", lores_url="rtsp://cam/sub")
+    src = RtspCameraSource(rear, Sink(), mono=lambda: clk["t"])
+    src._sub, src._sub_started, src.picture_mono = object(), 100.0, 90.0
+    clk["t"] = 105.0
+    assert src.reconnecting()  # помощник запущен 5 с назад, кадров с него ещё нет
+    clk["t"] = 100.0 + rs.SUB_CONNECT_S + 0.1
+    assert not src.reconnecting()  # подключается слишком долго
+    clk["t"], src.picture_mono = 105.0, 101.0
+    assert not src.reconnecting()  # кадры пошли — уже не переподключается
+    src._sub, src._sub_fails, src._sub_retry_at, src.picture_mono = None, 1, 106.0, 90.0
+    assert src.reconnecting()  # между попытками: следующая через 1 с
+    src._sub_fails = 5
+    assert not src.reconnecting()  # попыток много — камеры нет, решает сервис
+    assert not RtspCameraSource(RearCameraSettings(enabled=True, url="rtsp://cam/main"), Sink()).reconnecting()
+
+
 def test_main_stream_lost_pauses_recording_but_keeps_the_picture(tmp_path: Path):
     """Основной поток пропал, второй живёт: конвейер не перезапускается (экран, снимки, fnav-watch), сегмент закрыт
     (не «идёт запись» без кадров), статус — ошибка с причиной, video_age_s свежий; защита охраны recent — закрытый
@@ -595,7 +666,8 @@ def test_protect_next_survives_a_pipeline_restart(tmp_path: Path):
         cur = seg()
         assert _wait(lambda: rec._seg_first_ts is not None)
         first_ts = rec._seg_first_ts  # 0 у самого первого сегмента (метки FakeSource — с нуля)
-        assert _wait(lambda: rec._seg_first_ts == first_ts and rec._seg_last_ts - first_ts >= 3.3e6)
+        assert _wait(lambda: rec._seg_first_ts == first_ts and rec._seg_last_ts is not None
+                     and rec._seg_last_ts - first_ts >= 3.3e6)
         assert svc.protect_current() == cur and rec._protect_next_until is not None
         svc.restart()
         assert _wait(lambda: svc._p is not None and svc._p.recorder is not rec and seg() not in (None, cur))

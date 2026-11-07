@@ -70,6 +70,10 @@ DEMAND_POLL_S = 0.1  # как быстро частота малых кадро�
 SUB_IDLE_S = 10.0
 MAIN_RETRY_S, MAIN_RETRY_MAX_S = 5.0, 30.0  # основной поток отвалился при живом втором: пауза перед повтором растёт
 SUB_RETRY_S, SUB_RETRY_MAX_S = 1.0, 30.0  # второй поток отвалился
+# второй поток переподключается сам (запущен недавно, кадров с него ещё нет; или следующая попытка вот-вот) — столько
+# сервис ждёт, не перезапуская весь конвейер: перезапуск обрывал почти готовое подключение и добавлял свою паузу 5 с
+# (камера пропадала на ~25 с вместо ~15 — дольше порога тревоги «камера пропала» в 20 с)
+SUB_CONNECT_S = 12.0
 
 
 def retry_delay(fails: int, first: float, cap: float) -> float:
@@ -314,6 +318,7 @@ class RtspCameraSource:
         self._main_retry_at = 0.0
         self._sub_fails = 0
         self._sub_retry_at = 0.0
+        self._sub_started = 0.0  # когда запущен нынешний помощник второго потока (монотонные часы)
         self._live: Callable[[bytes, bool, int], None] | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -353,6 +358,7 @@ class RtspCameraSource:
 
     def _start_sub(self) -> None:
         """Процесс второго потока (под self._lock). Новый RTSP-сеанс — новая шкала меток камеры."""
+        self._sub_started = self.mono()
         self._lores_clock.reset()
         if self._audio_sub:
             self._audio_clock.reset()
@@ -373,6 +379,18 @@ class RtspCameraSource:
             h.stop()
         if self._demand_thr is not None:
             self._demand_thr.join(2)
+
+    def reconnecting(self) -> bool:
+        """Второй поток (экран, снимки, fnav-watch) переподключается сам: помощник запущен меньше SUB_CONNECT_S назад и
+        кадров с него ещё не было, или он отвалился и следующая попытка — в пределах первых (паузы 1–2 с). Сервису
+        рано перезапускать конвейер по «нет картинки»."""
+        if not self.lores_url or self._stop.is_set():
+            return False
+        now = self.mono()
+        with self._lock:
+            if self._sub is not None:
+                return now - self._sub_started < SUB_CONNECT_S and self.picture_mono < self._sub_started
+            return self._sub_fails <= 2 and self._sub_retry_at - now <= SUB_RETRY_S * 2
 
     def request_keyframe(self) -> None:
         """IP-камеру о ключевом кадре не попросить: регистратор дождётся очередного."""
