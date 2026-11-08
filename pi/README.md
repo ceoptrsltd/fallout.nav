@@ -1,7 +1,8 @@
 # fallout.nav: Raspberry Pi system layer (`pi/`)
 
 Turns a Raspberry Pi OS (Debian 13 "trixie", 64-bit) on a CM4 + Waveshare CM4-NANO-B into the fnav device:
-dashcam recorder, navigation display on HDMI (720x576 @ 50 Hz -> HDMI->AV converter -> 5" B/W monitor) and web UI.
+dashcam recorder (front + rear camera), navigation display on composite (NTSC 480i/60 straight from the CM4's
+pin 111 into a 5" B/W CRT), alarm, radio and web UI.
 
 ## What is in here
 
@@ -10,13 +11,13 @@ dashcam recorder, navigation display on HDMI (720x576 @ 50 Hz -> HDMI->AV conver
 | `install.sh` | one-shot idempotent installer (run on the device as root) |
 | `deploy.sh` | PC -> device code deploy (Git Bash / Linux / macOS; tar over ssh, no rsync needed) |
 | `boot/config.txt.fnav` | block placed between `# >>> fnav` / `# <<< fnav` in `/boot/firmware/config.txt` |
-| `boot/cmdline.txt.fnav` | extra kernel command line tokens (HDMI mode, EDID override, console blanking) |
-| `tools/gen-edid.py` | generates the fixed 720x576@50 EDID (`/lib/firmware/edid/fnav-576p50.bin`) |
-| `systemd/` | `fnav-core`, `fnav-camera`, `fnav-watch`, `mediamtx`, `fnav-display` units; drop-ins (watchdog, journald, seatd, NM wait-online) |
+| `boot/cmdline.txt.fnav` | extra kernel command line tokens (composite mode and margins, console blanking) |
+| `tools/gen-edid.py` | a 720x576@50 EDID for the alternative HDMI->AV converter setup (unused with composite) |
+| `systemd/` | `fnav-core`, `fnav-camera`, `fnav-camera-rear`, `fnav-watch`, `fnav-display`, `fnav-radio`, `fnav-games`, `fnav-tunnel`, `fnav-bt-reset`, `mediamtx` units; drop-ins (watchdog, journald, seatd, bluealsa, NM wait-online) |
 | `mediamtx.yml` | MediaMTX config (`/etc/fnav/mediamtx.yml`) |
 | `sysctl/90-fnav.conf` | fast dirty-page writeback (video survives power loss) |
 | `sudoers/fnav`, `polkit/` | the only privileges the `fnav` user gets (polkit: NetworkManager, the system time zone) |
-| `gpsd/`, `chrony/` | gpsd on `/dev/ttyAMA0`, chrony with NTP + GPS (SHM) time |
+| `gpsd/`, `chrony/` | gpsd on `/dev/gps0` (UART5), chrony with NTP + GPS (SHM) time |
 | `udev/`, `networkmanager/`, `chromium/`, `initramfs/` | small supporting files |
 | `bin/` | helpers run on the device: `fnav-sync-system`, `fnav-pip-sync`, `fnav-deploy-remote`, `fnav-display-prestart` |
 
@@ -42,7 +43,7 @@ The full desktop image is fine: the installer disables the desktop (see below).
    Optional environment: `FNAV_PASSWORD` (non-interactive), `FNAV_HOSTNAME=fnav` (so `http://fnav.local` works),
    `FNAV_TIMEZONE=Europe/Warsaw` (the starting zone: later it follows the van, see "Time"), `MEDIAMTX_VERSION`,
    `FNAV_WIFI_SSID` + `FNAV_WIFI_PSK`.
-3. **Reboot**: `sudo reboot`. The boot configuration (UART, I2C, camera overlay, KMS, HDMI mode) only applies after it.
+3. **Reboot**: `sudo reboot`. The boot configuration (UART, I2C, PWM, camera overlay, KMS, composite mode) only applies after it.
 4. Open `http://<device-ip>/` (or `http://fnav.local/`), log in with the password from step 2.
 
 The installer log is `/var/log/fnav-install.log`. Re-running `install.sh` is safe: it re-syncs the code, replaces the
@@ -56,7 +57,7 @@ asked only when that file does not exist). Change the password later in the web 
 1. apt packages: picamera2 + rpicam-apps, numpy, pyserial, lgpio, gpiozero, python3-gps, gpsd, chrony, ffmpeg, i2c-tools,
    **cage**, seatd, **chromium** (the package is called `chromium` on trixie; `chromium-browser` is only a fallback),
    avahi, rsync, curl, polkit, fonts.
-2. Disables the desktop: `systemctl disable lightdm`, `set-default multi-user.target`, so tty1/HDMI belong to `fnav-display`.
+2. Disables the desktop: `systemctl disable lightdm`, `set-default multi-user.target`, so tty1 and the video output belong to `fnav-display`.
 3. User `fnav` (system user, no login) in groups video, render, i2c, gpio, dialout, systemd-journal, netdev, input, tty.
 4. Code to `/opt/fnav/app` (rsync, excluding `.git`, `.devdata`, `tests`), venv, `pip install` from `pyproject.toml`
    (+ `smbus2 pygeomag pyubx2` from the `pi` extra; `gps/lgpio/gpiozero/numpy` come from apt).
@@ -70,30 +71,31 @@ asked only when that file does not exist). Change the password later in the web 
 
 `config.txt` block (`boot/config.txt.fnav`, every line is commented in the file):
 
-- `enable_uart=1` + `dtoverlay=disable-bt`: the full PL011 UART `/dev/ttyAMA0` on GPIO14/15 for the GPS (and no Bluetooth).
+- `enable_uart=0` + `dtoverlay=uart5`: the GPS on the full PL011 UART5 (GPIO12/13, pins 32/33; udev names it `/dev/gps0`).
+  The primary UART0 stays with the on-board Bluetooth, which plays the radio on a Bluetooth speaker.
 - `dtparam=i2c_arm=on` (+ `i2c-dev` module): compass IST8310 on I2C-1.
 - `dtoverlay=i2c3,pins_4_5`: MPU-6050 shock / level sensor on its own I2C-3 (GPIO4/5, pins 7/29).
 - `dtoverlay=pwm,pin=19,func=2`: hardware PWM1 on GPIO19 (pin 35) for the hazard-lights RC relay switch.
 - `camera_auto_detect=0` + `dtoverlay=ov5647,cam0`: the OV5647 on CSI0.
-- `dtoverlay=vc4-kms-v3d,cma-256`: KMS driver for cage/Chromium, 256 MB CMA for camera buffers; `gpu_mem=128` for the H.264 encoder.
-- `disable_fw_kms_setup=1`: the firmware must not pick/override the video mode.
-- `hdmi_force_hotplug=1`, `hdmi_group=1`, `hdmi_mode=17`: legacy settings for 720x576p50 (ignored by KMS, harmless).
-- `enable_tvout=0`, `dtparam=audio=off`: no composite output, no analog audio.
-- USB: the stock `[cm4] otg_mode=1` (xHCI host) already gives USB host on the NANO-B. `dtoverlay=dwc2,dr_mode=host`
-  (Waveshare wiki) is an **alternative that excludes `otg_mode=1`**, so it is shipped commented out; use it only if USB-A
-  does not work, and comment out `otg_mode=1` at the same time.
+- `dtoverlay=vc4-kms-v3d,cma-256,composite` + `enable_tvout=1`: KMS with the composite encoder (on a CM4 this switches
+  HDMI off), 256 MB CMA for camera buffers; `gpu_mem=128` for the H.264 encoder; `disable_fw_kms_setup=1`: the mode
+  comes only from `cmdline.txt`.
+- `core_freq_min=500`: a fixed core clock; dynamic core scaling disturbs the composite picture every few seconds.
+- `dtparam=audio=off`: no analog audio (also frees the PWM block).
+- `dtoverlay=dwc2,dr_mode=host`: USB through the DWC2 controller. The internal xHCI of the stock `[cm4] otg_mode=1`
+  dies ~10 s after the macro pad enumerates ("HC died"); the two are mutually exclusive, so the installer comments
+  out `otg_mode=1`.
 
 `cmdline.txt` (single line; the installer removes `console=serial0,115200` / `ttyAMA0` / `ttyS0` consoles and `splash`, then adds):
 
-- `video=HDMI-A-1:720x576@50D`: with KMS the `hdmi_mode` lines are not enough. `D` forces the connector on and digital
-  **even with nothing connected**, so cage always has an output.
-- `drm.edid_firmware=HDMI-A-1:edid/fnav-576p50.bin`: an HDMI->AV converter often provides no EDID, and without EDID the kernel
-  computes a CVT mode for 720x576 (not the standard 27 MHz CEA timing, which the converter may refuse). The installer generates
-  a 256-byte EDID with CEA VIC 17 as the only mode (`tools/gen-edid.py`, self-checked) and puts it in `/lib/firmware/edid/`
-  (and into the initramfs, if `initramfs-tools` is installed).
+- `video=Composite-1:720x480@60ie,tv_mode=NTSC,margin_left=62,margin_right=86,margin_top=26,margin_bottom=26`:
+  NTSC 480i/60, because the RV-50 holds vertical sync at 60 Hz while PAL 576i/50 jumped. At 60 Hz the monitor shows
+  only the middle ~80 % x 90 %, so the margins shrink the picture into that area (measured with
+  `test-pattern.html?mode=frame`). The display page scales its 768x576 canvas to 720x480.
 - `consoleblank=0 vt.global_cursor_default=0`: no console blanking, no blinking cursor.
 
-The serial login consoles are masked (`serial-getty@ttyAMA0`, `serial-getty@serial0`), as the UART belongs to the GPS.
+The serial login consoles are masked (`serial-getty@ttyAMA0`, `serial-getty@serial0`): there is no serial console,
+UART0 belongs to the Bluetooth and UART5 to the GPS.
 The originals are saved once as `config.txt.fnav-orig`, `cmdline.txt.fnav-orig` (same directory), `gpsd.fnav-orig`, `chrony.conf.fnav-orig`.
 
 ## Time (gpsd + chrony)
@@ -114,26 +116,26 @@ by `fnav-sync-system`, so by every `deploy.sh`; polkitd picks it up without a re
 ## Checking that it works
 
 ```bash
-systemctl status fnav-core fnav-camera fnav-watch mediamtx fnav-display gpsd chrony --no-pager
+systemctl status fnav-core fnav-camera fnav-camera-rear fnav-watch mediamtx fnav-display fnav-radio fnav-tunnel gpsd chrony --no-pager
 journalctl -u fnav-core -b --no-pager | tail -50            # also: -u fnav-camera, -u fnav-watch, -u mediamtx, -u fnav-display
 systemctl is-active fnav-core fnav-camera fnav-watch mediamtx fnav-display
 curl -s http://127.0.0.1/api/session                         # {"authenticated": false}
 curl -s http://127.0.0.1:8081/status                         # camera status
 curl -s http://127.0.0.1:8082/status                         # alarm vision (fnav-watch): watching only while armed
 ss -ltnup | grep -E ':(80|8081|8554|8889|8189|2947)\b'
-ls /dev/ttyAMA0 /dev/i2c-1 /dev/gpiochip0 && i2cdetect -y 1  # expect 0x0e
-gpsmon /dev/ttyAMA0   # or: cgps -s
+ls /dev/gps0 /dev/i2c-1 /dev/i2c-3 /dev/gpiochip0 && i2cdetect -y 1  # expect 0x0e; i2cdetect -y 3: 0x68
+gpsmon /dev/gps0      # or: cgps -s
 rpicam-hello --list-cameras
 chronyc sources -v
-cat /boot/firmware/cmdline.txt; sudo cat /sys/class/drm/card*-HDMI-A-1/status   # "connected" (forced)
-modetest -c 2>/dev/null | grep -A3 HDMI                      # (libdrm-tests) 720x576 mode
+cat /boot/firmware/cmdline.txt; sudo cat /sys/class/drm/card*-Composite-1/status   # "connected"
+modetest -c 2>/dev/null | grep -A3 Composite                 # (libdrm-tests) 720x480 mode
 sudo sysctl vm.dirty_expire_centisecs vm.dirty_writeback_centisecs
 sudo -u fnav sudo -n -l                                      # lists only the allowed systemctl commands
 ```
 
 If the screen stays black: `journalctl -u fnav-display -b`; run `sudo systemctl restart fnav-display`; common causes are
 the page not served yet (the unit waits up to 120 s for `http://127.0.0.1/display/`), seatd not running (`systemctl status seatd`),
-or a wrong HDMI mode (`dmesg | grep -i -E 'vc4|drm|edid'`). Extra Chromium flags can be tried without editing the unit:
+or a wrong video mode (`dmesg | grep -i -E 'vc4|drm'`). Extra Chromium flags can be tried without editing the unit:
 set `FNAV_CHROMIUM_EXTRA=...` in `/etc/fnav/display.env` (e.g. `--use-gl=angle --use-angle=gles`) and restart `fnav-display`.
 If `cage` cannot get a seat through seatd on your image, the alternative is a logind session: replace `Requires=seatd.service` /
 `LIBSEAT_BACKEND=seatd` in the unit with `PAMName=login` (see the cage wiki, "Running Cage on systemd").
@@ -168,8 +170,8 @@ prints a reminder otherwise; `FNAV_WEB_COPY=no` skips it. `tools/remote.sh deplo
 ```bash
 sudo ./pi/install.sh --rollback-boot   # restore config.txt and cmdline.txt from the .fnav-orig backups, then reboot
 # Remove the services (data in /var/lib/fnav and the secrets are kept):
-sudo systemctl disable --now fnav-display fnav-watch fnav-camera fnav-core mediamtx
-sudo rm /etc/systemd/system/{fnav-core,fnav-camera,fnav-watch,fnav-display,mediamtx}.service
+sudo systemctl disable --now fnav-display fnav-games fnav-radio fnav-tunnel fnav-watch fnav-camera fnav-camera-rear fnav-bt-reset fnav-core mediamtx
+sudo rm /etc/systemd/system/{fnav-core,fnav-camera,fnav-camera-rear,fnav-watch,fnav-display,fnav-games,fnav-radio,fnav-tunnel,fnav-bt-reset,mediamtx}.service
 sudo rm /etc/systemd/system/{seatd.service.d,NetworkManager-wait-online.service.d}/fnav.conf
 sudo rm /etc/sudoers.d/fnav /etc/polkit-1/rules.d/50-fnav-{networkmanager,timedate}.rules /etc/udev/rules.d/90-fnav.rules \
         /etc/sysctl.d/90-fnav.conf /etc/chrony/conf.d/fnav.conf /etc/NetworkManager/conf.d/90-fnav-wifi.conf \
