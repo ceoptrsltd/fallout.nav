@@ -25,8 +25,9 @@
 | `compassStyle` | `"v1"` / `"v2"` / `"v3"` | стиль компаса |
 | `forceMode` | `"auto"` / `"map"` / `"camera"` | принудительный режим экрана |
 | `layer` | `"imagery"` / `"street"` | спутник или карта улиц |
+| `radio` | `true` / `false` | радио играет (плашка радио) или выключено (на её месте плашка погоды) |
 
-iframe → страница (~4 Гц): `{type: "fnav-demo-state", speedMps, headingDeg, mode, zoom, lat, lon, orientation, compassStyle}`.
+iframe → страница (~4 Гц): `{type: "fnav-demo-state", speedMps, headingDeg, mode, zoom, lat, lon, orientation, compassStyle, radio}`.
 iframe → страница один раз при готовности: `{type: "fnav-demo-ready"}`.
 
 ## 2. Страница проекта — `site/` (агент S)

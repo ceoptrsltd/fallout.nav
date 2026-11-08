@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>fallout.nav: a wasteland navigator for a 2001 black-and-white CRT</title>
-  <meta name="description" content="A Raspberry Pi CM4 dashcam and moving-map navigator with a Fallout / Mad Max HUD, driving a 2001 WAECO Mobitronic RV-50 black-and-white reversing monitor straight from the CM4's composite DAC (pin 111).">
+  <meta name="description" content="A Raspberry Pi CM4 in a camper van: two-camera dashcam, moving-map navigator with a Fallout / Mad Max HUD, van alarm with push notifications, internet radio and a level, driving a 2001 WAECO Mobitronic RV-50 black-and-white reversing monitor straight from the CM4's composite DAC (pin 111).">
   <meta name="theme-color" content="#0a0b08">
   <meta property="og:type" content="website">
   <meta property="og:title" content="fallout.nav: a wasteland navigator for a 2001 CRT">
-  <meta property="og:description" content="Dashcam, satellite moving map and a Pip-Boy-style HUD on a 5-inch black-and-white tube, fed by a single wire soldered to pin 111 of a Raspberry Pi CM4.">
+  <meta property="og:description" content="Two-camera dashcam, satellite moving map, van alarm and a Pip-Boy-style HUD on a 5-inch black-and-white tube, fed by a single wire soldered to pin 111 of a Raspberry Pi CM4.">
   <meta property="og:url" content="https://ptrs.ltd/apps/fallout.nav/">
   <meta property="og:image" content="https://ptrs.ltd/apps/fallout.nav/assets/og.jpg">
   <meta name="twitter:card" content="summary_large_image">
@@ -17,7 +17,7 @@
   <link rel="preload" href="fonts/BlackOpsOne-Regular.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="preload" href="fonts/RussoOne-Regular.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="preload" href="assets/monitor-front.webp" as="image" type="image/webp">
-  <link rel="stylesheet" href="css/site.css">
+  <link rel="stylesheet" href="css/site.css?v=20261108">
   <script>document.documentElement.classList.remove("no-js");</script>
 </head>
 <body>
@@ -30,6 +30,7 @@
     </a>
     <nav class="topnav" aria-label="Sections">
       <a href="#features">Features</a>
+      <a href="#alarm">Alarm</a>
       <a href="#van" class="opt">In the van</a>
       <a href="#hardware">Hardware</a>
       <a href="#architecture" class="opt">Architecture</a>
@@ -50,10 +51,10 @@
 <section class="hero">
   <div class="wrap">
     <div class="hero-copy">
-      <p class="eyebrow reveal">Raspberry Pi CM4 · composite video · 5″ CRT</p>
+      <p class="eyebrow reveal">Raspberry Pi CM4 · two cameras · 5″ CRT</p>
       <h1 class="reveal" style="--d:.05s">fallout<span>.nav</span></h1>
-      <p class="lede reveal" style="--d:.1s">A 2001 black‑and‑white reversing monitor, a Raspberry Pi CM4 and a wasteland navigator.</p>
-      <p class="sub reveal" style="--d:.15s">A dashcam, a moving satellite map and a Pip‑Boy‑style HUD, fed into a WAECO Mobitronic tube straight from the CM4's own composite DAC. The screen in the photo is the real display code driving the Las Vegas Strip in your browser.</p>
+      <p class="lede reveal" style="--d:.1s">A 2001 black‑and‑white reversing monitor, a Raspberry Pi CM4 and a wasteland navigator for a camper van.</p>
+      <p class="sub reveal" style="--d:.15s">A front and rear dashcam, a moving satellite map with a Pip‑Boy‑style HUD, a van alarm that pings your phone, internet radio and a level for parking, all on a WAECO Mobitronic tube fed straight from the CM4's own composite DAC. The screen in the photo is the real display code driving the Las Vegas Strip in your browser.</p>
       <div class="hero-cta reveal" style="--d:.2s">
         <a class="btn btn-primary" href="#console">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/><path d="M12 3v6.5M4.5 16.5l5.4-3.2M19.5 16.5l-5.4-3.2"/></svg>
@@ -65,8 +66,8 @@
         </a>
       </div>
       <div class="specs reveal" style="--d:.25s">
-        <div><b>2592×1944</b><span>full‑sensor dashcam</span></div>
-        <div><b>10 Hz</b><span>GPS + compass fusion</span></div>
+        <div><b>2 cams</b><span>front CSI + rear Wi‑Fi</span></div>
+        <div><b>10 Hz</b><span>GPS, compass + gyro</span></div>
         <div><b>480i/60</b><span>composite from pin 111</span></div>
         <div><b>≤ 2 s</b><span>lost when power is cut</span></div>
       </div>
@@ -93,7 +94,7 @@
           <div class="crt-glass"><div class="fx fx-glare"></div></div>
         </div>
       </div>
-      <p class="caption"><span class="live-dot" aria-hidden="true"></span><span><strong>Live, not a video.</strong> The same renderer, HUD and speed logic that run on the Pi, in demo mode: simulated GPS on a loop around the Strip, Esri satellite tiles, a still frame for the camera view.</span></p>
+      <p class="caption"><span class="live-dot" aria-hidden="true"></span><span><strong>Live, not a video.</strong> The same renderer, HUD and speed logic that run on the Pi, in demo mode: simulated GPS on a loop around the Strip, Esri satellite tiles, made‑up radio and weather, a still frame for the camera view.</span></p>
     </div>
   </div>
 </section>
@@ -206,6 +207,13 @@
               <button data-v="street" aria-pressed="false">Streets</button>
             </div>
           </div>
+          <div class="ctl">
+            <p class="ctl-label"><span>Bottom panel</span></p>
+            <div class="seg" data-key="radio">
+              <button data-v="on" aria-pressed="true">Radio<small>station and track</small></button>
+              <button data-v="off" aria-pressed="false">Weather<small>radio off: now + 2 days</small></button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -217,45 +225,102 @@
   <div class="wrap">
     <div class="sec-head reveal">
       <p class="kicker"><i>01</i> What it does</p>
-      <h2>One small box, <em>six jobs</em></h2>
-      <p>A Raspberry Pi Compute Module 4 behind the dashboard records the road, knows where it is and which way it points, and draws all of it on a tube older than most smartphones.</p>
+      <h2>One small box, <em>nine jobs</em></h2>
+      <p>A Raspberry Pi Compute Module 4 behind the dashboard of a camper van records the road ahead and behind, knows where it is and which way it points, guards the van while you're away, and draws all of it on a tube older than most smartphones.</p>
     </div>
     <div class="cards">
       <article class="card plate reveal" data-n="1">
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6" width="14" height="12" rx="2"/><path d="m16.5 10 5-3v10l-5-3"/><circle cx="7" cy="10" r="1.6" fill="currentColor" stroke="none"/></svg></div>
-        <h3>Crash‑proof dashcam</h3>
-        <p>The whole 2592×1944 sensor, scaled (never cropped) to 1440×1080 H.264 at 15 fps. Ten‑minute clips that survive a yanked power cable with at most two seconds lost.</p>
-        <ul><li>MPEG‑TS</li><li>fsync 1 s</li><li>loop recording</li><li>protect button</li></ul>
+        <h3>Two‑camera dashcam</h3>
+        <p>Front: the whole 2592×1944 sensor, scaled (never cropped) to 1440×1080 H.264 at 15 fps. Rear: a 2560×1440 Wi‑Fi camera, recorded as is, with its microphone. Ten‑minute clips survive a yanked power cable with at most two seconds lost, each with its GPS track, and a hard knock while driving protects both cameras' clips.</p>
+        <ul><li>MPEG‑TS</li><li>fsync 1 s</li><li>10 GB loop</li><li>seek anywhere</li><li>GPX</li></ul>
       </article>
       <article class="card plate reveal" style="--d:.06s" data-n="2">
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4 3 6.5v13.5l6-2.5 6 2.5 6-2.5V4l-6 2.5z"/><path d="M9 4v13.5M15 6.5V20"/></svg></div>
         <h3>Moving satellite map</h3>
-        <p>A hand‑written Canvas renderer for Esri World Imagery and streets. In heading‑up mode the car icon turns first and the map catches up on a spring. Zoom follows speed; when you stop, the screen switches to the camera.</p>
+        <p>A hand‑written Canvas renderer for Esri World Imagery and streets. In heading‑up mode the car icon turns first and the map catches up on a spring. Zoom follows speed; when you stop, the screen switches to the camera; in a tunnel the map keeps going on dead reckoning.</p>
         <ul><li>Esri tiles</li><li>1 GB cache</li><li>zoom 15–19</li><li>heading/north‑up</li></ul>
       </article>
       <article class="card plate reveal" style="--d:.12s" data-n="3">
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg></div>
         <h3>Wasteland HUD</h3>
-        <p>Three compass designs (Riveted dial, Heading tape, Brass compass), tall Oswald digits, stencil warnings and a spiked wasteland muscle car, all sized for a 92 × 69 mm black‑and‑white picture.</p>
-        <ul><li>v1 · v2 · v3</li><li>SVG muscle car</li><li>OFL fonts</li></ul>
+        <p>Three compass designs, tall Oswald digits, stencil warnings and a spiked muscle car, all sized for a 92 × 69 mm picture. A clock, the weather for now and the next two days with wind streaks around the car, a speed‑limit sign from offline OpenStreetMap roads, and a car‑radio tuner panel.</p>
+        <ul><li>v1 · v2 · v3</li><li>Open‑Meteo</li><li>OSM limits</li><li>burn‑in shift</li></ul>
       </article>
       <article class="card plate reveal" data-n="4">
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m13 7 4-4 4 4-4 4zM3 17l4-4 4 4-4 4z"/><path d="m9.5 14.5 5-5"/><path d="M15 21a6 6 0 0 0 6-6M15 17.5a2.5 2.5 0 0 0 2.5-2.5"/></svg></div>
         <h3>Sensors that tune themselves</h3>
-        <p>A Holybro M8N configured over UBX for 10 Hz fixes and static hold, plus an IST8310 compass that calibrates itself against the GPS course while you drive. GPS time keeps the clock right with no RTC.</p>
-        <ul><li>UBX</li><li>10 Hz</li><li>auto‑calibration</li><li>gpsd + chrony</li></ul>
+        <p>A Holybro M8N set up over UBX for 10 Hz fixes, an IST8310 compass that calibrates itself against the GPS course while you drive, and an MPU‑6050 gyro that carries the heading through turns, tilt‑compensates the compass and notices reverse gear, so the rear camera comes up on its own.</p>
+        <ul><li>UBX 10 Hz</li><li>auto‑calibration</li><li>gyro fusion</li><li>gpsd + chrony</li></ul>
       </article>
       <article class="card plate reveal" style="--d:.06s" data-n="5">
-        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M1.5 20h21"/><path d="M7 12l3-3 2 2 4-4"/></svg></div>
-        <h3>Web control room</h3>
-        <p>A password‑protected web UI on the laptop over Wi‑Fi: dashboard, live WebRTC video, recordings, map and compass settings, skyplot, and a 1:1 preview of the CRT in real millimetres, calibrated against a bank card.</p>
-        <ul><li>FastAPI</li><li>WebSocket 10 Hz</li><li>WebRTC</li><li>1:1 preview</li></ul>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.6 3.1 8.2 7.5 9.5 4.4-1.3 7.5-4.9 7.5-9.5V6z"/><path d="M12 8v5"/><circle cx="12" cy="16.3" r="1" fill="currentColor" stroke="none"/></svg></div>
+        <h3>Van alarm</h3>
+        <p>Knocks, tilt, the van moving, a camera going dark, and people lingering at the van, spotted by a neural network on both cameras. It answers with the hazard lights, a siren on the speaker and protected recordings, and sends a push to your phone with a snapshot from five seconds before.</p>
+        <ul><li>MPU‑6050</li><li>NanoDet · NCNN</li><li>Web Push</li><li><a href="#alarm">more ↓</a></li></ul>
       </article>
       <article class="card plate reveal" style="--d:.12s" data-n="6">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="8" width="19" height="8" rx="4"/><circle cx="12" cy="12" r="2"/><path d="M8.5 8v8M15.5 8v8"/></svg></div>
+        <h3>A level for the campsite</h3>
+        <p>Park and the speedometer turns into a level: pitch and roll from the MPU‑6050, calibrated once against a spirit level, and how many centimetres to raise each wheel, drawn with our own alcove camper on a 2001 Peugeot Boxer.</p>
+        <ul><li>pitch · roll</li><li>cm per wheel</li><li>LEVEL ≤ 0.3°</li></ul>
+      </article>
+      <article class="card plate reveal" data-n="7">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="8" width="18" height="12" rx="2"/><circle cx="8.5" cy="14" r="2.5"/><path d="M14 12h4M14 15h4M6 8l10-5"/></svg></div>
+        <h3>Radio and games</h3>
+        <p>Internet radio from radio‑browser.info by mood, genre or era on a Bluetooth speaker, driven by a six‑key macro pad with a volume knob like a car radio. Parked, a gamepad opens a games menu on the tube: Freedoom, a Game Boy homebrew, the Duke Nukem 3D shareware episode.</p>
+        <ul><li>mpv</li><li>bluez‑alsa</li><li>favorites</li><li>RetroArch</li><li>EDuke32</li></ul>
+      </article>
+      <article class="card plate reveal" style="--d:.06s" data-n="8">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M1.5 20h21"/><path d="M7 12l3-3 2 2 4-4"/></svg></div>
+        <h3>Web control room, anywhere</h3>
+        <p>A password‑protected web app for the phone or laptop, in the van or from anywhere through an ssh tunnel to your own server: live video and rear‑camera sound, recordings with event markers, the alarm, a log of every place the van has stopped, read‑only guest links and a 1:1 preview of the tube.</p>
+        <ul><li>FastAPI</li><li>installable app</li><li>WebRTC</li><li>Tracking</li></ul>
+      </article>
+      <article class="card plate reveal" style="--d:.12s" data-n="9">
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="14" rx="3"/><rect x="6" y="6" width="12" height="8" rx="2.5"/><path d="M8 21h8M12 17v4"/></svg></div>
         <h3>Composite, straight to the tube</h3>
-        <p>No HDMI converter. One wire soldered to pin 111 (VDAC_COMP) of the CM4 goes into the monitor's DIN socket. NTSC 480i/60, with margins and mirroring tuned to the RV‑50.</p>
+        <p>No HDMI converter. One wire soldered to pin 111 (VDAC_COMP) of the CM4 goes into the monitor's DIN socket. NTSC 480i/60, with margins and mirroring tuned to the RV‑50, and a pixel or two of drift every few minutes so nothing burns in.</p>
         <ul><li>pin 111</li><li>NTSC 480i</li><li>mirror_x</li><li>KMS margins</li></ul>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════════════ ALARM ═════════════════════════ -->
+<section class="section" id="alarm">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <p class="kicker"><i>02</i> Guard mode</p>
+      <h2>Walk away, <em>keep watch</em></h2>
+      <p>Press Arm in the web app and walk off: a minute later the van is on guard. The tube goes almost black, with a dim "ALARM ON" and the clock, while the sensors and both cameras keep looking.</p>
+    </div>
+    <div class="van-grid">
+      <div class="reveal">
+        <figure class="shot wide alarm-shot"><img src="assets/gallery/web-phones-t.webp" data-full="assets/gallery/web-phones.webp" width="720" height="389" alt="" loading="lazy"><figcaption><b>On the phone</b>Dashboard, Alarm and Tracking in the installed web app (mock data)</figcaption><button aria-label="Open: the web app on a phone"></button></figure>
+      </div>
+      <div class="reveal" style="--d:.1s">
+        <ul class="facts">
+          <li><span class="n">0.15 g</span><span><b>A knock on the body</b>The MPU‑6050 samples at 200 Hz. The threshold is set right on a live vibration meter, above what wind and passing trucks give.</span></li>
+          <li><span class="n">3°</span><span><b>A tilt that stays</b>Held for more than five seconds: a jack under the van, or a tow truck.</span></li>
+          <li><span class="n">100 m</span><span><b>The van moves</b>Five good GPS fixes in a row over ten seconds, so one GPS jump never sounds the siren.</span></li>
+          <li><span class="n">20 s</span><span><b>A camera goes dark</b>Either camera stops sending video while armed.</span></li>
+          <li><span class="n">2–8 s</span><span><b>Someone at the van</b>NanoDet‑Plus through NCNN on both cameras: a person coming close, a face at the windscreen, someone lingering. Only people count; anything else is just a mark on the timeline.</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="cards alarm-cards">
+      <article class="card plate reveal">
+        <h3>Answers</h3>
+        <p>Hazard lights through a relay wired across the hazard button, a 30‑second siren on the Bluetooth speaker (never for camera‑only events), and both cameras' current clips protected from the loop.</p>
+      </article>
+      <article class="card plate reveal" style="--d:.06s">
+        <h3>Tells you</h3>
+        <p>A Web Push to Android or iPhone with a snapshot from five seconds before the event and a Silence button. Every event lands in a log with its snapshot and a Play button that jumps into the recording. If the van drops offline, you hear about that too.</p>
+      </article>
+      <article class="card plate reveal" style="--d:.12s">
+        <h3>Keeps going</h3>
+        <p>Arming survives a restart, a full disk and a read‑only file system. Events wait in an outbox until the server is reachable, and the push relay runs on your own server, not in someone else's cloud.</p>
       </article>
     </div>
   </div>
@@ -265,9 +330,9 @@
 <section class="section" id="van">
   <div class="wrap">
     <div class="sec-head reveal">
-      <p class="kicker"><i>02</i> In the van</p>
+      <p class="kicker"><i>03</i> In the van</p>
       <h2>Bolted to the <em>dashboard</em></h2>
-      <p>The RV‑50 sits on top of a Peugeot dashboard, where a reversing monitor belongs. The Pi, camera and GPS live behind it on a single 12 V feed.</p>
+      <p>The RV‑50 sits on the dashboard of a 2001 Peugeot Boxer alcove camper, where a reversing monitor belongs. The Pi, front camera, GPS and motion sensor live behind it on a single 12 V feed; the rear camera rides on the back and joins over Wi‑Fi.</p>
     </div>
     <div class="van-grid">
       <div class="van-photo reveal">
@@ -300,9 +365,10 @@
       <div class="reveal" style="--d:.1s">
         <ul class="facts">
           <li><span class="n">92×69</span><span><b>Millimetres of picture</b>The visible area of the 5″ tube. Every font, the compass and the car were sized for it in the 1:1 preview.</span></li>
-          <li><span class="n">~6 h</span><span><b>Of looped video</b>About 17 GB of the 32 GB eMMC is set aside for clips; the oldest go first, protected ones never.</span></li>
+          <li><span class="n">10 GB</span><span><b>Of looped video</b>The default cap for both cameras on the 32 GB eMMC. The oldest clips go first, protected ones never, and protected clips can't squeeze the loop below an hour.</span></li>
           <li><span class="n">1 GB</span><span><b>Of map tiles cached</b>Tiles come through the phone hotspot. Roads you have already driven work offline.</span></li>
           <li><span class="n">0</span><span><b>Converters in the video path</b>Composite leaves the CM4 on a single wire and goes straight into the monitor's channel‑2 input.</span></li>
+          <li><span class="n">6</span><span><b>Keys and a knob</b>A USB macro pad by the wheel: previous and next station, map or camera, front or rear, protect the clip, radio mode; the knob is the volume.</span></li>
         </ul>
       </div>
     </div>
@@ -313,20 +379,25 @@
 <section class="section" id="hardware">
   <div class="wrap">
     <div class="sec-head reveal">
-      <p class="kicker"><i>03</i> Hardware</p>
+      <p class="kicker"><i>04</i> Hardware</p>
       <h2>Parts bin &amp; <em>wiring</em></h2>
-      <p>Off‑the‑shelf modules and one very old monitor. The interesting parts are a 10‑pin GPS harness and a single wire on a 0.4 mm pitch connector.</p>
+      <p>Off‑the‑shelf modules and one very old monitor. The interesting parts are a 40‑pin header shared by the GPS, a motion sensor and a relay, and a single wire on a 0.4 mm pitch connector.</p>
     </div>
     <div class="hw-grid">
       <div class="plate bom reveal">
         <table>
-          <tr><th>Compute</th><td><b>Raspberry Pi Compute Module 4</b>4 GB RAM, 32 GB eMMC, Wi‑Fi. Raspberry Pi OS (Debian 13 trixie, 64‑bit)</td></tr>
+          <tr><th>Compute</th><td><b>Raspberry Pi Compute Module 4</b>4 GB RAM, 32 GB eMMC, Wi‑Fi, Bluetooth. Raspberry Pi OS (Debian 13 trixie, 64‑bit)</td></tr>
           <tr><th>Carrier</th><td><b>Waveshare CM4‑NANO‑B</b>USB‑C power, 40‑pin GPIO, CSI camera port</td></tr>
-          <tr><th>Camera</th><td><b>OV5647, 5 MP</b>CSI0 ribbon; full sensor 2592×1944 at 15.6 fps</td></tr>
-          <tr><th>GPS + compass</th><td><b>Holybro M8N</b>u‑blox M8N GNSS + IST8310 magnetometer, safety switch with LED, buzzer, on one JST‑GH 10‑pin plug</td></tr>
+          <tr><th>Front camera</th><td><b>OV5647, 5 MP</b>CSI0 ribbon; full sensor 2592×1944 at 15 fps, recorded as 1440×1080 H.264 at 6 Mbit/s</td></tr>
+          <tr><th>Rear camera</th><td><b>Kruger&amp;Matz Connect C150</b>Wi‑Fi IP camera with a microphone: 2560×1440 H.264 over RTSP for recording, a 640×360 second stream for the screen. Found again by its MAC when its address changes</td></tr>
+          <tr><th>GPS + compass</th><td><b>Holybro M8N</b>u‑blox M8N (GPS, GLONASS, Galileo) + IST8310 magnetometer, safety switch with LED, on one JST‑GH 10‑pin plug</td></tr>
+          <tr><th>Motion</th><td><b>MPU‑6050 (GY‑521)</b>Accelerometer + gyro at 200 Hz on its own I²C bus: impacts, tilt, the level, gyro heading</td></tr>
+          <tr><th>Hazard lights</th><td><b>RC relay switch</b>Wired across the van's hazard button, driven by 50 Hz servo pulses from the Pi's hardware PWM</td></tr>
+          <tr><th>Controls</th><td><b>6‑key USB macro pad with a knob, gamepad</b>Radio, map/camera, front/rear, protect; the knob is the volume. A PS4‑style pad for the games</td></tr>
+          <tr><th>Sound</th><td><b>Any Bluetooth speaker</b>The CM4's own Bluetooth, A2DP through bluez‑alsa: the radio and the alarm siren</td></tr>
           <tr><th>Display</th><td><b>WAECO Mobitronic RV‑50 (2001)</b>5″ black‑and‑white CRT reversing monitor, two camera inputs on DIN plugs</td></tr>
           <tr><th>Power</th><td><b>DC‑DC 12 → 5 V, 3 A</b>One shared ground for the Pi and the monitor</td></tr>
-          <tr><th>Software</th><td><b>Python · FastAPI · Picamera2 · MediaMTX</b>cage + Chromium kiosk, gpsd + chrony, vanilla JS on Canvas</td></tr>
+          <tr><th>Software</th><td><b>Python · FastAPI · Picamera2 · PyAV · MediaMTX · NCNN</b>cage + Chromium kiosk, gpsd + chrony, mpv + bluez‑alsa, RetroArch, vanilla JS on Canvas</td></tr>
         </table>
       </div>
 
@@ -370,19 +441,22 @@
       </div>
 
       <div class="plate diagram full reveal">
-        <h3>GPS: Holybro 10‑pin → Pi 40‑pin header</h3>
-        <p>RX/TX are labelled on the module side, so they cross over. Everything is 3.3 V logic, so it connects directly; only the buzzer needs a MOSFET.</p>
-        <svg viewBox="0 0 660 400" role="img" aria-label="Wiring of the Holybro M8N 10-pin connector to the Raspberry Pi 40-pin header">
+        <h3>The 40‑pin header: GPS, motion sensor, hazard relay</h3>
+        <p>RX/TX are labelled on the module side, so they cross over. The GPS gets the PL011 UART5 on pins 32/33, leaving the main UART to the on‑board Bluetooth that plays the radio. Everything is 3.3 V logic and connects directly.</p>
+        <svg viewBox="0 0 660 570" role="img" aria-label="Wiring of the Holybro M8N 10-pin connector, the MPU-6050 and the hazard relay to the Raspberry Pi 40-pin header">
           <text x="20" y="22" class="svg-label" fill="#ffb43a">HOLYBRO M8N · JST‑GH 10</text>
-          <text x="436" y="22" class="svg-label" fill="#ffb43a">PI 40‑PIN · 1–18</text>
+          <text x="20" y="336" class="svg-label" fill="#ffb43a">MPU‑6050 · GY‑521</text>
+          <text x="20" y="472" class="svg-label" fill="#ffb43a">HAZARD RELAY · RC SWITCH</text>
+          <text x="436" y="22" class="svg-label" fill="#ffb43a">PI 40‑PIN HEADER</text>
           <g id="gps-wires"></g>
-          <rect x="20" y="34" width="156" height="346" rx="10" fill="#1a1d15" stroke="#3a4130"/>
+          <rect x="20" y="34" width="156" height="262" rx="10" fill="#1a1d15" stroke="#3a4130"/>
+          <rect x="20" y="346" width="156" height="106" rx="10" fill="#1a1d15" stroke="#3a4130"/>
+          <rect x="20" y="480" width="156" height="78" rx="10" fill="#1a1d15" stroke="#3a4130"/>
           <g id="gps-gh" class="svg-mono" font-size="12"></g>
-          <rect x="436" y="34" width="80" height="346" rx="6" fill="#101310" stroke="#3a4130" opacity=".96"/>
+          <rect x="436" y="34" width="80" height="514" rx="6" fill="#101310" stroke="#3a4130" opacity=".96"/>
           <g id="gps-hdr" class="svg-mono" font-size="11"></g>
-          <g transform="translate(286 296)"><rect x="-22" y="-12" width="44" height="24" rx="4" fill="#0b0d09" stroke="#9aa088"/><text x="0" y="4" text-anchor="middle" font-size="10" fill="#c9cbbd" class="svg-mono">2N7000</text></g>
         </svg>
-        <p class="note">IST8310 answers on I²C address 0x0E. The safety switch protects the current clip from loop deletion, and its LED shows REC.</p>
+        <p class="note">The IST8310 compass answers on I²C‑1 at 0x0E; the MPU‑6050 has I²C‑3 to itself at 0x68. The GPS button: a short press flips the car screen between the front and rear camera, a two‑second press protects both cameras' clips, and its LED blinks while recording.</p>
       </div>
     </div>
   </div>
@@ -392,67 +466,86 @@
 <section class="section" id="architecture">
   <div class="wrap">
     <div class="sec-head reveal">
-      <p class="kicker"><i>04</i> Architecture</p>
-      <h2>Four services, <em>no single point of failure</em></h2>
-      <p>Recording runs in its own process: if the web server falls over, the dashcam keeps rolling. systemd restarts anything that dies, and the display is just a web page in a kiosk browser.</p>
+      <p class="kicker"><i>05</i> Architecture</p>
+      <h2>Ten services, <em>no single point of failure</em></h2>
+      <p>Each camera records in its own process: if the web server falls over, both dashcams keep rolling. Person detection, the radio and the games run as services of their own, systemd restarts anything that dies, and the display is just a web page in a kiosk browser. From outside, the van is reached through an ssh tunnel to your own server, which also keeps the position log and sends the push notifications.</p>
     </div>
     <div class="plate arch reveal">
-      <svg viewBox="0 0 1100 540" role="img" aria-label="Architecture: OV5647 camera to fnav-camera (recorder and MediaMTX), GPS to gpsd, compass and buttons to fnav-core, fnav-core to the display kiosk and laptop, display to the RV-50 via composite">
+      <svg viewBox="0 -16 1100 606" role="img" aria-label="Architecture: front and rear cameras to the camera services, recorder and MediaMTX; person detection on shared-memory frames; GPS, compass, motion sensor and controls to fnav-core; fnav-core to the display kiosk, radio, games, hazard relay and the ssh tunnel to your server and phone; the display drives the RV-50 via composite">
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#8d937a"/></marker>
         </defs>
         <!-- flows (under boxes) -->
-        <path class="flow green" d="M210 75 L290 75"/>
-        <path class="flow hot" d="M560 55 L640 52"/>
-        <path class="flow hot" d="M560 105 L640 132"/>
-        <path class="flow" d="M850 52 L920 52"/>
-        <path class="flow" d="M850 132 C 885 132, 890 175, 920 180"/>
-        <path class="flow" d="M520 140 C 600 190, 600 300, 640 330"/>
-        <path class="flow green" d="M210 235 L290 235"/>
-        <path class="flow" d="M425 270 L425 300"/>
-        <path class="flow green" d="M210 330 L290 330"/>
-        <path class="flow green" d="M210 410 L290 410"/>
-        <path class="flow" d="M560 360 L640 360"/>
-        <path class="flow" d="M560 320 C 700 300, 820 230, 920 215"/>
-        <path class="flow" d="M640 480 C 600 480, 590 455, 562 450"/>
-        <path class="flow hot" d="M850 355 L920 355" stroke-width="3"/>
-        <text class="lbl" x="226" y="68">CSI</text>
-        <text class="lbl" x="570" y="44">H.264</text>
-        <text class="lbl" x="582" y="134">H.264</text>
-        <text class="lbl" x="866" y="44">.ts</text>
-        <text class="lbl" x="866" y="170">WebRTC</text>
-        <text class="lbl" x="568" y="236">MJPEG 768×576</text>
-        <text class="lbl" x="222" y="228">UART</text>
-        <text class="lbl" x="228" y="323">I²C</text>
-        <text class="lbl" x="222" y="403">GPIO</text>
-        <text class="lbl" x="570" y="378">WS 10 Hz</text>
-        <text class="lbl" x="720" y="262">REST · WS</text>
-        <text class="lbl" x="574" y="500">tiles</text>
-        <text class="lbl" x="858" y="345" fill="#ffb43a">pin 111</text>
+        <path class="flow green" d="M210 52 L290 52"/>
+        <path class="flow green" d="M210 136 C 252 136, 250 92, 290 92"/>
+        <path class="flow hot" d="M560 40 L640 40"/>
+        <path class="flow hot" d="M560 100 C 700 104, 860 104, 920 62"/>
+        <path class="flow" d="M425 114 L425 134"/>
+        <path class="flow" d="M290 170 C 266 170, 266 312, 290 318"/>
+        <path class="flow green" d="M210 236 L290 240"/>
+        <path class="flow" d="M425 270 L425 290"/>
+        <path class="flow green" d="M210 316 C 250 316, 252 340, 290 340"/>
+        <path class="flow green" d="M210 396 L290 396"/>
+        <path class="flow hot" d="M560 70 C 602 70, 606 176, 640 178"/>
+        <path class="flow" d="M560 330 C 604 330, 600 214, 640 212"/>
+        <path class="flow hot" d="M850 195 L920 195" stroke-width="3"/>
+        <path class="flow" d="M560 404 C 604 404, 600 292, 640 292"/>
+        <path class="flow" d="M850 292 L920 292"/>
+        <path class="flow" d="M560 430 C 604 430, 606 366, 640 366"/>
+        <path class="flow" d="M560 456 C 620 456, 600 402, 700 402 L 880 402 C 902 402, 900 368, 920 366"/>
+        <path class="flow" d="M560 482 C 604 482, 606 438, 640 438"/>
+        <path class="flow" d="M850 438 L920 442"/>
+        <path class="flow" d="M1000 490 L1000 512"/>
+        <path class="flow" d="M640 512 C 604 512, 600 520, 562 520"/>
+        <path class="flow hot" d="M800 14 C 800 -6, 820 -6, 860 -6 L 1074 -6 C 1092 -6, 1092 4, 1092 24 L1092 520 C 1092 540, 1090 542, 1082 542"/>
+        <text class="lbl" x="226" y="44">CSI</text>
+        <text class="lbl" x="222" y="152">RTSP</text>
+        <text class="lbl" x="570" y="32">H.264</text>
+        <text class="lbl" x="866" y="96">.ts</text>
+        <text class="lbl" x="432" y="129">shm</text>
+        <text class="lbl" x="218" y="230">UART5</text>
+        <text class="lbl" x="222" y="308">I²C</text>
+        <text class="lbl" x="214" y="388">USB · GPIO</text>
+        <text class="lbl" x="606" y="134">MJPEG</text>
+        <text class="lbl" x="566" y="322">WS 10 Hz</text>
+        <text class="lbl" x="858" y="185" fill="#ffb43a">pin 111</text>
+        <text class="lbl" x="862" y="284">A2DP</text>
+        <text class="lbl" x="858" y="398">PWM</text>
+        <text class="lbl" x="866" y="432">ssh</text>
+        <text class="lbl" x="1008" y="506">HTTPS · push</text>
+        <text class="lbl" x="870" y="-10">WebRTC → phone · laptop</text>
+        <text class="lbl" x="566" y="558">tiles · weather</text>
 
         <!-- hardware -->
-        <g class="box hw"><rect x="20" y="40" width="190" height="70" rx="10"/><text class="t" x="36" y="68">OV5647 camera</text><text class="s" x="36" y="90">5 MP · full 2592×1944</text></g>
-        <g class="box hw"><rect x="20" y="200" width="190" height="70" rx="10"/><text class="t" x="36" y="228">Holybro M8N</text><text class="s" x="36" y="250">GNSS · UBX 10 Hz</text></g>
-        <g class="box hw"><rect x="20" y="295" width="190" height="70" rx="10"/><text class="t" x="36" y="323">IST8310 compass</text><text class="s" x="36" y="345">magnetometer · 0x0E</text></g>
-        <g class="box hw"><rect x="20" y="380" width="190" height="64" rx="10"/><text class="t" x="36" y="406">Safety switch</text><text class="s" x="36" y="428">protect clip · REC LED</text></g>
+        <g class="box hw"><rect x="20" y="20" width="190" height="64" rx="10"/><text class="t" x="36" y="46">OV5647 front camera</text><text class="s" x="36" y="68">5 MP · full 2592×1944</text></g>
+        <g class="box hw"><rect x="20" y="104" width="190" height="64" rx="10"/><text class="t" x="36" y="130">Rear IP camera</text><text class="s" x="36" y="152">2560×1440 · mic · Wi‑Fi</text></g>
+        <g class="box hw"><rect x="20" y="204" width="190" height="64" rx="10"/><text class="t" x="36" y="230">Holybro M8N</text><text class="s" x="36" y="252">GNSS · UBX 10 Hz</text></g>
+        <g class="box hw"><rect x="20" y="284" width="190" height="64" rx="10"/><text class="t" x="36" y="310">IST8310 + MPU‑6050</text><text class="s" x="36" y="332">compass · accel + gyro</text></g>
+        <g class="box hw"><rect x="20" y="364" width="190" height="64" rx="10"/><text class="t" x="36" y="390">Macro pad · gamepad</text><text class="s" x="36" y="412">+ the GPS button</text></g>
 
         <!-- services -->
-        <g class="box"><rect x="290" y="30" width="270" height="110" rx="10"/><text class="t" x="306" y="58">fnav-camera</text><text class="s" x="306" y="80">Picamera2, scaled in the ISP, no crop</text><text class="m" x="306" y="102">H.264 1440×1080 @ 15 fps</text><text class="m" x="306" y="122">MJPEG 768×576 for the tube</text></g>
-        <g class="box"><rect x="290" y="200" width="270" height="70" rx="10"/><text class="t" x="306" y="228">gpsd + chrony</text><text class="s" x="306" y="250">fixes at 10 Hz · GPS time, no RTC</text></g>
-        <g class="box core"><rect x="290" y="300" width="270" height="200" rx="10"/><text class="t" x="306" y="328" fill="#ffb43a">fnav-core</text><text class="s" x="306" y="350">Python · FastAPI · asyncio</text>
-          <text class="m" x="306" y="378">heading fusion GPS ⇄ compass</text><text class="m" x="306" y="398">compass auto-calibration</text><text class="m" x="306" y="418">speed → zoom / camera logic</text><text class="m" x="306" y="438">telemetry WebSocket · REST</text><text class="m" x="306" y="458">Esri tile proxy · 1 GB LRU</text><text class="m" x="306" y="478">loop cleanup by free space</text></g>
+        <g class="box"><rect x="290" y="14" width="270" height="100" rx="10"/><text class="t" x="306" y="40">fnav-camera × 2</text><text class="s" x="306" y="61">front: Picamera2 · rear: RTSP (PyAV)</text><text class="m" x="306" y="82">MPEG-TS · 10 min · fsync 1 s</text><text class="m" x="306" y="101">small frames → screen + shared memory</text></g>
+        <g class="box"><rect x="290" y="134" width="270" height="64" rx="10"/><text class="t" x="306" y="160">fnav-watch</text><text class="s" x="306" y="182">NanoDet‑Plus · NCNN · people only</text></g>
+        <g class="box"><rect x="290" y="214" width="270" height="56" rx="10"/><text class="t" x="306" y="238">gpsd + chrony</text><text class="s" x="306" y="258">fixes at 10 Hz · GPS time, no RTC</text></g>
+        <g class="box core"><rect x="290" y="290" width="270" height="250" rx="10"/><text class="t" x="306" y="318" fill="#ffb43a">fnav-core</text><text class="s" x="306" y="340">Python · FastAPI · asyncio</text>
+          <text class="m" x="306" y="368">heading: GPS ⇄ compass ⇄ gyro</text><text class="m" x="306" y="389">alarm: knock · tilt · move · cameras</text><text class="m" x="306" y="410">speed → zoom / camera / rear view</text><text class="m" x="306" y="431">telemetry WebSocket · REST</text><text class="m" x="306" y="452">radio · Bluetooth · games · level</text><text class="m" x="306" y="473">Esri tile proxy · 1 GB LRU</text><text class="m" x="306" y="494">weather · speed limits (OSM)</text><text class="m" x="306" y="515">recordings loop · position log</text></g>
 
         <!-- outputs -->
-        <g class="box"><rect x="640" y="20" width="210" height="64" rx="10"/><text class="t" x="656" y="46">Recorder</text><text class="s" x="656" y="68">MPEG-TS · 10 min · fsync 1 s</text></g>
-        <g class="box"><rect x="640" y="100" width="210" height="64" rx="10"/><text class="t" x="656" y="126">MediaMTX</text><text class="s" x="656" y="148">WebRTC, ~0.3 s latency</text></g>
-        <g class="box"><rect x="640" y="300" width="210" height="110" rx="10"/><text class="t" x="656" y="328">fnav-display</text><text class="s" x="656" y="350">cage + Chromium kiosk</text><text class="m" x="656" y="374">/display · Canvas 768×576</text><text class="m" x="656" y="394">map · HUD · camera</text></g>
-        <g class="box out"><rect x="640" y="450" width="210" height="64" rx="10"/><text class="t" x="656" y="476">Esri World Imagery</text><text class="s" x="656" y="498">via the phone hotspot</text></g>
+        <g class="box"><rect x="640" y="14" width="210" height="60" rx="10"/><text class="t" x="656" y="38">MediaMTX</text><text class="s" x="656" y="60">WebRTC, ~0.3 s latency</text></g>
+        <g class="box"><rect x="640" y="150" width="210" height="90" rx="10"/><text class="t" x="656" y="176">fnav-display</text><text class="s" x="656" y="198">cage + Chromium kiosk</text><text class="m" x="656" y="220">Canvas 768×576 · map · HUD</text></g>
+        <g class="box"><rect x="640" y="262" width="210" height="60" rx="10"/><text class="t" x="656" y="286">fnav-radio</text><text class="s" x="656" y="308">mpv → bluez‑alsa</text></g>
+        <g class="box"><rect x="640" y="338" width="210" height="56" rx="10"/><text class="t" x="656" y="362">fnav-games</text><text class="s" x="656" y="382">RetroArch · EDuke32, on demand</text></g>
+        <g class="box"><rect x="640" y="410" width="210" height="56" rx="10"/><text class="t" x="656" y="434">fnav-tunnel</text><text class="s" x="656" y="454">ssh ‑R / ‑L to your server</text></g>
+        <g class="box out"><rect x="640" y="482" width="210" height="60" rx="10"/><text class="t" x="656" y="506">Esri · Open‑Meteo · radio</text><text class="s" x="656" y="528">via the phone hotspot</text></g>
 
-        <g class="box out"><rect x="920" y="20" width="160" height="64" rx="10"/><text class="t" x="936" y="46">eMMC</text><text class="s" x="936" y="68">~6 h loop of clips</text></g>
-        <g class="box out"><rect x="920" y="150" width="160" height="90" rx="10"/><text class="t" x="936" y="176">Laptop</text><text class="s" x="936" y="198">web UI · live video</text><text class="s" x="936" y="218">1:1 screen preview</text></g>
-        <g class="box core"><rect x="920" y="310" width="160" height="90" rx="10"/><text class="t" x="936" y="336" fill="#ffb43a">WAECO RV-50</text><text class="s" x="936" y="358">5″ B/W CRT</text><text class="s" x="936" y="378">NTSC 480i / 60 Hz</text></g>
+        <g class="box out"><rect x="920" y="14" width="160" height="60" rx="10"/><text class="t" x="936" y="38">eMMC</text><text class="s" x="936" y="60">10 GB loop, both cams</text></g>
+        <g class="box core"><rect x="920" y="150" width="160" height="90" rx="10"/><text class="t" x="936" y="176" fill="#ffb43a">WAECO RV-50</text><text class="s" x="936" y="198">5″ B/W CRT</text><text class="s" x="936" y="218">NTSC 480i / 60 Hz</text></g>
+        <g class="box out"><rect x="920" y="262" width="160" height="60" rx="10"/><text class="t" x="936" y="286">BT speaker</text><text class="s" x="936" y="308">radio · siren</text></g>
+        <g class="box out"><rect x="920" y="338" width="160" height="56" rx="10"/><text class="t" x="936" y="362">Hazard relay</text><text class="s" x="936" y="382">GPIO19 · 50 Hz</text></g>
+        <g class="box out"><rect x="920" y="410" width="160" height="80" rx="10"/><text class="t" x="936" y="434">Your server</text><text class="s" x="936" y="456">fnav-relay · nginx</text><text class="s" x="936" y="476">position log · push</text></g>
+        <g class="box out"><rect x="920" y="512" width="160" height="60" rx="10"/><text class="t" x="936" y="536">Phone · laptop</text><text class="s" x="936" y="558">web app · push</text></g>
       </svg>
-      <div class="legend"><span style="--c:#74ff98">sensor buses</span><span style="--c:#ffb43a">video</span><span style="--c:#6a705a">data / HTTP</span></div>
+      <div class="legend"><span style="--c:#74ff98">sensor buses · camera links</span><span style="--c:#ffb43a">video</span><span style="--c:#6a705a">data / HTTP</span></div>
     </div>
   </div>
 </section>
@@ -461,7 +554,7 @@
 <section class="section" id="hard-parts">
   <div class="wrap">
     <div class="sec-head reveal">
-      <p class="kicker"><i>05</i> The hard parts</p>
+      <p class="kicker"><i>06</i> The hard parts</p>
       <h2>Lessons from the <em>wasteland</em></h2>
       <p>Most of it went to plan. These parts didn't, and they're the reason the device works.</p>
     </div>
@@ -535,9 +628,29 @@
         <header><span class="num">06</span><h3>A compass that calibrates itself</h3></header>
         <div>
           <figure data-full="assets/gallery/web-compass.webp" data-cap="Compass page of the web UI: the auto-calibration ring fills as you drive in different directions."><img src="assets/gallery/web-compass-t.webp" width="720" height="450" alt="Web UI compass page with the auto-calibration coverage ring" loading="lazy"></figure>
-          <p>Inside a steel van, a magnetometer mostly measures the van. Instead of a figure‑of‑eight dance in a car park, fnav‑core collects samples while you drive straight above 5 m/s, compares them with the <strong>GPS course</strong>, and fits hard‑iron offsets and a deviation curve. Drive in different directions and the coverage ring fills up. Above 3 m/s the heading comes from GPS anyway; the compass covers slow speeds and stops.</p>
+          <p>Inside a steel van, a magnetometer mostly measures the van. Instead of a figure‑of‑eight dance in a car park, fnav‑core collects samples while you drive straight above 5 m/s, compares them with the <strong>GPS course</strong>, and fits hard‑iron offsets and a deviation curve. Drive in different directions and the coverage ring fills up. While moving, the heading follows the GPS course with the gyro carrying it through turns; when you stop, the compass takes over from the last GPS course, so the arrow doesn't jump.</p>
         </div>
         <p class="lesson"><b>Lesson</b>Use the sensor you trust to teach the one you don't.</p>
+      </article>
+
+      <article class="story plate reveal">
+        <header><span class="num">07</span><h3>A Wi‑Fi scan every 34 seconds</h3></header>
+        <div>
+          <figure data-full="assets/gallery/hud-rear.webp" data-cap="Rear view on the car screen: mirrored, with a REAR tag; if the camera drops out the screen says NO SIGNAL rather than freezing."><img src="assets/gallery/hud-rear-t.webp" width="720" height="540" alt="Rear camera view on the car screen with the REAR tag" loading="lazy"></figure>
+          <p>The rear camera talks to the Pi over Wi‑Fi, and it kept vanishing for 15–25 s at a time, long enough to set off the "camera lost" alarm. A ping log every half second showed the Pi itself going deaf for 2–5 s, <strong>every 34 s</strong>. The culprit was our own status page: asking <code>nmcli</code> for the signal strength quietly started a full rescan whenever its list was older than 30 s, and a scanning radio leaves its channel.</p>
+          <p>Now the signal level comes straight from <code>/proc/net/wireless</code> and nothing rescans. When the camera does drop out, the service waits for its second stream to reconnect instead of restarting everything, and the picture is back in about 9 s.</p>
+        </div>
+        <p class="lesson"><b>Lesson</b>Before blaming the network, check what you are asking of it.</p>
+      </article>
+
+      <article class="story plate reveal" style="--d:.06s">
+        <header><span class="num">08</span><h3>Phantom knocks from a slipped FIFO</h3></header>
+        <div>
+          <figure data-full="assets/gallery/hud-impact.webp" data-cap="An impact on the car screen while armed: the IMPACT banner, the weather panel in the radio's place."><img src="assets/gallery/hud-impact-t.webp" width="720" height="540" alt="IMPACT banner on the car screen" loading="lazy"></figure>
+          <p>The alarm began reporting 1–3 g "impacts" with nobody near the van. The MPU‑6050 hands over its readings through a 1 KB FIFO of 12‑byte frames, under half a second at 200 Hz. A stray script pinning the CPU made the reader late, the FIFO overflowed, and the frames slipped by a few bytes: gravity suddenly appeared on another axis, a perfect fake jolt.</p>
+          <p>Now the reader checks the overflow flag before and after every read, rejects batches that are physically impossible or swing gravity by 50° in a blink, holds each batch back one read so a later fault can still cancel it, and resets the FIFO.</p>
+        </div>
+        <p class="lesson"><b>Lesson</b>A sensor's worst output isn't noise. It's confident garbage.</p>
       </article>
     </div>
   </div>
@@ -547,9 +660,9 @@
 <section class="section" id="gallery">
   <div class="wrap">
     <div class="sec-head reveal">
-      <p class="kicker"><i>06</i> Screenshots</p>
+      <p class="kicker"><i>07</i> Screenshots</p>
       <h2>From the <em>tube</em> and the <em>laptop</em></h2>
-      <p>The HUD designs, real frames from the Pi's composite output, and the web UI running against the mock backend.</p>
+      <p>The HUD designs and states, real frames from the Pi's composite output, and the web app running against the mock backend.</p>
     </div>
     <div class="tabs reveal" role="group" aria-label="Filter screenshots">
       <button data-f="all" aria-pressed="true">All</button>
@@ -558,23 +671,30 @@
       <button data-f="web" aria-pressed="false">Web UI</button>
     </div>
     <div class="grid" id="grid">
-      <figure class="shot reveal" data-c="display"><img src="assets/gallery/v1-t.webp" data-full="assets/gallery/v1.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>v1 · Riveted dial</b>Round gauge with a riveted steel bezel, heading‑up map</figcaption><button aria-label="Open: v1 Riveted dial"></button></figure>
-      <figure class="shot reveal" data-c="display"><img src="assets/gallery/v2-t.webp" data-full="assets/gallery/v2.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>v2 · Heading tape</b>Pip‑Boy style heading tape across the top</figcaption><button aria-label="Open: v2 Heading tape"></button></figure>
-      <figure class="shot reveal" data-c="display"><img src="assets/gallery/v3-t.webp" data-full="assets/gallery/v3.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>v3 · Brass compass</b>A ship's compass card in an aged brass ring</figcaption><button aria-label="Open: v3 Brass compass"></button></figure>
-      <figure class="shot reveal" data-c="display"><img src="assets/gallery/map-heading-up-t.webp" data-full="assets/gallery/map-heading-up.webp" width="680" height="544" alt="" loading="lazy"><figcaption><b>Esri imagery</b>The real satellite renderer on the mock route, 48 km/h</figcaption><button aria-label="Open: Esri imagery"></button></figure>
-      <figure class="shot wide reveal" data-c="display"><img src="assets/gallery/uturn-t.webp" data-full="assets/gallery/uturn.webp" width="720" height="360" alt="" loading="lazy"><figcaption><b>U‑turn, frame by frame</b>The icon turns first and the map catches up on a spring (0 s → 3 s)</figcaption><button aria-label="Open: U-turn frame by frame"></button></figure>
+      <figure class="shot reveal" data-c="display"><img src="assets/gallery/v1-t.webp" data-full="assets/gallery/v1.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>v1 · Riveted dial</b>Round gauge with a riveted steel bezel; the clock, a speed‑limit sign and the radio panel</figcaption><button aria-label="Open: v1 · Riveted dial"></button></figure>
+      <figure class="shot reveal" data-c="display"><img src="assets/gallery/v2-t.webp" data-full="assets/gallery/v2.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>v2 · Heading tape</b>Pip‑Boy style heading tape across the top, the clock below it</figcaption><button aria-label="Open: v2 · Heading tape"></button></figure>
+      <figure class="shot reveal" data-c="display"><img src="assets/gallery/v3-t.webp" data-full="assets/gallery/v3.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>v3 · Brass compass</b>A ship's compass card in an aged brass ring</figcaption><button aria-label="Open: v3 · Brass compass"></button></figure>
+      <figure class="shot wide reveal" data-c="display"><img src="assets/gallery/uturn-t.webp" data-full="assets/gallery/uturn.webp" width="720" height="360" alt="" loading="lazy"><figcaption><b>U‑turn, frame by frame</b>The icon turns first and the map catches up on a spring (0 s → 3 s)</figcaption><button aria-label="Open: U‑turn, frame by frame"></button></figure>
+      <figure class="shot reveal" data-c="display"><img src="assets/gallery/hud-rear-t.webp" data-full="assets/gallery/hud-rear.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>Rear view</b>Reverse gear: the rear camera, mirrored, with a REAR tag</figcaption><button aria-label="Open: Rear view"></button></figure>
+      <figure class="shot reveal" data-c="display"><img src="assets/gallery/hud-impact-t.webp" data-full="assets/gallery/hud-impact.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>Impact</b>The alarm banner; the weather panel in place of the radio</figcaption><button aria-label="Open: Impact"></button></figure>
+      <figure class="shot reveal" data-c="display"><img src="assets/gallery/hud-level-t.webp" data-full="assets/gallery/hud-level.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>Level</b>Parked: how far to raise each wheel, drawn with our camper</figcaption><button aria-label="Open: Level"></button></figure>
+      <figure class="shot reveal" data-c="display"><img src="assets/gallery/hud-standby-t.webp" data-full="assets/gallery/hud-standby.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>Armed standby</b>A nearly black tube while the van is on guard; the block drifts so nothing burns in</figcaption><button aria-label="Open: Armed standby"></button></figure>
+      <figure class="shot reveal" data-c="display"><img src="assets/gallery/hud-games-t.webp" data-full="assets/gallery/hud-games.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>Games menu</b>Opened from the gamepad while parked</figcaption><button aria-label="Open: Games menu"></button></figure>
       <figure class="shot reveal" data-c="display"><img src="assets/gallery/vehicle-t.webp" data-full="assets/gallery/vehicle.webp" width="602" height="450" alt="" loading="lazy"><figcaption><b>Wasteland muscle car</b>Spiked ram grille, supercharger, armour plates, quad exhausts</figcaption><button aria-label="Open: Wasteland muscle car"></button></figure>
       <figure class="shot reveal" data-c="display"><img src="assets/gallery/all-down-t.webp" data-full="assets/gallery/all-down.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>Everything down</b>No link, no GPS, no heading, no internet, not recording, in B/W</figcaption><button aria-label="Open: Everything down"></button></figure>
-      <figure class="shot reveal" data-c="display"><img src="assets/gallery/v1-north-t.webp" data-full="assets/gallery/v1-north.webp" width="720" height="540" alt="" loading="lazy"><figcaption><b>North‑up</b>Map fixed with north at the top, the car turns instead</figcaption><button aria-label="Open: North-up"></button></figure>
       <figure class="shot reveal" data-c="device"><img src="assets/gallery/composite-nav-t.webp" data-full="assets/gallery/composite-nav.webp" width="720" height="576" alt="" loading="lazy"><figcaption><b>Composite output</b>Camera view at a standstill, compass on the magnetometer, waiting for a fix</figcaption><button aria-label="Open: Composite output"></button></figure>
-      <figure class="shot reveal" data-c="device"><img src="assets/gallery/ntsc-final-t.webp" data-full="assets/gallery/ntsc-final.webp" width="720" height="480" alt="" loading="lazy"><figcaption><b>NTSC 480i, final</b>Mirrored and squeezed into the visible area of the tube</figcaption><button aria-label="Open: NTSC 480i final"></button></figure>
-      <figure class="shot reveal" data-c="device"><img src="assets/gallery/composite-mirrored-t.webp" data-full="assets/gallery/composite-mirrored.webp" width="720" height="576" alt="" loading="lazy"><figcaption><b>Mirrored for the RV‑50</b>The reversing monitor flips it back</figcaption><button aria-label="Open: Mirrored for the RV-50"></button></figure>
+      <figure class="shot reveal" data-c="device"><img src="assets/gallery/ntsc-final-t.webp" data-full="assets/gallery/ntsc-final.webp" width="720" height="480" alt="" loading="lazy"><figcaption><b>NTSC 480i, final</b>Mirrored and squeezed into the visible area of the tube</figcaption><button aria-label="Open: NTSC 480i, final"></button></figure>
+      <figure class="shot reveal" data-c="device"><img src="assets/gallery/composite-mirrored-t.webp" data-full="assets/gallery/composite-mirrored.webp" width="720" height="576" alt="" loading="lazy"><figcaption><b>Mirrored for the RV‑50</b>The reversing monitor flips it back</figcaption><button aria-label="Open: Mirrored for the RV‑50"></button></figure>
       <figure class="shot reveal" data-c="device"><img src="assets/gallery/pin111-t.webp" data-full="assets/gallery/pin111.webp" width="720" height="411" alt="" loading="lazy"><figcaption><b>Finding pin 111</b>VDAC_COMP on the CM4 module connector, located with a pinout explorer</figcaption><button aria-label="Open: Finding pin 111"></button></figure>
-      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-dashboard-t.webp" data-full="assets/gallery/web-dashboard.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>Dashboard</b>Fix, heading sources, recording, disk, system and the screen mode</figcaption><button aria-label="Open: Dashboard"></button></figure>
-      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-navigation-t.webp" data-full="assets/gallery/web-navigation.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>Navigation</b>Orientation, rotation smoothing, speed → zoom table</figcaption><button aria-label="Open: Navigation"></button></figure>
+      <figure class="shot wide reveal" data-c="web"><img src="assets/gallery/web-phones-t.webp" data-full="assets/gallery/web-phones.webp" width="720" height="389" alt="" loading="lazy"><figcaption><b>On the phone</b>Dashboard, Alarm and Tracking in the installed web app</figcaption><button aria-label="Open: On the phone"></button></figure>
+      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-dashboard-t.webp" data-full="assets/gallery/web-dashboard.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>Dashboard</b>The alarm first, the latest events with snapshots, the van at a glance</figcaption><button aria-label="Open: Dashboard"></button></figure>
+      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-alarm-t.webp" data-full="assets/gallery/web-alarm.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>Alarm</b>Arming, the live vibration meter with its threshold, events, push notifications</figcaption><button aria-label="Open: Alarm"></button></figure>
+      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-tracking-t.webp" data-full="assets/gallery/web-tracking.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>Tracking</b>Every place the van has stopped, with visits, the track and the live position</figcaption><button aria-label="Open: Tracking"></button></figure>
+      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-radio-t.webp" data-full="assets/gallery/web-radio.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>Radio</b>Stations by mood, genre and era, favorites, the speaker's own volume</figcaption><button aria-label="Open: Radio"></button></figure>
+      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-level-t.webp" data-full="assets/gallery/web-level.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>Level</b>Pitch and roll, wheels to raise, a one‑time spirit‑level calibration</figcaption><button aria-label="Open: Level"></button></figure>
       <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-compass-t.webp" data-full="assets/gallery/web-compass.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>Compass</b>Auto‑calibration ring, saved calibration, raw magnetometer</figcaption><button aria-label="Open: Compass"></button></figure>
-      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-preview-t.webp" data-full="assets/gallery/web-preview.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>Screen preview, 1:1</b>The live display at its physical size in millimetres, with the safe area</figcaption><button aria-label="Open: Screen preview"></button></figure>
-      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-gps-t.webp" data-full="assets/gallery/web-gps.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>GPS</b>Skyplot, per‑satellite SNR, raw NMEA stream</figcaption><button aria-label="Open: GPS"></button></figure>
+      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-gps-t.webp" data-full="assets/gallery/web-gps.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>GPS</b>Skyplot, per‑satellite signal, raw NMEA stream</figcaption><button aria-label="Open: GPS"></button></figure>
+      <figure class="shot reveal" data-c="web"><img src="assets/gallery/web-navigation-t.webp" data-full="assets/gallery/web-navigation.webp" width="720" height="450" alt="" loading="lazy"><figcaption><b>Navigation</b>Orientation, rotation smoothing, speed → zoom table</figcaption><button aria-label="Open: Navigation"></button></figure>
     </div>
   </div>
 </section>
@@ -583,9 +703,9 @@
 <section class="section" id="agents">
   <div class="wrap">
     <div class="sec-head reveal">
-      <p class="kicker"><i>07</i> Built with AI agents</p>
-      <h2>One lead, <em>seven agents</em>, about a day</h2>
-      <p>fallout.nav was written by a team of Claude agents working in parallel. A lead agent wrote the plan and the contracts, gave each agent its own part of the repository, and then did the integration and all the work on the real device.</p>
+      <p class="kicker"><i>08</i> Built with AI agents</p>
+      <h2>One lead, <em>seven agents</em>, then the road</h2>
+      <p>fallout.nav was written by a team of Claude agents working in parallel. A lead agent wrote the plan and the contracts, gave each agent its own part of the repository, and then did the integration and all the work on the real device: a picture on the tube in about a day. Everything after that, the rear camera, the alarm, the radio, the games and remote access, came in about 180 commits over the next three weeks, driven by whatever broke or was missing in the van.</p>
     </div>
     <div class="agents-grid">
       <div class="plate crew reveal">
@@ -605,8 +725,8 @@
         <div class="stats">
           <div class="plate stat reveal"><b>7</b><span>agents in parallel, each in its own file zone</span></div>
           <div class="plate stat reveal" style="--d:.05s"><b>~1 day</b><span>from plan to a picture on the tube</span></div>
-          <div class="plate stat reveal" style="--d:.1s"><b>~250</b><span>automated tests (195 Python + 53 JS)</span></div>
-          <div class="plate stat reveal" style="--d:.15s"><b>~20k</b><span>lines of Python, JS and shell</span></div>
+          <div class="plate stat reveal" style="--d:.1s"><b>1,112</b><span>automated tests (794 Python + 318 JS)</span></div>
+          <div class="plate stat reveal" style="--d:.15s"><b>~77k</b><span>lines of Python, JS and shell, almost a third of it tests</span></div>
         </div>
         <div class="plate rules reveal">
           <h3>How it stayed sane</h3>
@@ -628,7 +748,7 @@
   <div class="wrap">
     <div>
       <a class="brand" href="#top"><svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="28" fill="none" stroke="#ffb43a" stroke-width="5"/><path d="M32 8 L41 36 L32 31 L23 36 Z" fill="#ffb43a"/><path d="M32 56 L23 36 L32 41 L41 36 Z" fill="#74ff98"/></svg><span>fallout<b>.nav</b></span></a>
-      <p style="margin-top:14px;max-width:46ch">A one‑off dashcam and navigator for a Peugeot van, built around a monitor from 2001. Everything is open: wiring notes, the Pi installer, the display and the web UI.</p>
+      <p style="margin-top:14px;max-width:46ch">A one‑off dashcam, navigator and alarm for a 2001 Peugeot Boxer camper, built around a monitor from the same year. Everything is open source under the MIT licence: wiring notes, the Pi installer, the display, the web app, the alarm and the relay server.</p>
       <a class="btn btn-sm" href="https://github.com/ceoptrsltd/fallout.nav" rel="noopener" style="margin-top:8px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 7 3 12l5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>github.com/ceoptrsltd/fallout.nav</a>
     </div>
     <div>
@@ -643,13 +763,14 @@
     <div>
       <h4>Credits</h4>
       <p>Map imagery: Esri, Maxar, Earthstar Geographics. Streets: Esri, HERE, Garmin, © OpenStreetMap contributors.</p>
-      <p>Fonts: Black Ops One, Russo One, Oswald (SIL Open Font License 1.1).</p>
+      <p>Weather: Open‑Meteo.com (CC BY 4.0). Speed limits: © OpenStreetMap contributors (ODbL). Stations: radio‑browser.info.</p>
+      <p>Person detection: NanoDet‑Plus (Apache‑2.0); faces: YuNet (MIT). Fonts: Black Ops One, Russo One, Oswald (SIL Open Font License 1.1).</p>
     </div>
   </div>
   <div class="fineprint">
     <div class="wrap">
       <span>© 2026 PTRS · fallout.nav</span>
-      <span>A fan‑made hobby project, not affiliated with the Fallout or Mad Max franchises, WAECO, Peugeot or Raspberry Pi Ltd.</span>
+      <span>A fan‑made hobby project, not affiliated with the Fallout or Mad Max franchises, WAECO, Peugeot, Kruger&amp;Matz or Raspberry Pi Ltd.</span>
     </div>
   </div>
 </footer>
@@ -664,6 +785,6 @@
   <button class="lb-btn lb-next" id="lb-next" aria-label="Next"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>
 </dialog>
 
-<script type="module" src="js/site.js"></script>
+<script type="module" src="js/site.js?v=20261108"></script>
 </body>
 </html>

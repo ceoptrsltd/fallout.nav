@@ -19,3 +19,4 @@ tools/.remote.env
 # admin version marker: written by pi/deploy.sh / tools/remote.sh web (tools/web-version.sh)
 web/admin/version.json
 web/admin/version.json.tmp
+.tmp_cam/

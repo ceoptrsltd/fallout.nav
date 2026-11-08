@@ -1,5 +1,5 @@
 // postMessage API of the demo (docs/contracts/demo.md, section 1).
-//   page -> iframe: {type: "fnav-demo", play?, speedOverride?, orientation?, compassStyle?, forceMode?, layer?}
+//   page -> iframe: {type: "fnav-demo", play?, speedOverride?, orientation?, compassStyle?, forceMode?, layer?, radio?}
 //   iframe -> page: {type: "fnav-demo-ready"} once; {type: "fnav-demo-state", ...} ~4 Hz.
 
 const ORIENTATIONS = new Set(["heading_up", "north_up"]);
@@ -23,6 +23,7 @@ export function parseCommand(data) {
   if (typeof data.compassStyle === "string" && /^v\d{1,2}$/.test(data.compassStyle)) out.compassStyle = data.compassStyle;
   if (FORCE_MODES.has(data.forceMode)) out.forceMode = data.forceMode;
   if (LAYERS.has(data.layer)) out.layer = data.layer;
+  if (typeof data.radio === "boolean") out.radio = data.radio;
   return out;
 }
 

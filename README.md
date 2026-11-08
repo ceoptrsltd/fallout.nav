@@ -2,17 +2,32 @@
 
 **A 2001 black‑and‑white reversing monitor, a Raspberry Pi Compute Module 4 and a wasteland navigator.**
 
-fallout.nav turns a Raspberry Pi CM4 into an in‑car computer for an old van:
+fallout.nav turns a Raspberry Pi CM4 into an in‑car computer for an old camper van (a 2001 Peugeot Boxer):
 
-- **Dashcam** — OV5647 camera, full 2592×1944 sensor (widest field of view) → hardware H.264 1440×1080 @ 15 fps,
-  loop recording in 10‑minute MPEG‑TS segments with `fsync` every second: a power cut loses ≤ 2 s of video.
+- **Two‑camera dashcam** — front: OV5647, full 2592×1944 sensor (widest field of view) → hardware H.264
+  1440×1080 @ 15 fps; rear: a Wi‑Fi IP camera (Kruger&Matz Connect C150) over RTSP, 2560×1440 H.264 recorded as is,
+  with its microphone. Loop recording in 10‑minute MPEG‑TS segments with `fsync` every second: a power cut loses
+  ≤ 2 s of video. 10 GB loop by default; protected clips are never deleted; a GPS track next to every segment
+  (map, GPX); seeking anywhere through HLS byte ranges; a hard knock while driving protects both cameras' clips.
+  Reverse gear switches the car screen to the rear camera (mirrored, `REAR` tag, `NO SIGNAL` instead of a frozen frame).
 - **Navigation screen in a Fallout / Mad Max style** on a 5″ monochrome CRT (WAECO Mobitronic RV‑50):
   Esri satellite imagery with streets, heading‑up rotation (the vehicle icon turns first, the map catches up),
-  zoom by speed, the camera view when stopped, three compass designs, a wasteland muscle‑car icon.
-- **Sensors** — Holybro M8N GPS (u‑blox NEO‑M8N, 10 Hz, configured over UBX, Static Hold) and IST8310 compass
-  with **automatic calibration against the GPS course while driving**; heading fusion compass ↔ GPS.
-- **Web UI** (laptop over Wi‑Fi) — dashboard, live camera (WebRTC), recordings with in‑browser playback,
-  navigation/compass/GPS/system settings, and a **1:1 physical‑size preview** of the car screen.
+  zoom by speed, the camera view when stopped, three compass designs, a wasteland muscle‑car icon, a clock,
+  weather, a speed‑limit sign, a radio panel, an almost black standby screen while the alarm is armed.
+- **Sensors** — Holybro M8N GPS (u‑blox NEO‑M8N, 10 Hz, configured over UBX, Static Hold), IST8310 compass
+  with **automatic calibration against the GPS course while driving**, and an MPU‑6050 accelerometer + gyro
+  (200 Hz): heading fusion GPS ↔ compass ↔ gyro, compass tilt compensation, reverse detection.
+- **Van alarm** — knocks (MPU‑6050, threshold set on a live vibration meter), tilt, the van moving (GPS), a camera
+  that stops sending video, and **camera watch**: NanoDet‑Plus through NCNN on both cameras (a person approaching,
+  a face at the windscreen, someone lingering; only people raise the alarm). Answers with the hazard lights (an RC
+  relay switch across the hazard button, hardware PWM on GPIO19), a siren on the Bluetooth speaker, protected
+  recordings of both cameras, and a **Web Push** to Android / iPhone with a snapshot from 5 s before the event.
+  Details: `docs/contracts/alarm.md`, `docs/contracts/vision.md`.
+- **Level** — parked, the car screen shows pitch, roll and how many centimetres to raise each wheel
+  (`docs/contracts/level.md`).
+- **Web UI** (phone or laptop, installable as an app) — dashboard, alarm, live video from both cameras (WebRTC, or
+  an on‑demand H.264 stream with the rear camera's sound), recordings with alarm events on the timeline,
+  navigation/compass/level/GPS/radio/controls/system settings, and a **1:1 physical‑size preview** of the car screen.
 - **Composite video straight from the SoC** — a wire on CM4 pin 111 (`VDAC_COMP`), NTSC 480i/60 Hz with output
   margins and mirroring tuned for the RV‑50. The video output can be switched off (a macro pad key assigned to it)
   so it does not bleed into the monitor's other camera input; the button on the GPS module switches the car screen
@@ -28,6 +43,8 @@ fallout.nav turns a Raspberry Pi CM4 into an in‑car computer for an old van:
 - **Position log (Tracking)** — a GPS point every minute, queued on the device while offline, merged on the server
   into places and visits (the same spot within 50 m is not recorded twice); a hybrid Esri map with parking and
   transit points, the visit history of each place, and the live vehicle position.
+- **Games while parked** — a gamepad opens a games menu on the car screen: RetroArch (Freedoom through PrBoom,
+  Game Boy homebrew through Gambatte) and EDuke32 with the Duke Nukem 3D shareware episode.
 
 Project page with a live demo: **https://ptrs.ltd/apps/fallout.nav/**
 
@@ -38,6 +55,11 @@ Project page with a live demo: **https://ptrs.ltd/apps/fallout.nav/**
 | Raspberry Pi CM4 (eMMC, Wi‑Fi, 4 GB) on Waveshare **CM4‑NANO‑B** | Raspberry Pi OS (Debian 13 trixie) |
 | OV5647 camera | CSI0, `dtoverlay=ov5647,cam0` |
 | Holybro M8N GPS + IST8310 compass (10‑pin JST‑GH) | UART5 `/dev/gps0` + I2C‑1 |
+| Kruger&Matz Connect C150 (rear) | Wi‑Fi IP camera, RTSP; found again by its MAC when its address changes |
+| MPU‑6050 (GY‑521) | I2C‑3 (`dtoverlay=i2c3,pins_4_5`): VCC → pin 17, GND → 9, SDA → 7 (GPIO4), SCL → 29 (GPIO5) |
+| RC relay switch across the hazard button | S → pin 35 (GPIO19, PWM1), + → 4 (5 V), − → 39 (GND) |
+| 6‑key USB macro pad with a knob (1189:8890), gamepad | programmed as F13–F21 + Enter; keys in `settings.keypad` |
+| Bluetooth speaker | on‑board Bluetooth, A2DP through bluez‑alsa |
 | WAECO Mobitronic RV‑50 monitor | composite input, B/W CRT |
 
 ### GPS module → 40‑pin header
@@ -68,7 +90,8 @@ monitor input, GND → its ground. See `docs/device-report.md`.
 ```
 fnav/core     FastAPI backend: auth, settings, 10 Hz WebSocket telemetry, nav logic, Esri tile cache, recordings, system
 fnav/camera   Picamera2 pipeline, crash-safe MPEG-TS recorder, RTSP to MediaMTX (WebRTC), MJPEG for the screen
-fnav/sensors  gpsd client, UBX configuration, IST8310 driver, calibration + GPS auto-calibration, heading fusion, GPIO
+fnav/sensors  gpsd client, UBX configuration, IST8310 and MPU-6050 drivers, calibration + GPS auto-calibration, heading fusion, GPIO
+fnav/watch    alarm vision: NanoDet-Plus (NCNN) person detection and YuNet faces on frames from shared memory
 web/display   the car screen (Canvas renderer for Esri tiles + Pip-Boy HUD), also runs as an in-browser demo (?demo=1)
 web/admin     the web UI
 pi/           install.sh, deploy.sh, systemd units, boot config, MediaMTX, sudoers/polkit
@@ -77,8 +100,9 @@ tools/        remote.sh (server + tunnel setup), publish_site.sh, UBX/I2C helper
 site/         the project page
 ```
 
-Services on the device: `fnav-core` (port 80; 127.0.0.1:8090 for the tunnel), `fnav-camera`, `mediamtx`,
-`fnav-display` (cage + Chromium kiosk), `fnav-radio` (mpv), `bluetooth` + `bluealsa`, `fnav-tunnel`, `gpsd`, `chrony`.
+Services on the device: `fnav-core` (port 80; 127.0.0.1:8090 for the tunnel), `fnav-camera`, `fnav-camera-rear`,
+`fnav-watch`, `mediamtx`, `fnav-display` (cage + Chromium kiosk), `fnav-games` (on demand), `fnav-radio` (mpv),
+`bluetooth` + `bluealsa`, `fnav-tunnel`, `gpsd`, `chrony`.
 
 Weather on the car screen (now + the next two days while the radio is off, wind streaks around the vehicle):
 [Open-Meteo](https://open-meteo.com/) for the GPS position, every 30 min or after 25 km, cached for offline use
@@ -134,9 +158,10 @@ node --test tests/display/*.test.mjs       # display tests
 
 ## How it was built
 
-The project was designed and written in about a day by Claude acting as lead/integrator with seven parallel
+The first version was designed and written in about a day by Claude acting as lead/integrator with seven parallel
 sub‑agents (backend, map renderer, HUD design, web UI, camera/recorder, sensors, system), coordinated through
-written contracts in `docs/contracts/`. Plan and decisions: `PLAN.md`; hardware bring‑up notes:
+written contracts in `docs/contracts/`. The rear camera, the alarm, radio, games, the level and remote access
+followed over the next three weeks. Plan and decisions: `PLAN.md`; hardware bring‑up notes:
 `docs/device-report.md`.
 
 Map imagery © Esri and its data providers (Esri, Maxar, Earthstar Geographics and the GIS user community).
@@ -145,4 +170,5 @@ Map imagery © Esri and its data providers (Esri, Maxar, Earthstar Geographics a
 
 MIT — see [LICENSE](LICENSE). Third‑party parts keep their own licenses: fonts in `web/display/ui/fonts/`
 (SIL OFL 1.1, see `LICENSES.md` there), `web/admin/vendor/mpegts.js` (Apache‑2.0) and
-`web/admin/vendor/hls.light.min.js` (hls.js 1.7.3, Apache‑2.0).
+`web/admin/vendor/hls.light.min.js` (hls.js 1.7.3, Apache‑2.0), the detection models in `fnav/watch/models/`
+(NanoDet‑Plus, Apache‑2.0; YuNet, MIT).

@@ -97,7 +97,7 @@ function setupCrt(crt) {
 
 /* ───────────── demo console ───────────── */
 
-const ctl = { play: true, speedOverride: null, orientation: "heading_up", compassStyle: "v1", forceMode: "auto", layer: "imagery" };
+const ctl = { play: true, speedOverride: null, orientation: "heading_up", compassStyle: "v1", forceMode: "auto", layer: "imagery", radio: true };
 const touched = new Set(); // controls the user changed (state echoes must not overwrite them)
 
 function send(patch, win) {
@@ -119,10 +119,11 @@ function setupConsole() {
     group.addEventListener("click", (ev) => {
       const b = ev.target.closest("button[data-v]");
       if (!b) return;
-      ctl[key] = b.dataset.v;
+      const v = key === "radio" ? b.dataset.v === "on" : b.dataset.v; // radio: on/off -> boolean
+      ctl[key] = v;
       touched.add(key);
       setPressed(group, b.dataset.v);
-      send({ [key]: b.dataset.v });
+      send({ [key]: v });
     });
   }
   // play / pause
@@ -230,7 +231,7 @@ function setupMessaging() {
       fr.ready = true;
       fr.powerOn();
       // bring a late-loading screen in line with the console
-      const patch = { play: ctl.play, speedOverride: ctl.speedOverride, forceMode: ctl.forceMode, layer: ctl.layer };
+      const patch = { play: ctl.play, speedOverride: ctl.speedOverride, forceMode: ctl.forceMode, layer: ctl.layer, radio: ctl.radio };
       for (const k of ["orientation", "compassStyle"]) if (touched.has(k)) patch[k] = ctl[k];
       send(patch, ev.source);
       if (ev.source === heroWin) {
@@ -249,47 +250,47 @@ function setupMessaging() {
 function buildGpsDiagram() {
   const gh = $("#gps-gh"), hdr = $("#gps-hdr"), wires = $("#gps-wires");
   if (!gh) return;
-  // [GH pin, module signal, Pi header pin, colour, short note]
-  const W = [
-    [1, "VCC 5V", 2, "#ff5b3d"],
-    [2, "RX", 8, "#ffb43a"],
-    [3, "TX", 10, "#ffe066"],
-    [4, "SCL", 5, "#74ff98"],
-    [5, "SDA", 3, "#3fd3c6"],
-    [6, "SAFETY SW", 16, "#6ea8ff"],
-    [7, "SW LED", 18, "#c48bff"],
-    [8, "3V3", 1, "#ff8a3d"],
-    [9, "BUZZER−", 12, "#9aa088"],
-    [10, "GND", 6, "#c9cbbd"],
+  // devices on the left: [first pin y, numbered?, [[signal, Pi header pin or null (not connected), colour]]]
+  const DEV = [
+    [58, true, [ // Holybro M8N, JST-GH 10, pins 1..10
+      ["VCC 5V", 2, "#ff5b3d"], ["RX", 32, "#ffb43a"], ["TX", 33, "#ffe066"], ["SCL", 5, "#74ff98"], ["SDA", 3, "#3fd3c6"],
+      ["SAFETY SW", 16, "#6ea8ff"], ["SW LED", 18, "#c48bff"], ["3V3", 1, "#ff8a3d"], ["BUZZER", null], ["GND", 6, "#c9cbbd"],
+    ]],
+    [366, false, [["VCC", 17, "#ff8a3d"], ["GND", 9, "#c9cbbd"], ["SCL", 29, "#a8f05a"], ["SDA", 7, "#5ad1f0"]]], // MPU-6050
+    [500, false, [["S (PWM)", 35, "#ff6fd8"], ["+ 5V", 4, "#ff5b3d"], ["− GND", 39, "#c9cbbd"]]], // RC relay switch
   ];
-  const HDR = { 1: "3V3", 2: "5V", 3: "SDA1 · GPIO2", 4: "5V", 5: "SCL1 · GPIO3", 6: "GND", 7: "GPIO4", 8: "TXD · GPIO14", 9: "GND", 10: "RXD · GPIO15", 11: "GPIO17", 12: "GPIO18", 13: "GPIO27", 14: "GND", 15: "GPIO22", 16: "GPIO23", 17: "3V3", 18: "GPIO24" };
-  const ghY = (i) => 58 + (i - 1) * 34.5;
-  const rowY = (p) => 58 + Math.floor((p - 1) / 2) * 38.5;
+  const HDR = {
+    1: "3V3", 2: "5V", 3: "SDA1 · GPIO2", 4: "5V", 5: "SCL1 · GPIO3", 6: "GND", 7: "SDA3 · GPIO4", 8: "GPIO14", 9: "GND", 10: "GPIO15",
+    11: "GPIO17", 12: "GPIO18", 13: "GPIO27", 14: "GND", 15: "GPIO22", 16: "GPIO23", 17: "3V3", 18: "GPIO24", 19: "GPIO10", 20: "GND",
+    21: "GPIO9", 22: "GPIO25", 23: "GPIO11", 24: "GPIO8", 25: "GND", 26: "GPIO7", 27: "ID_SD", 28: "ID_SC", 29: "SCL3 · GPIO5", 30: "GND",
+    31: "GPIO6", 32: "TXD5 · GPIO12", 33: "RXD5 · GPIO13", 34: "GND", 35: "PWM1 · GPIO19", 36: "GPIO16", 37: "GPIO26", 38: "GPIO20", 39: "GND", 40: "GPIO21",
+  };
+  const STEP = 24, ROW = 24.6, TOP = 54;
+  const rowY = (p) => TOP + Math.floor((p - 1) / 2) * ROW;
   const pinX = (p) => (p % 2 ? 458 : 492);
-  const used = new Map(W.map((w) => [w[2], w]));
-  for (const [n, sig, p, col] of W) {
-    const y1 = ghY(n), y2 = rowY(p);
-    let d;
-    if (n === 9) d = `M176 ${y1} C 230 ${y1}, 236 296, 264 296 M308 296 C 360 296, 380 ${y2}, 436 ${y2}`;
-    else d = `M176 ${y1} C 300 ${y1}, 320 ${y2}, 436 ${y2}`;
-    wires.append(svgEl("path", { d, class: "wire", stroke: col, "stroke-dasharray": n === 9 ? "7 5" : "none", opacity: 0.95 }));
-    gh.append(svgEl("text", { x: 34, y: y1 + 4, fill: "#6c715d" }, String(n)));
-    gh.append(svgEl("text", { x: 58, y: y1 + 4, fill: "#dadccb" }, sig));
-    gh.append(svgEl("rect", { x: 162, y: y1 - 7, width: 14, height: 14, rx: 2, fill: col }));
+  const used = new Map();
+  for (const [y0, numbered, pins] of DEV) {
+    pins.forEach(([sig, p, col], i) => {
+      const y1 = y0 + i * STEP;
+      const nc = p == null;
+      if (numbered) gh.append(svgEl("text", { x: 34, y: y1 + 4, fill: "#6c715d" }, String(i + 1)));
+      gh.append(svgEl("text", { x: numbered ? 58 : 34, y: y1 + 4, fill: nc ? "#5b6150" : "#dadccb" }, nc ? `${sig} · n/c` : sig));
+      gh.append(svgEl("rect", { x: 162, y: y1 - 7, width: 14, height: 14, rx: 2, fill: nc ? "#2a2e24" : col }));
+      if (nc) return;
+      used.set(p, col);
+      const y2 = rowY(p);
+      wires.append(svgEl("path", { d: `M176 ${y1} C 300 ${y1}, 320 ${y2}, 436 ${y2}`, class: "wire", stroke: col, opacity: 0.95 }));
+    });
   }
-  for (let p = 1; p <= 18; p++) {
-    const y = rowY(p), w = used.get(p);
-    hdr.append(svgEl("circle", { cx: pinX(p), cy: y, r: 8, fill: w ? w[3] : "#2a2e24", stroke: w ? "#0b0d09" : "#3a4130", "stroke-width": 1.5 }));
-    if (p % 2) hdr.append(svgEl("text", { x: pinX(p), y: y + 3.5, "text-anchor": "middle", "font-size": 9, fill: w ? "#0b0d09" : "#6c715d" }, String(p)));
-    else hdr.append(svgEl("text", { x: pinX(p), y: y + 3.5, "text-anchor": "middle", "font-size": 9, fill: w ? "#0b0d09" : "#6c715d" }, String(p)));
+  for (let p = 1; p <= 40; p++) {
+    const y = rowY(p), col = used.get(p);
+    hdr.append(svgEl("circle", { cx: pinX(p), cy: y, r: 8, fill: col || "#2a2e24", stroke: col ? "#0b0d09" : "#3a4130", "stroke-width": 1.5 }));
+    hdr.append(svgEl("text", { x: pinX(p), y: y + 3.5, "text-anchor": "middle", "font-size": 9, fill: col ? "#0b0d09" : "#6c715d" }, String(p)));
   }
-  for (let r = 0; r < 9; r++) {
-    const odd = 2 * r + 1, even = odd + 1, y = 58 + r * 38.5;
-    const t = svgEl("text", { x: 526, y: y - 3, "font-size": 11 });
-    const a = svgEl("tspan", { fill: used.has(odd) ? used.get(odd)[3] : "#5b6150" }, `${odd} ${HDR[odd]}`);
-    t.append(a);
-    hdr.append(t);
-    hdr.append(svgEl("text", { x: 526, y: y + 11, "font-size": 11, fill: used.has(even) ? used.get(even)[3] : "#5b6150" }, `${even} ${HDR[even]}`));
+  for (let r = 0; r < 20; r++) {
+    const odd = 2 * r + 1, even = odd + 1, y = rowY(odd);
+    hdr.append(svgEl("text", { x: 526, y: y - 2, "font-size": 10, fill: used.get(odd) || "#5b6150" }, `${odd} ${HDR[odd]}`));
+    hdr.append(svgEl("text", { x: 526, y: y + 9, "font-size": 10, fill: used.get(even) || "#5b6150" }, `${even} ${HDR[even]}`));
   }
 }
 
@@ -364,6 +365,11 @@ function setupGallery() {
     const vis = $$(".shot", grid).filter((x) => !x.hidden);
     open(vis.map(fromShot), vis.indexOf(s));
   });
+  // a screenshot outside the gallery grid opens on its own
+  for (const s of $$(".shot")) {
+    if (s.closest("#grid")) continue;
+    s.addEventListener("click", () => open([fromShot(s)], 0));
+  }
   for (const f of $$(".story figure[data-full]")) {
     f.tabIndex = 0;
     f.setAttribute("role", "button");

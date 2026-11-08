@@ -28,6 +28,7 @@ export function startDemo({ onMessage, getSettings, applyPatch, getState, now })
   const nav = new NavLogic(s0.nav, s0.display, { startTime: now() });
   const radioT0 = now();
   let playing = true;
+  let radioOn = true; // off: the weather panel takes the radio's place
   let lastTick = now();
   let display = null;
   let readySent = false;
@@ -36,6 +37,7 @@ export function startDemo({ onMessage, getSettings, applyPatch, getState, now })
     onCommand(cmd) {
       if ("play" in cmd) playing = cmd.play;
       if ("speedOverride" in cmd) sim.speedOverride = cmd.speedOverride;
+      if ("radio" in cmd) radioOn = cmd.radio;
       const patch = settingsPatch(cmd);
       if (patch) applyPatch(patch);
     },
@@ -43,7 +45,7 @@ export function startDemo({ onMessage, getSettings, applyPatch, getState, now })
       const st = getState();
       if (!st) return null;
       const s = getSettings();
-      return { ...st, orientation: s.display.orientation, compassStyle: s.display.compass_style };
+      return { ...st, orientation: s.display.orientation, compassStyle: s.display.compass_style, radio: radioOn };
     },
   });
 
@@ -59,7 +61,8 @@ export function startDemo({ onMessage, getSettings, applyPatch, getState, now })
     if (playing || !display) display = nav.update(t, tel.gps);
     else display = { ...display, mode: s.display.force_mode !== "auto" ? s.display.force_mode : display.mode, orientation: s.display.orientation };
     tel.display = display;
-    tel.radio = demoRadioStatus(t - radioT0); // on-screen radio panel: a made-up station schedule
+    // on-screen radio panel: a made-up station schedule; radio off — the weather panel instead
+    tel.radio = radioOn ? demoRadioStatus(t - radioT0) : { ...demoRadioStatus(0), state: "stopped", track: null };
     tel.speed_limit = { kmh: 50, src: "osm" }; // the sign next to the speedometer (blinks above 53 km/h)
     onMessage(tel);
     if (!readySent) {

@@ -15,7 +15,7 @@ bash "$ROOT/site/build.sh"
 
 pack() {
     tar -C "$ROOT/site" -czf - --owner=0 --group=0 --numeric-owner \
-        --exclude='./_shots' --exclude='*.sh' --exclude='./dev' --exclude='__pycache__' .
+        --exclude='./_shots' --exclude='./_work' --exclude='*.sh' --exclude='./dev' --exclude='__pycache__' .
 }
 
 if [ "${1:-}" = "--dry-run" ]; then

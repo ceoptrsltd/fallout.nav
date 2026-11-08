@@ -186,8 +186,9 @@ test("bridge: разбор команд строго по контракту", (
     forceMode: "camera",
     compassStyle: "v3",
   });
+  assert.deepEqual(parseCommand({ type: "fnav-demo", radio: false }), { radio: false });
   // мусор отбрасывается
-  assert.deepEqual(parseCommand({ type: "fnav-demo", play: "yes", orientation: "south_up", layer: "x", compassStyle: "<b>", speedOverride: "9" }), {});
+  assert.deepEqual(parseCommand({ type: "fnav-demo", play: "yes", orientation: "south_up", layer: "x", compassStyle: "<b>", speedOverride: "9", radio: "off" }), {});
   const p = settingsPatch({ orientation: "north_up", compassStyle: "v2", forceMode: "map", layer: "street" });
   assert.deepEqual(p, { display: { orientation: "north_up", compass_style: "v2", force_mode: "map", layers: { street_map_instead: true } } });
   const merged = deepMerge(DEFAULT_SETTINGS, p);
