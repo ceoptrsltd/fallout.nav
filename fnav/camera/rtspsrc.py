@@ -82,13 +82,18 @@ SUB_RETRY_S, SUB_RETRY_MAX_S = 1.0, 30.0  # второй поток отвали
 # (камера пропадала на ~25 с вместо ~15 — дольше порога тревоги «камера пропала» в 20 с)
 SUB_CONNECT_S = 12.0
 # экран и снимки с основного: малых кадров с него нет дольше — картинка со второго. Без зрителей основной даёт только
-# ключевые кадры (у C150 раз в 2,2 с) — MAIN_PICTURE_GAP_S; задний вид на экране — MAIN_LIVE_GAP_S: основной догоняет
-# группу кадров после включения (~0,8 с) или стоит (по Wi-Fi у C150 основной замирал на 0,5–4,7 с за полминуты,
-# замер 2026-11-09) — второй, лёгкий, держит экран (декодируется только тогда, догоняет свою группу за ~0,2 с).
-# Картинка всегда с одного потока (кадры двух вперемешку — дрожь: у второго кадр чуть другой); назад на основной —
-# когда он идёт ровно: MAIN_STEADY_FRAMES кадров подряд с шагом не больше MAIN_STEADY_GAP_S (без зрителей — сразу)
-MAIN_PICTURE_GAP_S = 4.0
-MAIN_LIVE_GAP_S = 0.5
+# ключевые кадры: у C150 раз в 2,2 с днём и раз в ~4 с в темноте (8 к/с при той же группе в 33 кадра, замер
+# 2026-11-09) — MAIN_PICTURE_GAP_S с запасом (было 4 с: в темноте экран то и дело уходил на второй, и задний вид
+# включался со второго, а через секунду подменялся основным). Задний вид на экране — MAIN_LIVE_GAP_S, отсчёт с
+# включения (основной сперва догоняет группу кадров: 0,2–0,6 с — экран ждёт его, второй не показывает) или с
+# последнего кадра. Короче не надо: точка Wi-Fi раз в ~35 с глушит всех клиентов на 0,5–2,5 с (замер 2026-11-09:
+# молчат оба потока и пинг до самой точки) — второй в такой паузе стоит так же, а переход на него и обратно виден
+# как подмена картинки (у второго кадр чуть другой и мягче). Второй — запас на поломку основного (отвалился, молчит).
+# Картинка всегда с одного потока (кадры двух вперемешку — дрожь); назад на основной — когда он идёт ровно:
+# MAIN_STEADY_FRAMES кадров подряд с шагом не больше MAIN_STEADY_GAP_S; сразу — без зрителей или если второй с
+# перехода так ничего и не показал (стоял вместе с основным)
+MAIN_PICTURE_GAP_S = 10.0
+MAIN_LIVE_GAP_S = 2.5
 MAIN_STEADY_FRAMES = 5
 MAIN_STEADY_GAP_S = 0.25
 
@@ -344,6 +349,7 @@ class RtspCameraSource:
         self._pic_sub = False  # экран и снимки сейчас со второго потока (основной картинку не даёт)
         self._main_steady = 0  # кадров основного подряд с ровным шагом (возврат экрана на основной)
         self._pic_sub_since = 0.0
+        self._sub_pic_mono = 0.0  # последний кадр второго, ушедший на экран (монотонные часы)
         self._live: Callable[[bytes, bool, int], None] | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -543,6 +549,8 @@ class RtspCameraSource:
             return
         if jpeg:
             sink.on_jpeg_frame(frame)
+            if not main:
+                self._sub_pic_mono = now
         if ring:
             sink.on_ring_frame(frame)
 
@@ -563,35 +571,37 @@ class RtspCameraSource:
 
     def _picture_check(self, now: float) -> None:
         """Перевести экран на второй поток, если основной картинку не даёт: помощника нет или он отвалился; без
-        зрителей — малых кадров нет дольше MAIN_PICTURE_GAP_S; задний вид на экране — живых кадров с включения ещё не
-        было (основной догоняет группу) или нет дольше MAIN_LIVE_GAP_S."""
+        зрителей — малых кадров нет дольше MAIN_PICTURE_GAP_S; задний вид на экране — нет дольше MAIN_LIVE_GAP_S
+        с последнего кадра или, если с включения их ещё не было (основной догоняет группу), с включения."""
         if not self._split or self._pic_sub:
             return
         why = None
-        silent = f"main silent {now - self._main_lores_mono:.1f} s" if self._main_lores_mono else "no frames from main yet"
         if self._main is None or self.main_error:
             why = "no main stream"
         elif self._jpeg_fps <= 1:
             if now - self._main_lores_mono > MAIN_PICTURE_GAP_S:
-                why = silent
+                why = f"main silent {now - self._main_lores_mono:.1f} s" if self._main_lores_mono else "no frames from main yet"
         elif self._main_lores_mono < self._live_since:
-            why = "main catching up"
+            if now - self._live_since > MAIN_LIVE_GAP_S:
+                why = f"no frames from main {now - self._live_since:.1f} s after the rear view came on"
         elif now - self._main_lores_mono > MAIN_LIVE_GAP_S:
-            why = silent
+            why = f"main silent {now - self._main_lores_mono:.1f} s"
         if why:
             self._pic_sub, self._main_steady = True, 0
             self._pic_sub_since = now
-            # в журнал — только рывки заднего вида на экране (основной замолчал при зрителях); догон при включении и
-            # редкие ключевые кадры без зрителей — обычное дело
-            live_stall = self._jpeg_fps > 1 and why.startswith("main silent")
-            (log.info if live_stall else log.debug)("rear camera: picture from the second stream (%s)", why)
+            # в журнал — только задний вид на экране (основной не даёт картинку при зрителях); отвал помощника
+            # пишет _on_exit, без зрителей — обычное дело (редкие ключевые кадры)
+            (log.info if self._jpeg_fps > 1 and why != "no main stream" else log.debug)(
+                "rear camera: picture from the second stream (%s)", why)
 
     def _main_frame(self, now: float) -> None:
-        """Малый кадр основного: вернуть ему экран, когда он идёт ровно (без зрителей — сразу)."""
+        """Малый кадр основного: вернуть ему экран, когда он идёт ровно; сразу — без зрителей или если второй с
+        перехода ничего не показал (стоял вместе с основным: подменять нечего)."""
         steady = now - self._main_lores_mono <= MAIN_STEADY_GAP_S
         self._main_steady = self._main_steady + 1 if steady else 1
         if self._pic_sub and not self.main_error and (
-                self._jpeg_fps <= 1 or (now >= self._live_since and self._main_steady >= MAIN_STEADY_FRAMES)):
+                self._jpeg_fps <= 1 or self._sub_pic_mono < self._pic_sub_since
+                or (now >= self._live_since and self._main_steady >= MAIN_STEADY_FRAMES)):
             self._pic_sub = False
             log.debug("rear camera: picture back on the main stream after %.1f s", now - self._pic_sub_since)
 

@@ -268,8 +268,8 @@ def test_screen_and_snapshots_from_the_main_stream_watch_from_the_second(tmp_pat
     finally:
         src.stop()
     assert not sink.lores, "no frames through the shared path"
-    # пока основной догоняет или замирает (> MAIN_LIVE_GAP_S), экран может показывать второй поток (запас); когда
-    # основной идёт ровно — только он
+    # основной не успел дать кадр за MAIN_LIVE_GAP_S (медленный запуск помощника под нагрузкой) — экран мог начать
+    # со второго (запас); когда основной идёт ровно — только он
     assert {(f.w, f.h) for f in sink.jpeg[-5:]} == {(160, 90)}, "the screen and snapshots must use the main stream"
     assert {(f.w, f.h) for f in sink.ring} == {(160, 120)}, "the camera watch keeps the second stream"
 
@@ -295,10 +295,12 @@ def test_main_stream_lost_the_screen_falls_back_to_the_second(tmp_path: Path, mo
 
 
 def test_screen_uses_one_stream_at_a_time_and_returns_to_the_main_when_it_is_steady():
-    """Задний вид включился: основной догоняет группу кадров — экран со второго; назад на основной — только когда он
-    идёт ровно (MAIN_STEADY_FRAMES кадров подряд), чтобы кадры двух потоков не чередовались; основной замолчал
-    дольше MAIN_LIVE_GAP_S — снова второй. Без зрителей (ключевые кадры основного) запас — лишь после
-    MAIN_PICTURE_GAP_S, и назад — с первым кадром основного."""
+    """Картинка — с одного потока, второй — запас на поломку основного, а не на каждую паузу: подмена видна на экране.
+    Без зрителей (ключевые кадры основного: днём раз в 2,2 с, в темноте раз в ~4 с) запас — лишь после
+    MAIN_PICTURE_GAP_S. Задний вид включился: экран ждёт, пока основной догонит группу кадров, второй не показывает;
+    короткая пауза Wi-Fi (стоят оба потока) — тоже ждёт; основной молчит дольше MAIN_LIVE_GAP_S — второй. Назад на
+    основной — когда он идёт ровно (MAIN_STEADY_FRAMES подряд), чтобы кадры двух потоков не чередовались; второй с
+    перехода ничего не показал — сразу."""
     import fnav.camera.rtspsrc as rs
 
     now = [100.0]
@@ -311,21 +313,42 @@ def test_screen_uses_one_stream_at_a_time_and_returns_to_the_main_when_it_is_ste
         src._main_frame(t)
         src._main_lores_mono = t
 
+    def sub_frame(t):  # кадр второго ушёл на экран
+        now[0] = src._sub_pic_mono = t
+
     main_frame(99.0)  # ключевой кадр секунду назад, без зрителей
     src._picture_check(100.0)
     assert not src.sub_for_picture()  # 1 с < MAIN_PICTURE_GAP_S
-    src._jpeg_fps, src._live_since = 25.0, 100.0  # задний вид включился
-    src._picture_check(100.0)
-    assert src.sub_for_picture()  # живых кадров основного с включения нет (догоняет) — второй
-    for i in range(rs.MAIN_STEADY_FRAMES - 1):
-        main_frame(100.8 + i / 15)
-    assert src.sub_for_picture()  # ещё не ровно
-    main_frame(100.8 + (rs.MAIN_STEADY_FRAMES - 1) / 15)
-    assert not src.sub_for_picture()  # пошёл ровно — снова основной
-    src._picture_check(now[0] + rs.MAIN_LIVE_GAP_S + 0.1)
-    assert src.sub_for_picture()  # замолчал — второй
-    main_frame(now[0] + 1.0)
+    src._picture_check(99.0 + 4.5)
+    assert not src.sub_for_picture()  # в темноте ключевые раз в ~4 с — это не «основной замолчал»
+    src._jpeg_fps, src._live_since = 15.0, 104.0  # задний вид включился
+    src._picture_check(104.6)
+    assert not src.sub_for_picture()  # основной догоняет группу — экран ждёт его, второй не показывает
+    for i in range(rs.MAIN_STEADY_FRAMES):
+        main_frame(104.6 + i / 15)
+    assert not src.sub_for_picture()
+    t = now[0]
+    src._picture_check(t + rs.MAIN_LIVE_GAP_S - 0.1)
+    assert not src.sub_for_picture()  # пауза Wi-Fi (стоят оба) — без подмены
+    src._picture_check(t + rs.MAIN_LIVE_GAP_S + 0.1)
+    assert src.sub_for_picture()  # молчит дольше — второй
+    main_frame(t + rs.MAIN_LIVE_GAP_S + 0.5)
+    assert not src.sub_for_picture()  # второй так ничего и не показал — сразу назад, подменять нечего
+    t = now[0]
+    src._picture_check(t + rs.MAIN_LIVE_GAP_S + 0.1)
+    assert src.sub_for_picture()
+    sub_frame(t + rs.MAIN_LIVE_GAP_S + 0.2)  # второй показывает
+    main_frame(t + rs.MAIN_LIVE_GAP_S + 0.3)
     assert src.sub_for_picture()  # один кадр после паузы — не ровно
+    for i in range(1, rs.MAIN_STEADY_FRAMES):
+        main_frame(now[0] + 1 / 15)
+    assert not src.sub_for_picture()  # пошёл ровно — снова основной
+    src._jpeg_fps = 1.0  # задний вид закрыли, потом снова включили, а основной не отвечает
+    src._jpeg_fps, src._live_since = 15.0, now[0] + 5.0
+    src._picture_check(src._live_since + rs.MAIN_LIVE_GAP_S - 0.1)
+    assert not src.sub_for_picture()
+    src._picture_check(src._live_since + rs.MAIN_LIVE_GAP_S + 0.1)
+    assert src.sub_for_picture()  # с включения ни кадра дольше MAIN_LIVE_GAP_S — второй
     src._pic_sub = False
     src.main_error = "no main stream"
     assert src.sub_for_picture()
