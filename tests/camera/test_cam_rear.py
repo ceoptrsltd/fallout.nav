@@ -444,6 +444,22 @@ def test_rear_service_records_under_rear_and_idles_when_disabled(tmp_path: Path)
         svc.stop()
 
 
+def test_snapshots_do_not_turn_on_the_full_rate_of_the_main_stream(tmp_path: Path):
+    """Снимок (админка, события) — свежий ключевой кадр, полной частоты основного не нужно: иначе каждый запрос
+    включал и выключал полный декод 2560×1440. Полная частота — только зрителям MJPEG (экран, живое видео)."""
+    svc = _rear_service(tmp_path, enabled=False)
+    try:
+        assert svc.jpeg_demand_fps() == 1.0
+        svc.hub.last_snapshot_request = time.monotonic()
+        assert svc.jpeg_demand_fps() == 1.0
+        assert svc.lores_demand_fps() == svc.cam.lores.fps  # второй поток (без разделения) — как раньше
+        svc.hub.clients = 1
+        assert svc.jpeg_demand_fps() == svc.cam.lores.fps
+    finally:
+        svc.hub.clients = 0
+        svc.ring.close()
+
+
 def test_rear_without_recording_is_live(tmp_path: Path):
     svc = _rear_service(tmp_path, enabled=True, record=False)
     svc.start()

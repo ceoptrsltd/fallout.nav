@@ -701,12 +701,18 @@ class CameraService(FrameSink):
         """Сколько малых кадров/с нужно сейчас (источник RTSP декодирует столько): зрители MJPEG / недавний снимок —
         lores.fps (или наибольшая из запрошенных ?fps), fnav-watch — его частота, иначе 1 (только ключевые кадры:
         свежий снимок к тревоге)."""
-        return max(self.jpeg_demand_fps(), self.ring_demand_fps())
+        return max(self._jpeg_fps(self.hub.demand), self.ring_demand_fps())
 
     def jpeg_demand_fps(self) -> float:
-        """Малых кадров/с для JPEG: зрители MJPEG / недавний снимок — lores.fps (или наибольшая из ?fps), иначе 1."""
+        """Малых кадров/с для JPEG с основного потока задней (rtspsrc): только зрители MJPEG — lores.fps (или
+        наибольшая из ?fps), иначе 1. Снимку хватает ключевых кадров (свежее SNAPSHOT_FRESH_S): полная частота ради
+        него включала и выключала полный декод 2560×1440 при каждом запросе (админка, события) — догон группы кадров,
+        лишняя нагрузка, а экран метался между потоками."""
+        return self._jpeg_fps(self.hub.clients > 0)
+
+    def _jpeg_fps(self, wanted: bool) -> float:
         cam = self.cam
-        if self.hub.demand:
+        if wanted:
             rate = self.hub.max_rate()
             return float(min(cam.lores.fps, rate) if rate else cam.lores.fps)
         return 1.0
