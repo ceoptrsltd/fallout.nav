@@ -84,10 +84,13 @@ SUB_CONNECT_S = 12.0
 # экран и снимки с основного: малых кадров с него нет дольше — картинка со второго. Без зрителей основной даёт только
 # ключевые кадры (у C150 раз в 2,2 с) — MAIN_PICTURE_GAP_S; задний вид на экране — MAIN_LIVE_GAP_S: основной догоняет
 # группу кадров после включения (~0,8 с) или стоит (по Wi-Fi у C150 основной замирал на 0,5–4,7 с за полминуты,
-# замер 2026-11-09) — второй, лёгкий, держит экран, пока основной не вернётся. Пока задний вид на экране, второй
-# декодируется всё время (~9 % ядра): подхватывает сразу, без догона своей группы
+# замер 2026-11-09) — второй, лёгкий, держит экран (декодируется только тогда, догоняет свою группу за ~0,2 с).
+# Картинка всегда с одного потока (кадры двух вперемешку — дрожь: у второго кадр чуть другой); назад на основной —
+# когда он идёт ровно: MAIN_STEADY_FRAMES кадров подряд с шагом не больше MAIN_STEADY_GAP_S (без зрителей — сразу)
 MAIN_PICTURE_GAP_S = 3.0
 MAIN_LIVE_GAP_S = 0.5
+MAIN_STEADY_FRAMES = 5
+MAIN_STEADY_GAP_S = 0.25
 
 
 def retry_delay(fails: int, first: float, cap: float) -> float:
@@ -338,6 +341,8 @@ class RtspCameraSource:
         self._main_lores_mono = 0.0  # последний малый кадр с основного (монотонные часы)
         self._jpeg_fps = 1.0  # сколько малых кадров/с сейчас просят экран и снимки (_split_demand)
         self._live_since = 0.0  # когда экрану понадобилась полная частота (задний вид включился)
+        self._pic_sub = False  # экран и снимки сейчас со второго потока (основной картинку не даёт)
+        self._main_steady = 0  # кадров основного подряд с ровным шагом (возврат экрана на основной)
         self._live: Callable[[bytes, bool, int], None] | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -518,6 +523,7 @@ class RtspCameraSource:
             return  # после stop помощники ещё досылают кадры, а основного уже нет — это не повод брать второй
         self.picture_mono = now = self.mono()
         if main:
+            self._main_frame(now)
             self._main_lores_mono = now
         t = clock.map(ts)  # по меткам камеры: по Wi-Fi кадры приходят пачками, по приходу прореживание теряло кадры
         sink = self.sink
@@ -527,7 +533,7 @@ class RtspCameraSource:
                 if frame is not None:
                     sink.on_lores(frame)
             return
-        jpeg = (main or self.sub_for_picture()) and sink.wants_jpeg(t)
+        jpeg = (main != self.sub_for_picture()) and sink.wants_jpeg(t)  # картинка — с одного потока
         ring = not main and sink.wants_ring()
         if not (jpeg or ring):
             return
@@ -548,16 +554,34 @@ class RtspCameraSource:
         return LoresFrame("yuv420", data.reshape(h * 3 // 2, w), w, h, t)
 
     def sub_for_picture(self) -> bool:
-        """Экран и снимки сейчас со второго потока: основной картинку не даёт — его помощника нет, он отвалился
-        (main_error) или малых кадров с него нет дольше MAIN_PICTURE_GAP_S. Без разделения — со второго, если он есть."""
+        """Экран и снимки сейчас со второго потока: основной картинку не даёт (_picture_check) — его помощника нет, он
+        отвалился (main_error) или замолчал. Без разделения — со второго, если он есть."""
         if not self._split:
             return bool(self.lores_url)
+        return self._pic_sub or self._main is None or bool(self.main_error)
+
+    def _picture_check(self, now: float) -> None:
+        """Перевести экран на второй поток, если основной картинку не даёт: помощника нет или он отвалился; без
+        зрителей — малых кадров нет дольше MAIN_PICTURE_GAP_S; задний вид на экране — живых кадров с включения ещё не
+        было (основной догоняет группу) или нет дольше MAIN_LIVE_GAP_S."""
+        if not self._split or self._pic_sub:
+            return
         if self._main is None or self.main_error:
-            return True
-        if self._jpeg_fps <= 1:
-            return self.mono() - self._main_lores_mono > MAIN_PICTURE_GAP_S
-        # задний вид: живых кадров основного с включения ещё не было (он догоняет группу) или он стоит
-        return self._main_lores_mono < self._live_since or self.mono() - self._main_lores_mono > MAIN_LIVE_GAP_S
+            sub = True
+        elif self._jpeg_fps <= 1:
+            sub = now - self._main_lores_mono > MAIN_PICTURE_GAP_S
+        else:
+            sub = self._main_lores_mono < self._live_since or now - self._main_lores_mono > MAIN_LIVE_GAP_S
+        if sub:
+            self._pic_sub, self._main_steady = True, 0
+
+    def _main_frame(self, now: float) -> None:
+        """Малый кадр основного: вернуть ему экран, когда он идёт ровно (без зрителей — сразу)."""
+        steady = now - self._main_lores_mono <= MAIN_STEADY_GAP_S
+        self._main_steady = self._main_steady + 1 if steady else 1
+        if self._pic_sub and not self.main_error and (
+                self._jpeg_fps <= 1 or (now >= self._live_since and self._main_steady >= MAIN_STEADY_FRAMES)):
+            self._pic_sub = False
 
     def _on_exit(self, name: str, error: str | None) -> None:
         if self._stop.is_set():
@@ -616,14 +640,13 @@ class RtspCameraSource:
         if jpeg_fps > 1 >= self._jpeg_fps:
             self._live_since = now
         self._jpeg_fps = jpeg_fps
+        self._picture_check(now)
         if self._main is None and now >= self._main_retry_at:
             log.debug("rear camera: main stream, attempt %d", self._main_fails + 1)
             self._start_main()
         if self._main is not None:
             self._main.set_lores(jpeg_fps)
-        # задний вид на экране — второй наготове (подхватить замерший основной сразу); иначе — только как запас
-        spare = jpeg_fps > 1 or self.sub_for_picture()
-        sub_fps = max(self._demand("ring_demand_fps"), jpeg_fps if spare else 0.0)
+        sub_fps = max(self._demand("ring_demand_fps"), jpeg_fps if self.sub_for_picture() else 0.0)
         if sub_fps > 0 or self._audio_sub:
             self._sub_used = now
             if self._sub is None and now >= self._sub_retry_at:
