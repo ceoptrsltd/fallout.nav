@@ -87,7 +87,7 @@ SUB_CONNECT_S = 12.0
 # замер 2026-11-09) — второй, лёгкий, держит экран (декодируется только тогда, догоняет свою группу за ~0,2 с).
 # Картинка всегда с одного потока (кадры двух вперемешку — дрожь: у второго кадр чуть другой); назад на основной —
 # когда он идёт ровно: MAIN_STEADY_FRAMES кадров подряд с шагом не больше MAIN_STEADY_GAP_S (без зрителей — сразу)
-MAIN_PICTURE_GAP_S = 3.0
+MAIN_PICTURE_GAP_S = 4.0
 MAIN_LIVE_GAP_S = 0.5
 MAIN_STEADY_FRAMES = 5
 MAIN_STEADY_GAP_S = 0.25
@@ -568,20 +568,23 @@ class RtspCameraSource:
         if not self._split or self._pic_sub:
             return
         why = None
+        silent = f"main silent {now - self._main_lores_mono:.1f} s" if self._main_lores_mono else "no frames from main yet"
         if self._main is None or self.main_error:
             why = "no main stream"
         elif self._jpeg_fps <= 1:
             if now - self._main_lores_mono > MAIN_PICTURE_GAP_S:
-                why = f"main silent {now - self._main_lores_mono:.1f} s"
+                why = silent
         elif self._main_lores_mono < self._live_since:
             why = "main catching up"
         elif now - self._main_lores_mono > MAIN_LIVE_GAP_S:
-            why = f"main silent {now - self._main_lores_mono:.1f} s"
+            why = silent
         if why:
             self._pic_sub, self._main_steady = True, 0
             self._pic_sub_since = now
-            # ожидаемое (догон при включении) — в debug; основной замолчал — в журнал: этим объясняются рывки
-            (log.debug if why == "main catching up" else log.info)("rear camera: picture from the second stream (%s)", why)
+            # в журнал — только рывки заднего вида на экране (основной замолчал при зрителях); догон при включении и
+            # редкие ключевые кадры без зрителей — обычное дело
+            live_stall = self._jpeg_fps > 1 and why.startswith("main silent")
+            (log.info if live_stall else log.debug)("rear camera: picture from the second stream (%s)", why)
 
     def _main_frame(self, now: float) -> None:
         """Малый кадр основного: вернуть ему экран, когда он идёт ровно (без зрителей — сразу)."""
