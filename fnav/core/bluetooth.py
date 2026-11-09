@@ -1,7 +1,8 @@
 """Bluetooth: BlueZ по D-Bus (dbus-fast, asyncio) — адаптер, поиск, сопряжение, колонка по умолчанию.
 
 docs/contracts/radio.md. Колонка по умолчанию (последняя подключённая аудиоустройство) хранится в
-data_dir/bluetooth_state.json, переподключается каждые 30 с; о её подключении/отключении узнаёт радио
+data_dir/bluetooth_state.json, переподключается каждые 30 с (её нет рядом — всё реже, до раза в 5 мин; на экране
+задний вид — не переподключается: вызов глушит Wi-Fi общего чипа); о её подключении/отключении узнаёт радио
 (set_output) и переключает mpv на alsa/bluealsa:DEV=<mac>. Нет dbus-fast или адаптера → available: false.
 """
 
@@ -26,6 +27,14 @@ log = logging.getLogger("fnav.core.bluetooth")
 MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
 AUDIO_UUIDS = ("0000110b", "0000110d", "0000111e")  # A2DP sink, A2DP, Handsfree
 AUTO_CONNECT_S = 30.0
+# Вызов колонки, которой нет рядом, занимает радио на 5,12 с (page timeout), а у встроенного чипа (CYW43455) Wi-Fi и
+# Bluetooth одни на двоих: Wi-Fi это время почти молчит (замер 2026-11-09: задняя камера и пинг до точки доступа
+# пропадали на 1–5 с ровно в окна вызова, каждые 30 + 5 с). Поэтому автоподключение после неудач подряд — реже (паузы
+# по порядку, дальше последняя), удачное (или колонка подключилась сама) — снова с начала; пока на экране задний вид
+# (radio_quiet) — не вызывать вовсе, начатый вызов отменить (Disconnect снимает незавершённый Connect)
+AUTO_CONNECT_BACKOFF_S = (30.0, 60.0, 120.0, 300.0)
+QUIET_POLL_S = 0.5  # как быстро задний вид отменяет начатый вызов колонки
+CANCEL_WAIT_S = 5.0  # сколько ждать ответа отменённого Connect
 PAIR_TIMEOUT_S = 60.0
 CONNECT_TIMEOUT_S = 40.0
 BLUEZ = "org.bluez"
@@ -90,6 +99,10 @@ class BluetoothBase:
         self._scan_stop: asyncio.Task | None = None
         self._busy: set[str] = set()  # идёт pair/connect — автоподключение не мешает
         self._auto_failed: str | None = None
+        self._auto_fails = 0  # неудачных автоподключений подряд (AUTO_CONNECT_BACKOFF_S)
+        self._auto_next = 0.0  # следующее автоподключение не раньше (time.monotonic)
+        self._auto_for: str | None = None  # колонка, к которой относятся счётчики
+        self.radio_quiet: Callable[[], bool] | None = None  # задний вид на экране — радио не занимать (Core)
         self.reset_controller: Callable[[], Awaitable[None]] | None = None  # перезапуск чипа (create_bluetooth)
         self._user_off = False  # выключили из веб-интерфейса — сами не включаем
         self._power_failures = 0
@@ -177,6 +190,8 @@ class BluetoothBase:
             await self._power(on)
             self.powered = on
             self._power_failures = 0
+            if on:
+                self._auto_backoff_reset()  # адаптер снова включён (после сбоя чипа) — колонку сразу
         except BluetoothError as e:
             self.error = e.detail
             # Busy — ядро ещё сбрасывает чип; rfkill — выключен нарочно: перезапуск чипа тут не поможет
@@ -238,20 +253,67 @@ class BluetoothBase:
         if not (s.auto_connect and self.powered and mac) or mac in self._busy:
             return
         d = self.devices.get(mac)
+        if mac != self._auto_for:
+            self._auto_backoff_reset()
+            self._auto_for = mac
+        if d is not None and d.connected:
+            self._auto_backoff_reset()  # подключилась (сама или вручную): пропадёт — снова с первой паузы
         if d is None or d.connected or self.discovering:
+            return
+        if time.monotonic() < self._auto_next or self._quiet():
             return
         try:
             self._busy.add(mac)
-            await self._connect(mac)
+            if not await self._connect_unless_quiet(mac):
+                log.info("bluetooth: auto-connect %s cancelled: the rear view is on screen", d.name or mac)
+                return
             self._auto_failed = None
+            self._auto_backoff_reset()
             log.info("bluetooth: auto-connected %s", d.name or mac)
         except BluetoothError as e:
+            self._auto_fails += 1
+            delay = AUTO_CONNECT_BACKOFF_S[min(self._auto_fails, len(AUTO_CONNECT_BACKOFF_S)) - 1]
+            # ход обслуживания — AUTO_CONNECT_S: с запасом в 1 с пауза не теряет лишний ход
+            self._auto_next = time.monotonic() + delay - 1.0
             if self._auto_failed != e.detail:
-                log.info("bluetooth: auto-connect %s: %s (will keep trying)", d.name or mac, e.detail)
+                log.info("bluetooth: auto-connect %s: %s (will keep trying, up to every %.0f min while it is away)",
+                         d.name or mac, e.detail, AUTO_CONNECT_BACKOFF_S[-1] / 60)
             self._auto_failed = e.detail
         finally:
             self._busy.discard(mac)
             self._emit_output()
+
+    def _auto_backoff_reset(self) -> None:
+        self._auto_fails, self._auto_next = 0, 0.0
+
+    def _quiet(self) -> bool:
+        fn = self.radio_quiet
+        try:
+            return bool(fn and fn())
+        except Exception:  # noqa: BLE001 — сбой проверки не должен останавливать автоподключение
+            return False
+
+    async def _connect_unless_quiet(self, mac: str) -> bool:
+        """Подключить колонку; задний вид включился, пока она ещё не ответила (идёт вызов — Wi-Fi молчит), — отменить
+        вызов. False — отменён; ошибка подключения — BluetoothError."""
+        task = asyncio.ensure_future(self._connect(mac))
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=QUIET_POLL_S)
+                if done:
+                    task.result()
+                    return True
+                d = self.devices.get(mac)
+                if self._quiet() and not (d and d.connected):  # связь уже есть — вызов окончен, радио свободно
+                    break
+            with contextlib.suppress(BluetoothError):
+                await self._disconnect(mac)
+            with contextlib.suppress(BluetoothError, TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), CANCEL_WAIT_S)
+            return False
+        finally:
+            if not task.done():
+                task.cancel()
 
     # ── команды API ──
     def _need(self) -> None:

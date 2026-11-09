@@ -945,3 +945,93 @@ async def test_bt_switched_off_stays_off_on_settings_changes(tmp_path, monkeypat
     bt.powered, bt._user_off = False, True  # what set_power(False) leaves once BlueZ has replied
     bt.on_signal(DEV, PROPS_IF, "PropertiesChanged", [DEVICE_IF, {"RSSI": -70}, []])
     assert bt.objects[adapter][ADAPTER_IF]["Powered"] is True and bt._user_off is True
+
+
+# ── Bluetooth: колонки нет рядом — вызов глушит Wi-Fi общего чипа ──
+
+
+class _AwaySpeaker(FakeBluetooth):
+    """Колонка по умолчанию не отвечает: каждый Connect — page timeout."""
+
+    def __init__(self, tmp_path):
+        super().__init__(tmp_path / "bt.json", lambda: BluetoothSettings(), delay_s=0)
+        self.calls: list[str] = []
+
+    async def _connect(self, mac):
+        self.calls.append("connect")
+        raise BluetoothError(502, "Connection failed: br-connection-page-timeout")
+
+
+async def _away_speaker(tmp_path, monkeypatch, freeze: bool = True):
+    from fnav.core import bluetooth as btmod
+
+    clock = [1000.0]
+    if freeze:  # asyncio's timers run on the same clock: no timers in such a test
+        monkeypatch.setattr(btmod.time, "monotonic", lambda: clock[0])
+    bt = _AwaySpeaker(tmp_path)
+    await bt.start(background=False)
+    bt.devices[bt.audio_device].connected = False
+    return bt, clock
+
+
+async def test_bt_auto_connect_backs_off_while_the_speaker_is_away(tmp_path, monkeypatch):
+    """Each call of an absent speaker holds the shared Wi-Fi/Bluetooth chip for 5 s (the rear camera and the access
+    point went silent every 35 s): after failures in a row the maintenance rounds (30 s) call it 30 s, 1, 2, 5 min
+    apart, then every 5 min; once it is connected again (by itself here), the next loss starts from 30 s."""
+    bt, clock = await _away_speaker(tmp_path, monkeypatch)
+    tried = []
+    for k in range(32):  # 16 min of maintenance rounds
+        clock[0] = 1000.0 + 30 * k
+        n = len(bt.calls)
+        await bt._tick()
+        if len(bt.calls) > n:
+            tried.append(30 * k)
+    assert tried == [0, 30, 90, 210, 510, 810], tried
+    bt.devices[bt.audio_device].connected = True  # the speaker came back and connected by itself
+    clock[0] += 30
+    await bt._tick()
+    bt.devices[bt.audio_device].connected = False  # and went away again
+    clock[0] += 30
+    await bt._tick()
+    assert len(bt.calls) == len(tried) + 1  # straight away, not 5 min later
+    clock[0] += 30
+    await bt._tick()
+    assert len(bt.calls) == len(tried) + 2  # 30 s after that failure
+
+
+async def test_bt_no_speaker_calls_while_the_rear_view_is_on(tmp_path, monkeypatch):
+    """The rear view on screen: no auto-connect at all, and a call already going on is cancelled (Disconnect cancels
+    a pending Connect in BlueZ) without counting as a failure."""
+    from fnav.core import bluetooth as btmod
+
+    monkeypatch.setattr(btmod, "QUIET_POLL_S", 0.01)
+    bt, _clock = await _away_speaker(tmp_path, monkeypatch, freeze=False)
+    rear = [True]
+    bt.radio_quiet = lambda: rear[0]
+    await bt._tick()
+    assert bt.calls == []
+    rear[0] = False
+    paging = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def page(mac):
+        bt.calls.append("connect")
+        paging.set()
+        await asyncio.wait_for(cancelled.wait(), 5)
+        raise BluetoothError(502, "Connection failed: le-connection-abort-by-local")
+
+    async def disconnect(mac):
+        bt.calls.append("disconnect")
+        cancelled.set()
+
+    bt._connect, bt._disconnect = page, disconnect
+    tick = asyncio.create_task(bt._tick())
+    await asyncio.wait_for(paging.wait(), 5)
+    rear[0] = True  # reversing: the rear view comes on in the middle of the call
+    await asyncio.wait_for(tick, 5)
+    assert bt.calls == ["connect", "disconnect"]
+    assert bt._auto_fails == 0 and bt._auto_next == 0.0
+    rear[0] = False
+    bt._connect = _AwaySpeaker._connect.__get__(bt)
+    await bt._tick()
+    assert bt.calls[-1] == "connect"  # back to the map: tried again on the next round

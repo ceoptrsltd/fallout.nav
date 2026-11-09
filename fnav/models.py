@@ -334,7 +334,7 @@ class KeypadSettings(_Model):
 
 class BluetoothSettings(_Model):
     enabled: bool = True  # включать адаптер при старте
-    auto_connect: bool = True  # переподключать колонку по умолчанию каждые 30 с
+    auto_connect: bool = True  # переподключать колонку по умолчанию: 30 с, её нет рядом — реже, до 5 мин (bluetooth.py)
 
 
 class HazardSettings(_Model):

@@ -200,7 +200,7 @@ export function mount(root) {
         catch (e) { toast("error", errText(e)); renderSettings(store.settings); }
       } }), hint ? h(".hint", null, hint) : null));
     };
-    add("bluetooth", "auto_connect", "Reconnect the radio speaker automatically", "Every 30 s while it is not connected and Bluetooth is on");
+    add("bluetooth", "auto_connect", "Reconnect the radio speaker automatically", "Every 30 s while it is not connected and Bluetooth is on; if it stays away, less often (up to every 5 min) — each try silences Wi-Fi for ~5 s. Not while the rear view is on screen");
     add("bluetooth", "enabled", "Turn Bluetooth on at startup", null);
   }
   const offSet = on("settings", renderSettings);

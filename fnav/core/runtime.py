@@ -176,6 +176,8 @@ class Core:
                                   self._save_radio_volume, transport=opts.radio_transport,
                                   player=opts.radio_player)
         self.bt.on_output(self.radio.set_output)
+        # задний вид на экране: колонку не вызывать — вызов глушит Wi-Fi общего чипа, а с ним и заднюю камеру
+        self.bt.radio_quiet = lambda: self.view_camera == "rear" and self.camera_rear.enabled
         self.speedlimits = SpeedLimitService(paths.data_dir() / "speedlimits.sqlite", lambda: self.hub.snapshot().gps)
         self.timezone = TimeZoneFollower(lambda: self.store.get().system.auto_timezone, mock=opts.mock)
         self.weather = WeatherService(paths.data_dir() / "weather.json", lambda: self.hub.snapshot().gps,
