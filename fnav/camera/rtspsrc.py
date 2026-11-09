@@ -343,6 +343,7 @@ class RtspCameraSource:
         self._live_since = 0.0  # когда экрану понадобилась полная частота (задний вид включился)
         self._pic_sub = False  # экран и снимки сейчас со второго потока (основной картинку не даёт)
         self._main_steady = 0  # кадров основного подряд с ровным шагом (возврат экрана на основной)
+        self._pic_sub_since = 0.0
         self._live: Callable[[bytes, bool, int], None] | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -566,14 +567,21 @@ class RtspCameraSource:
         было (основной догоняет группу) или нет дольше MAIN_LIVE_GAP_S."""
         if not self._split or self._pic_sub:
             return
+        why = None
         if self._main is None or self.main_error:
-            sub = True
+            why = "no main stream"
         elif self._jpeg_fps <= 1:
-            sub = now - self._main_lores_mono > MAIN_PICTURE_GAP_S
-        else:
-            sub = self._main_lores_mono < self._live_since or now - self._main_lores_mono > MAIN_LIVE_GAP_S
-        if sub:
+            if now - self._main_lores_mono > MAIN_PICTURE_GAP_S:
+                why = f"main silent {now - self._main_lores_mono:.1f} s"
+        elif self._main_lores_mono < self._live_since:
+            why = "main catching up"
+        elif now - self._main_lores_mono > MAIN_LIVE_GAP_S:
+            why = f"main silent {now - self._main_lores_mono:.1f} s"
+        if why:
             self._pic_sub, self._main_steady = True, 0
+            self._pic_sub_since = now
+            # ожидаемое (догон при включении) — в debug; основной замолчал — в журнал: этим объясняются рывки
+            (log.debug if why == "main catching up" else log.info)("rear camera: picture from the second stream (%s)", why)
 
     def _main_frame(self, now: float) -> None:
         """Малый кадр основного: вернуть ему экран, когда он идёт ровно (без зрителей — сразу)."""
@@ -582,6 +590,7 @@ class RtspCameraSource:
         if self._pic_sub and not self.main_error and (
                 self._jpeg_fps <= 1 or (now >= self._live_since and self._main_steady >= MAIN_STEADY_FRAMES)):
             self._pic_sub = False
+            log.debug("rear camera: picture back on the main stream after %.1f s", now - self._pic_sub_since)
 
     def _on_exit(self, name: str, error: str | None) -> None:
         if self._stop.is_set():
