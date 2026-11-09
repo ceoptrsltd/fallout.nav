@@ -671,7 +671,11 @@ export function mount(root) {
     urlRow,
     rf({ path: "rear_camera.lores_url", label: "Second stream", hint: "optional: the camera's smaller sub-stream", type: "text", placeholder: "rtsp://192.168.1.60:554/stream2",
       validate: (v) => rtspProblem(v),
-      help: "Used for the car screen, snapshots and the camera watch, so the device decodes less. Empty: the main stream is used." }),
+      help: "Used for the camera watch (and for the car screen and snapshots, if they don't come from the main stream), so the device decodes less. Empty: the main stream is used." }),
+    store.settings?.rear_camera?.picture_from_main !== undefined
+      ? rf({ path: "rear_camera.picture_from_main", label: "Car screen from the main stream", type: "switch", switchLabel: "the whole frame and sharper; snapshots too",
+        help: "Some cameras' second stream cuts off the bottom edge. Costs about 40 % of one core while the rear view is on the car screen; otherwise only key frames are decoded, for snapshots. If the main stream fails, the second one takes over. Off: the screen and snapshots use the second stream." })
+      : null,
     rf({ path: "rear_camera.username", label: "Username", hint: "the camera's login", type: "text" }),
     rf({ path: "rear_camera.password", label: "Password", hint: "write-only: kept on the device, never shown", type: "custom", build: passwordWidget }),
     rf({ path: "rear_camera.transport", label: "Transport", type: "seg", options: [{ value: "tcp", label: "TCP" }, { value: "udp", label: "UDP" }],

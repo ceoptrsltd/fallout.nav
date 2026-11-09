@@ -577,6 +577,24 @@ class CameraService(FrameSink):
         self._ring_only = ring and not jpeg
         return jpeg or ring
 
+    # раздельно (задняя: экран и снимки — с основного потока, кольцо fnav-watch — со второго, rtspsrc)
+    def wants_jpeg(self, ts_us: int | None = None) -> bool:
+        p = self._p
+        return bool(p and p.jpeg and p.jpeg.wants_frame(ts_us))
+
+    def wants_ring(self) -> bool:
+        return self._p is not None and self.ring.wants_frame()
+
+    def on_jpeg_frame(self, frame: LoresFrame) -> None:
+        p = self._p
+        if p is not None and p.jpeg is not None:
+            p.jpeg.submit(frame)
+
+    def on_ring_frame(self, frame: LoresFrame) -> None:
+        p = self._p
+        if p is not None:
+            self.ring.write(frame.data, frame.kind, frame.w, frame.h, getattr(p.source, "exposure", None))
+
     def on_error(self, msg: str) -> None:
         self._source_error = msg
         self._wake.set()
@@ -683,12 +701,19 @@ class CameraService(FrameSink):
         """Сколько малых кадров/с нужно сейчас (источник RTSP декодирует столько): зрители MJPEG / недавний снимок —
         lores.fps (или наибольшая из запрошенных ?fps), fnav-watch — его частота, иначе 1 (только ключевые кадры:
         свежий снимок к тревоге)."""
+        return max(self.jpeg_demand_fps(), self.ring_demand_fps())
+
+    def jpeg_demand_fps(self) -> float:
+        """Малых кадров/с для JPEG: зрители MJPEG / недавний снимок — lores.fps (или наибольшая из ?fps), иначе 1."""
         cam = self.cam
-        fps = 1.0
         if self.hub.demand:
             rate = self.hub.max_rate()
-            fps = float(min(cam.lores.fps, rate) if rate else cam.lores.fps)
-        return max(fps, self.ring.demand_fps())
+            return float(min(cam.lores.fps, rate) if rate else cam.lores.fps)
+        return 1.0
+
+    def ring_demand_fps(self) -> float:
+        """Малых кадров/с для кольца fnav-watch (0 — не просит)."""
+        return self.ring.demand_fps()
 
     # ───────────── конвейер ─────────────
     def _segment_s(self) -> float:

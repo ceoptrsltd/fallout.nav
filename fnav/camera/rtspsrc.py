@@ -10,7 +10,14 @@
 Звук (``rear_camera.audio``, микрофон камеры): забирает помощник второго потока (нет второго — основного), PCM —
 в ``sink.on_audio`` (громкие звуки на охране), AAC (``start_aac``) — в записи и в живое видео.
 
-Потоки независимы: экран, снимки и fnav-watch живут на втором потоке, запись — на основном. Основной отвалился (камера
+Экран и снимки с основного (``picture_from_main``, по умолчанию; сток должен уметь раздельно — ``wants_jpeg`` /
+``wants_ring``): весь кадр (у C150 второй поток срезает ~2,5 % снизу) и чётче. Малые кадры основного идут в JPEG
+(MJPEG, снимки), второго — только в кольцо fnav-watch; без зрителей основной даёт ~1 к/с ключевых кадров (снимки к
+тревоге), со зрителями — полную частоту (~40 % ядра CM4 на 2560×1440 → 640). Основной картинку не даёт (отвалился,
+малых кадров нет дольше MAIN_PICTURE_GAP_S) — экран и снимки со второго. Второй поток тогда нужен fnav-watch, звуку
+и в запас; без них помощник второго не держится.
+
+Потоки независимы: запись — на основном, fnav-watch (и без разделения экран и снимки) — на втором. Основной отвалился (камера
 его не отдаёт, обрыв), а второй есть — источник сам переподключает основной (пауза 5 → 30 с), ``sink.on_main_lost``
 закрывает сегмент записи, ``main_error`` — причина для статуса; ``sink.on_error`` (перезапуск всего) — только без
 второго потока. Второй отвалился — переподключение с паузой 1 → 30 с. ``picture_mono`` — когда пришёл последний кадр с
@@ -74,6 +81,9 @@ SUB_RETRY_S, SUB_RETRY_MAX_S = 1.0, 30.0  # второй поток отвали
 # сервис ждёт, не перезапуская весь конвейер: перезапуск обрывал почти готовое подключение и добавлял свою паузу 5 с
 # (камера пропадала на ~25 с вместо ~15 — дольше порога тревоги «камера пропала» в 20 с)
 SUB_CONNECT_S = 12.0
+# экран и снимки с основного: малых кадров с него нет дольше — картинка со второго (без зрителей основной даёт только
+# ключевые кадры, у C150 раз в 2,2 с; включение полной частоты догоняет группу кадров за ~0,5 с)
+MAIN_PICTURE_GAP_S = 3.0
 
 
 def retry_delay(fails: int, first: float, cap: float) -> float:
@@ -319,6 +329,9 @@ class RtspCameraSource:
         self._sub_fails = 0
         self._sub_retry_at = 0.0
         self._sub_started = 0.0  # когда запущен нынешний помощник второго потока (монотонные часы)
+        # экран и снимки — с основного потока, второй — fnav-watch, звуку и в запас (сток должен уметь раздельно)
+        self._split = bool(self.lores_url and rear.picture_from_main and hasattr(sink, "wants_jpeg"))
+        self._main_lores_mono = 0.0  # последний малый кадр с основного (монотонные часы)
         self._live: Callable[[bytes, bool, int], None] | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -337,7 +350,8 @@ class RtspCameraSource:
         with self._lock:
             self._start_main()
         log.info("rear camera: connecting to %s%s", redact(self.url),
-                 f" (small frames from {redact(self.lores_url)})" if self.lores_url else "")
+                 f" (screen and snapshots from the main stream, camera watch from {redact(self.lores_url)})"
+                 if self._split else f" (small frames from {redact(self.lores_url)})" if self.lores_url else "")
         self._demand_thr = threading.Thread(target=self._demand_loop, name="rear-demand", daemon=True)
         self._demand_thr.start()
 
@@ -353,7 +367,7 @@ class RtspCameraSource:
         self._main.start()
         if self._audio_main and self._aac_cb is not None:
             self._main.set_aac(True)
-        if not self.lores_url:
+        if not self.lores_url or self._split:
             self._main.set_lores(1)
 
     def _start_sub(self) -> None:
@@ -435,7 +449,7 @@ class RtspCameraSource:
         elif typ == T_INFO:
             self._on_info(payload)
         elif typ == T_LORES:
-            self._on_lores(payload, ts, self._clock)
+            self._on_lores(payload, ts, self._clock, main=True)
         elif typ in (T_AUDIO, T_AAC):
             self._on_audio_msg(typ, flags, ts, payload)
 
@@ -493,19 +507,48 @@ class RtspCameraSource:
         self.stream_fps = round(float(fps), 2) if fps else None
         log.info("rear camera: %s %s @ %s fps", self.codec, self.output_size, self.stream_fps or "?")
 
-    def _on_lores(self, payload: bytes, ts: int, clock: Clock) -> None:
+    def _on_lores(self, payload: bytes, ts: int, clock: Clock, *, main: bool = False) -> None:
         if len(payload) < LORES_HEAD.size:
             return
-        self.picture_mono = self.mono()
+        self.picture_mono = now = self.mono()
+        if main:
+            self._main_lores_mono = now
         t = clock.map(ts)  # по меткам камеры: по Wi-Fi кадры приходят пачками, по приходу прореживание теряло кадры
-        if not self.sink.wants_lores(t):
+        sink = self.sink
+        if not self._split:
+            if sink.wants_lores(t):
+                frame = self._frame(payload, t)
+                if frame is not None:
+                    sink.on_lores(frame)
             return
+        jpeg = (main or self.sub_for_picture()) and sink.wants_jpeg(t)
+        ring = not main and sink.wants_ring()
+        if not (jpeg or ring):
+            return
+        frame = self._frame(payload, t)
+        if frame is None:
+            return
+        if jpeg:
+            sink.on_jpeg_frame(frame)
+        if ring:
+            sink.on_ring_frame(frame)
+
+    def _frame(self, payload: bytes, t: int) -> LoresFrame | None:
         w, h = LORES_HEAD.unpack_from(payload)
         data = np.frombuffer(payload, np.uint8, offset=LORES_HEAD.size)
         if data.size != w * h * 3 // 2:
-            return
+            return None
         self.lores_size = (w, h)
-        self.sink.on_lores(LoresFrame("yuv420", data.reshape(h * 3 // 2, w), w, h, t))
+        return LoresFrame("yuv420", data.reshape(h * 3 // 2, w), w, h, t)
+
+    def sub_for_picture(self) -> bool:
+        """Экран и снимки сейчас со второго потока: основной картинку не даёт — его помощника нет, он отвалился
+        (main_error) или малых кадров с него нет дольше MAIN_PICTURE_GAP_S. Без разделения — со второго, если он есть."""
+        if not self._split:
+            return bool(self.lores_url)
+        if self._main is None or self.main_error:
+            return True
+        return self.mono() - self._main_lores_mono > MAIN_PICTURE_GAP_S
 
     def _on_exit(self, name: str, error: str | None) -> None:
         if self._stop.is_set():
@@ -550,10 +593,43 @@ class RtspCameraSource:
         except Exception:  # noqa: BLE001
             return 1.0
 
+    def _demand(self, name: str) -> float:
+        fn = getattr(self.sink, name, None)
+        try:
+            return float(fn()) if fn else 0.0
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _split_demand(self, now: float) -> None:
+        """Экран и снимки — с основного (частота по зрителям, без них 1 к/с: только ключевые кадры), второй —
+        fnav-watch, звуку и запасом картинки, пока основной её не даёт (под self._lock)."""
+        jpeg_fps = max(1.0, self._demand("jpeg_demand_fps"))
+        if self._main is None and now >= self._main_retry_at:
+            log.debug("rear camera: main stream, attempt %d", self._main_fails + 1)
+            self._start_main()
+        if self._main is not None:
+            self._main.set_lores(jpeg_fps)
+        sub_fps = max(self._demand("ring_demand_fps"), jpeg_fps if self.sub_for_picture() else 0.0)
+        if sub_fps > 0 or self._audio_sub:
+            self._sub_used = now
+            if self._sub is None and now >= self._sub_retry_at:
+                self._start_sub()
+            if self._sub is not None:
+                self._sub.set_lores(sub_fps)
+        elif self._sub is not None and now - self._sub_used > SUB_IDLE_S:
+            sub, self._sub = self._sub, None
+            threading.Thread(target=sub.stop, name="rear-sub-stop", daemon=True).start()
+
     def _demand_loop(self) -> None:
         while not self._stop.wait(DEMAND_POLL_S):
-            fps = self._wanted_fps()
             now = self.mono()
+            if self._split:
+                with self._lock:
+                    if self._stop.is_set():
+                        break
+                    self._split_demand(now)
+                continue
+            fps = self._wanted_fps()
             if not self.lores_url:
                 main = self._main
                 if main is not None:

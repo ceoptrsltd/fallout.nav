@@ -8,8 +8,10 @@
 в потоке — SPS/PPS из SDP). По запросу родителя (строка ``lores <к/с>`` в stdin, 0 — выкл) кадры ещё и
 декодируются (программно), уменьшаются и отдаются как yuv420p; второй поток (``--no-video``) декодируется
 целиком (все кадры, дёшево), основной при ≤ 1 к/с — только ключевые кадры. Прореживание — по меткам камеры.
-Полный декод дорог (2560×1440 на CM4 — ~46 мс процессора на кадр вместе с уменьшением, 640×360 — ~6 мс): для
-экрана и распознавания — второй поток камеры (``lores_url``).
+Уменьшение в 2 раза и больше (основной поток 2560×1440 → 640 для экрана) — без деблокинга и быстрым масштабированием:
+~24 мс процессора на кадр вместо ~46, на уменьшенной картинке разницы не видно (замер на CM4, 2026-11-09). Полная
+частота посреди группы кадров начинается сразу: пакеты с последнего ключевого кадра (они хранятся) прогоняются через
+декодер (~0,45 с на 20 кадров), а не ждут следующего ключевого (у C150 — раз в 2,2 с).
 
 Звук камеры (``--audio``, микрофон задней камеры): декодируется и отдаётся родителю как PCM s16 моно 8 кГц (уровень
 громкости, клипы громких звуков); по строке ``aac 1`` в stdin — ещё и AAC-LC 16 кГц в ADTS для живого видео (кодируется,
@@ -52,6 +54,8 @@ URL_ENV = "FNAV_RTSP_URL"
 # программный: на CM4 h264_v4l2m2m через PyAV тратит вдвое больше процессора (58 против 29 мс на кадр 1440×1080,
 # замер 2026-10-28 — копирование кадров), поэтому только как запасной
 DECODERS = ("h264", "h264_v4l2m2m")
+GOP_MAX = 150  # столько пакетов с последнего ключевого кадра хранится для догона (10 с при 15 к/с); дальше — нет
+FAST_SCALE = 2  # уменьшение во столько раз и больше — быстрый путь (без деблокинга, FAST_BILINEAR)
 START_CODE = b"\x00\x00\x00\x01"
 
 log = logging.getLogger("fnav.camera.rtsp_pull")
@@ -241,7 +245,9 @@ class AudioPath:
                 self.w.send(T_AAC, adts(bytes(pk)), 0, ts)
 
 
-def open_decoder(extradata: bytes | None):
+def open_decoder(extradata: bytes | None, *, fast: bool = False):
+    """fast — кадр будет сильно уменьшен: программный декодер без деблокинга (на картинке в 4 раза меньше его не
+    видно, а это ~20 % времени декодирования)."""
     import av
 
     last: Exception | None = None
@@ -250,6 +256,8 @@ def open_decoder(extradata: bytes | None):
             cc = av.CodecContext.create(name, "r")
             if extradata:
                 cc.extradata = extradata
+            if fast and name == "h264":
+                cc.options = {"skip_loop_filter": "all"}
             cc.open()
             return cc, name
         except Exception as e:  # noqa: BLE001
@@ -295,6 +303,9 @@ def run(url: str, w: Writer, ctl: Control, *, transport: str = "tcp", emit_video
         w.send(T_INFO, json.dumps(info).encode())
         dec = None
         dec_name = None
+        full_w = vs.codec_context.width or 0
+        fast = bool(full_w) and full_w >= FAST_SCALE * lores_w
+        gop: list = []  # пакеты с последнего ключевого кадра (догон при включении полной частоты)
         key_only = False  # ≤ 1 к/с — декодировать только ключевые кадры (свежий снимок почти даром)
         # второй поток (без видео) дешёвый (640×360 — ~6 мс процессора на кадр): декодируем все кадры, без режима
         # «только ключевые» — задний вид на экране получает 15 к/с сразу, не ждёт ключевого кадра (до 2 с)
@@ -316,6 +327,10 @@ def run(url: str, w: Writer, ctl: Control, *, transport: str = "tcp", emit_video
                 continue
             ts = pts_us(pkt)
             key = bool(pkt.is_keyframe)
+            if key:
+                gop = [pkt]
+            elif gop:
+                gop = gop + [pkt] if len(gop) < GOP_MAX else []
             if realtime and ts >= 0:  # файл как «камера»: в темпе меток времени
                 if first_pts is None:
                     first_pts = ts
@@ -332,19 +347,35 @@ def run(url: str, w: Writer, ctl: Control, *, transport: str = "tcp", emit_video
                 if dec is not None:
                     dec = None  # декодер не нужен — освободить (на Pi — аппаратный блок)
                 continue
-            if dec is not None and key_only != (fps <= 1 and not all_frames):
+            want_key_only = fps <= 1 and not all_frames
+            if dec is not None and key_only != want_key_only:
                 dec = None  # смена режима — заново с ключевого кадра (иначе P-кадры ссылаются на пропущенные)
             if dec is None:
-                if not key:
+                if not key and (want_key_only or len(gop) < 2):
                     continue  # декодирование начинаем с ключевого кадра
-                dec, dec_name = open_decoder(extradata)
-                key_only = fps <= 1 and not all_frames
+                dec, dec_name = open_decoder(extradata, fast=fast)
+                key_only = want_key_only
                 if key_only:
                     try:
                         dec.skip_frame = "NONKEY"
                     except Exception as e:  # noqa: BLE001 — не умеет: декодирует всё, лишнее отбросим
                         log.info("decoder %s: no key-frame-only mode (%s)", dec_name, e)
-                log.info("decoder %s%s", dec_name, " (key frames only)" if key_only else "")
+                if not key:
+                    # полная частота посреди группы кадров: пакеты с последнего ключевого — через декодер, кадры не
+                    # нужны; задний вид на экране — через ~0,5 с, а не через целую группу (у C150 — 2,2 с)
+                    t_catch = time.monotonic()
+                    try:
+                        for p in gop[:-1]:
+                            dec.decode(p)
+                    except Exception as e:  # noqa: BLE001 — битый кадр: ждём следующий ключевой
+                        log.warning("decode: %s", e)
+                        dec = None
+                        continue
+                    log.info("decoder %s%s: caught up %d frames from the last key frame in %.2f s", dec_name,
+                             " (fast)" if fast else "", len(gop) - 1, time.monotonic() - t_catch)
+                else:
+                    log.info("decoder %s%s%s", dec_name, " (fast)" if fast else "",
+                             " (key frames only)" if key_only else "")
             try:
                 frames = dec.decode(pkt)
             except Exception as e:  # noqa: BLE001 — битый кадр: ждём следующий ключевой
@@ -360,7 +391,8 @@ def run(url: str, w: Writer, ctl: Control, *, transport: str = "tcp", emit_video
                 last_lores = t
                 lw = min(lores_w, fr.width) & ~1
                 lh = max(2, round(lw * fr.height / fr.width)) & ~1
-                small = fr.reformat(width=lw, height=lh, format="yuv420p")
+                small = fr.reformat(width=lw, height=lh, format="yuv420p",
+                                    interpolation="FAST_BILINEAR" if fast else None)
                 planes = b"".join(_plane_bytes(small, i) for i in range(3))
                 w.send(T_LORES, LORES_HEAD.pack(lw, lh) + planes, 0, ts)
         raise RuntimeError("stream ended")

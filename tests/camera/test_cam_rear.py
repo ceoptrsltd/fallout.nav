@@ -180,6 +180,127 @@ def test_main_stream_lost_the_second_keeps_the_picture(tmp_path: Path, monkeypat
     assert src.picture_mono > 0 and sink.lores[-1].w == 160
 
 
+class _SwitchControl(rp.Control):
+    """Спрос на малые кадры меняется посреди файла: первые `after` пакетов — `first` к/с, дальше — `then`."""
+
+    def __init__(self, first: float, then: float, after: int) -> None:
+        super().__init__(first)
+        self._first, self._then, self._after, self._n = first, then, after, 0
+
+    @property
+    def lores_fps(self) -> float:
+        self._n += 1
+        return self._first if self._n <= self._after else self._then
+
+    @lores_fps.setter
+    def lores_fps(self, v: float) -> None:
+        pass
+
+
+def test_main_stream_full_rate_mid_gop_catches_up_from_the_key_frame(tmp_path: Path):
+    """Задний вид включился посреди группы кадров основного потока: декодер прогоняет пакеты с последнего ключевого и
+    отдаёт кадры сразу, а не ждёт следующего ключевого (у C150 — раз в 2,2 с). Уменьшение в 2 раза и больше — быстрый
+    путь (без деблокинга, FAST_BILINEAR): кадры того же размера."""
+    video = make_video(tmp_path / "cam.ts", n=60, gop=45)  # ключевые — 0 и 45
+    buf = io.BytesIO()
+    with pytest.raises(RuntimeError, match="stream ended"):
+        rp.run(str(video), rp.Writer(buf), _SwitchControl(1, 15, after=20), emit_video=True, lores_w=160)
+    data, pos, lores = buf.getvalue(), 0, []
+    while pos < len(data):
+        typ, _f, size, ts = rp.HEADER.unpack_from(data, pos)
+        if typ == rp.T_LORES:
+            lores.append((ts, rp.LORES_HEAD.unpack_from(data, pos + rp.HEADER.size)))
+        pos += rp.HEADER.size + size
+    # ключевой кадр 0 (1 к/с — только ключевые), потом с 21-го пакета все кадры — до ключевого на 45-м не ждём
+    assert len(lores) == 1 + 40, len(lores)
+    assert all(size == (160, 90) for _, size in lores)
+    first_full = lores[1][0] / 1e6
+    assert first_full < 45 / 15 - 1, first_full  # ~1,4 с, а не 3 с (следующий ключевой)
+
+
+class SplitSink(Sink):
+    """Сток службы камеры с раздельными JPEG (экран, снимки) и кольцом fnav-watch."""
+
+    def __init__(self, jpeg_fps: float = 15, ring_fps: float = 5) -> None:
+        super().__init__()
+        self.jpeg: list = []
+        self.ring: list = []
+        self.jpeg_fps, self.ring_fps = jpeg_fps, ring_fps
+
+    def wants_jpeg(self, ts_us=None):
+        return True
+
+    def wants_ring(self):
+        return True
+
+    def on_jpeg_frame(self, frame):
+        self.jpeg.append(frame)
+
+    def on_ring_frame(self, frame):
+        self.ring.append(frame)
+
+    def jpeg_demand_fps(self):
+        return self.jpeg_fps
+
+    def ring_demand_fps(self):
+        return self.ring_fps
+
+
+def _split_cmd(**kw):
+    import fnav.camera.rtspsrc as rs
+
+    return [*rs.default_cmd(**kw), "--realtime"]
+
+
+def test_screen_and_snapshots_from_the_main_stream_watch_from_the_second(tmp_path: Path):
+    """picture_from_main: малые кадры основного (весь кадр) — в JPEG (экран, снимки), второго — только в кольцо
+    fnav-watch. Потоки различимы по пропорциям: основной 16:9, второй 4:3."""
+    main = make_video(tmp_path / "main.ts", n=90, w=320, h=180)
+    sub = make_video(tmp_path / "sub.ts", n=90, w=160, h=120)
+    sink = SplitSink()
+    rear = RearCameraSettings(enabled=True, url=str(main), lores_url=str(sub), lores=LoresSettings(w=160, h=90, fps=15))
+    src = RtspCameraSource(rear, sink, cmd_factory=_split_cmd)
+    main_frames = lambda: [f for f in sink.jpeg if (f.w, f.h) == (160, 90)]
+    src.start()
+    try:
+        assert _wait(lambda: len(main_frames()) >= 15 and len(sink.ring) >= 5, 30), (len(sink.jpeg), len(sink.ring))
+        assert not src.sub_for_picture()
+    finally:
+        src.stop()
+    assert not sink.lores, "no frames through the shared path"
+    # до первого кадра основного экран может показывать второй поток (запас), после — только основной
+    first = next(i for i, f in enumerate(sink.jpeg) if (f.w, f.h) == (160, 90))
+    assert {(f.w, f.h) for f in sink.jpeg[first:]} == {(160, 90)}, "the screen and snapshots must use the main stream"
+    assert {(f.w, f.h) for f in sink.ring} == {(160, 120)}, "the camera watch keeps the second stream"
+
+
+def test_main_stream_lost_the_screen_falls_back_to_the_second(tmp_path: Path, monkeypatch):
+    """Основной поток не отдаётся: экран и снимки — со второго (без перезапуска конвейера), основной переподключается."""
+    import fnav.camera.rtspsrc as rs
+
+    monkeypatch.setattr(rs, "MAIN_RETRY_S", 0.3)
+    bad = tmp_path / "main.ts"
+    bad.write_bytes(b"not a video stream " * 200)
+    sub = make_video(tmp_path / "sub.ts", n=60, w=160, h=120)
+    sink = SplitSink(ring_fps=0)
+    rear = RearCameraSettings(enabled=True, url=str(bad), lores_url=str(sub), lores=LoresSettings(w=160, h=90, fps=15))
+    src = RtspCameraSource(rear, sink, cmd_factory=_split_cmd)
+    src.start()
+    try:
+        assert _wait(lambda: len(sink.jpeg) >= 5 and src.main_error, 30), (len(sink.jpeg), src.main_error)
+        assert src.sub_for_picture()
+    finally:
+        src.stop()
+    assert not sink.errors and {(f.w, f.h) for f in sink.jpeg} == {(160, 120)}
+
+
+def test_picture_from_main_off_keeps_everything_on_the_second(tmp_path: Path):
+    rear = RearCameraSettings(enabled=True, url="rtsp://cam/main", lores_url="rtsp://cam/sub", picture_from_main=False)
+    assert not RtspCameraSource(rear, SplitSink())._split
+    assert not RtspCameraSource(rear.model_copy(update={"picture_from_main": True}), Sink())._split  # старый сток
+    assert RtspCameraSource(rear.model_copy(update={"picture_from_main": True}), SplitSink())._split
+
+
 def test_source_reports_unreachable_camera(tmp_path: Path):
     sink = Sink()
     src = RtspCameraSource(RearCameraSettings(enabled=True, url=str(tmp_path / "missing.ts")), sink)
