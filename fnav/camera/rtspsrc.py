@@ -84,9 +84,10 @@ SUB_CONNECT_S = 12.0
 # экран и снимки с основного: малых кадров с него нет дольше — картинка со второго. Без зрителей основной даёт только
 # ключевые кадры (у C150 раз в 2,2 с) — MAIN_PICTURE_GAP_S; задний вид на экране — MAIN_LIVE_GAP_S: основной догоняет
 # группу кадров после включения (~0,8 с) или стоит (по Wi-Fi у C150 основной замирал на 0,5–4,7 с за полминуты,
-# замер 2026-11-09) — второй, лёгкий, догоняет свою группу за ~0,2 с и держит экран, пока основной не вернётся
+# замер 2026-11-09) — второй, лёгкий, держит экран, пока основной не вернётся. Пока задний вид на экране, второй
+# декодируется всё время (~9 % ядра): подхватывает сразу, без догона своей группы
 MAIN_PICTURE_GAP_S = 3.0
-MAIN_LIVE_GAP_S = 1.0
+MAIN_LIVE_GAP_S = 0.5
 
 
 def retry_delay(fails: int, first: float, cap: float) -> float:
@@ -620,7 +621,9 @@ class RtspCameraSource:
             self._start_main()
         if self._main is not None:
             self._main.set_lores(jpeg_fps)
-        sub_fps = max(self._demand("ring_demand_fps"), jpeg_fps if self.sub_for_picture() else 0.0)
+        # задний вид на экране — второй наготове (подхватить замерший основной сразу); иначе — только как запас
+        spare = jpeg_fps > 1 or self.sub_for_picture()
+        sub_fps = max(self._demand("ring_demand_fps"), jpeg_fps if spare else 0.0)
         if sub_fps > 0 or self._audio_sub:
             self._sub_used = now
             if self._sub is None and now >= self._sub_retry_at:
