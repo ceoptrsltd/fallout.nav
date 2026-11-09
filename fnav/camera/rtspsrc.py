@@ -81,9 +81,12 @@ SUB_RETRY_S, SUB_RETRY_MAX_S = 1.0, 30.0  # второй поток отвали
 # сервис ждёт, не перезапуская весь конвейер: перезапуск обрывал почти готовое подключение и добавлял свою паузу 5 с
 # (камера пропадала на ~25 с вместо ~15 — дольше порога тревоги «камера пропала» в 20 с)
 SUB_CONNECT_S = 12.0
-# экран и снимки с основного: малых кадров с него нет дольше — картинка со второго (без зрителей основной даёт только
-# ключевые кадры, у C150 раз в 2,2 с; включение полной частоты догоняет группу кадров за ~0,5 с)
+# экран и снимки с основного: малых кадров с него нет дольше — картинка со второго. Без зрителей основной даёт только
+# ключевые кадры (у C150 раз в 2,2 с) — MAIN_PICTURE_GAP_S; задний вид на экране — MAIN_LIVE_GAP_S: основной догоняет
+# группу кадров после включения (~0,8 с) или стоит (по Wi-Fi у C150 основной замирал на 0,5–4,7 с за полминуты,
+# замер 2026-11-09) — второй, лёгкий, догоняет свою группу за ~0,2 с и держит экран, пока основной не вернётся
 MAIN_PICTURE_GAP_S = 3.0
+MAIN_LIVE_GAP_S = 1.0
 
 
 def retry_delay(fails: int, first: float, cap: float) -> float:
@@ -332,6 +335,8 @@ class RtspCameraSource:
         # экран и снимки — с основного потока, второй — fnav-watch, звуку и в запас (сток должен уметь раздельно)
         self._split = bool(self.lores_url and rear.picture_from_main and hasattr(sink, "wants_jpeg"))
         self._main_lores_mono = 0.0  # последний малый кадр с основного (монотонные часы)
+        self._jpeg_fps = 1.0  # сколько малых кадров/с сейчас просят экран и снимки (_split_demand)
+        self._live_since = 0.0  # когда экрану понадобилась полная частота (задний вид включился)
         self._live: Callable[[bytes, bool, int], None] | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -548,7 +553,10 @@ class RtspCameraSource:
             return bool(self.lores_url)
         if self._main is None or self.main_error:
             return True
-        return self.mono() - self._main_lores_mono > MAIN_PICTURE_GAP_S
+        if self._jpeg_fps <= 1:
+            return self.mono() - self._main_lores_mono > MAIN_PICTURE_GAP_S
+        # задний вид: живых кадров основного с включения ещё не было (он догоняет группу) или он стоит
+        return self._main_lores_mono < self._live_since or self.mono() - self._main_lores_mono > MAIN_LIVE_GAP_S
 
     def _on_exit(self, name: str, error: str | None) -> None:
         if self._stop.is_set():
@@ -604,6 +612,9 @@ class RtspCameraSource:
         """Экран и снимки — с основного (частота по зрителям, без них 1 к/с: только ключевые кадры), второй —
         fnav-watch, звуку и запасом картинки, пока основной её не даёт (под self._lock)."""
         jpeg_fps = max(1.0, self._demand("jpeg_demand_fps"))
+        if jpeg_fps > 1 >= self._jpeg_fps:
+            self._live_since = now
+        self._jpeg_fps = jpeg_fps
         if self._main is None and now >= self._main_retry_at:
             log.debug("rear camera: main stream, attempt %d", self._main_fails + 1)
             self._start_main()

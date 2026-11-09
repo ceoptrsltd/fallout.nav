@@ -294,6 +294,30 @@ def test_main_stream_lost_the_screen_falls_back_to_the_second(tmp_path: Path, mo
     assert not sink.errors and {(f.w, f.h) for f in sink.jpeg} == {(160, 120)}
 
 
+def test_screen_uses_the_second_stream_while_the_main_one_has_no_live_frames():
+    """Задний вид включился: основной догоняет группу кадров (~0,8 с) — экран со второго; основной стоит дольше
+    MAIN_LIVE_GAP_S — тоже; без зрителей (только ключевые кадры основного) — запас лишь после MAIN_PICTURE_GAP_S."""
+    import fnav.camera.rtspsrc as rs
+
+    now = [100.0]
+    rear = RearCameraSettings(enabled=True, url="rtsp://cam/main", lores_url="rtsp://cam/sub")
+    src = RtspCameraSource(rear, SplitSink(), mono=lambda: now[0])
+    src._main = object()  # помощник основного запущен
+    src._main_lores_mono = 99.0  # ключевой кадр секунду назад
+    assert not src.sub_for_picture()  # без зрителей: 1 с < MAIN_PICTURE_GAP_S
+    src._jpeg_fps, src._live_since = 25.0, now[0]  # задний вид включился
+    assert src.sub_for_picture()  # живых кадров основного с включения нет (догоняет) — сразу второй
+    src._main_lores_mono = now[0] + 0.5
+    now[0] += 0.6
+    assert not src.sub_for_picture()  # догнал
+    now[0] = src._main_lores_mono + rs.MAIN_LIVE_GAP_S + 0.1
+    assert src.sub_for_picture()  # основной стоит дольше MAIN_LIVE_GAP_S — экран со второго
+    src._main_lores_mono = now[0] - 0.05
+    assert not src.sub_for_picture()  # живые кадры основного — снова он
+    src.main_error = "no main stream"
+    assert src.sub_for_picture()
+
+
 def test_picture_from_main_off_keeps_everything_on_the_second(tmp_path: Path):
     rear = RearCameraSettings(enabled=True, url="rtsp://cam/main", lores_url="rtsp://cam/sub", picture_from_main=False)
     assert not RtspCameraSource(rear, SplitSink())._split
