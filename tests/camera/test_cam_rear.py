@@ -268,9 +268,9 @@ def test_screen_and_snapshots_from_the_main_stream_watch_from_the_second(tmp_pat
     finally:
         src.stop()
     assert not sink.lores, "no frames through the shared path"
-    # до первого кадра основного экран может показывать второй поток (запас), после — только основной
-    first = next(i for i, f in enumerate(sink.jpeg) if (f.w, f.h) == (160, 90))
-    assert {(f.w, f.h) for f in sink.jpeg[first:]} == {(160, 90)}, "the screen and snapshots must use the main stream"
+    # пока основной догоняет или замирает (> MAIN_LIVE_GAP_S), экран может показывать второй поток (запас); когда
+    # основной идёт ровно — только он
+    assert {(f.w, f.h) for f in sink.jpeg[-5:]} == {(160, 90)}, "the screen and snapshots must use the main stream"
     assert {(f.w, f.h) for f in sink.ring} == {(160, 120)}, "the camera watch keeps the second stream"
 
 

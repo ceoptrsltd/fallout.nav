@@ -514,8 +514,8 @@ class RtspCameraSource:
         log.info("rear camera: %s %s @ %s fps", self.codec, self.output_size, self.stream_fps or "?")
 
     def _on_lores(self, payload: bytes, ts: int, clock: Clock, *, main: bool = False) -> None:
-        if len(payload) < LORES_HEAD.size:
-            return
+        if len(payload) < LORES_HEAD.size or self._stop.is_set():
+            return  # после stop помощники ещё досылают кадры, а основного уже нет — это не повод брать второй
         self.picture_mono = now = self.mono()
         if main:
             self._main_lores_mono = now
