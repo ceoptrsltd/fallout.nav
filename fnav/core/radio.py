@@ -40,6 +40,10 @@ CONNECT_TIMEOUT_S = 25.0  # дольше «connecting» без звука — о
 STEADY_S = 30.0  # столько играет без перерыва — счётчик повторов (пауза 2→4→…→30 с) с нуля
 FLAPS_MAX = 4  # столько раз подряд оборвалась быстрее STEADY_S после начала звука — error, больше не открываем
 REFRESH_AFTER, REFRESH_EVERY = 2, 4  # свежий адрес из каталога — на 2-м, 6-м, 10-м… повторе подряд
+# Колонки нет дольше этого (waiting_output подряд) — радио выключается (и после перезапуска не продолжит). Колонка
+# общая с телефоном: радио, включённое накануне (или клавишей станции без колонки), ждало её сутки и заиграло поверх
+# музыки с телефона, как только она оказалась рядом (2026-11-10). В машине колонку включают в первые минуты.
+WAIT_OUTPUT_S = 600.0
 URL_TIMEOUT_S = 8.0  # /json/url/<uuid>
 MPV_SOCKET = "/run/fnav-radio/mpv.sock"
 
@@ -522,6 +526,8 @@ class RadioService:
         self._retry: asyncio.Task | None = None
         self._watchdog: asyncio.Task | None = None
         self._vol_save: asyncio.Task | None = None
+        self._waiting_since: float | None = None  # с какого момента ждём колонку (waiting_output подряд)
+        self._wait_off: asyncio.Task | None = None  # выключит радио через WAIT_OUTPUT_S ожидания
         self._lock = asyncio.Lock()
         self._ring: tuple[str | None, float, list[RadioStation]] | None = None  # (жанр, когда, станции) для step()
         self._back: list[RadioStation] = []  # random: откуда пришли — клавиша «назад» возвращает по очереди
@@ -553,7 +559,7 @@ class RadioService:
         await self.player.start()
 
     async def stop(self) -> None:
-        for t in (self._retry, self._watchdog, self._vol_save):
+        for t in (self._retry, self._watchdog, self._vol_save, self._wait_off):
             if t:
                 t.cancel()
         await self.player.close()
@@ -641,6 +647,7 @@ class RadioService:
         self._attempt = self._flaps = 0
         self._session += 1
         self._url = self._fresh = self.error = None
+        self._stop_waiting()  # новая команда — колонку ждём заново WAIT_OUTPUT_S
         await asyncio.to_thread(self._save_state)
         asyncio.create_task(self._note_played(station.uuid, self._session), name="radio-click")
         await self._apply()
@@ -867,6 +874,7 @@ class RadioService:
             self.track = None
             self._playing_since = self._played = None
             if not self.want_play or self.station is None:
+                self._stop_waiting()
                 if self.phase != "error":  # error — до следующей команды: админка покажет, почему замолчало
                     self.phase, self.error = "stopped", None
                 if self._alert is None:
@@ -874,9 +882,14 @@ class RadioService:
                 return
             if not (self.output and self.output.connected):
                 self.phase, self.error = "waiting_output", None  # без колонки поток не открываем (трафик)
+                if self._waiting_since is None:
+                    since = self._waiting_since = time.monotonic()
+                    self._wait_off = asyncio.get_running_loop().create_task(
+                        self._off_after_waiting(since), name="radio-wait-output")
                 if self._alert is None:
                     await self.player.halt()
                 return
+            self._stop_waiting()
             self.phase = "connecting"
             if not self._player_ready or self._alert is not None:
                 return  # mpv ещё не поднялся / звучит сирена: откроем по событию ready / после end_alert()
@@ -892,6 +905,25 @@ class RadioService:
                 self._schedule_retry(f"Player: {e}")
                 return
             self._watchdog = asyncio.create_task(self._connect_watchdog(), name="radio-watchdog")
+
+    def _stop_waiting(self) -> None:
+        self._waiting_since = None
+        t, self._wait_off = self._wait_off, None
+        if t and t is not asyncio.current_task():
+            t.cancel()
+
+    async def _off_after_waiting(self, since: float) -> None:
+        """Колонки нет WAIT_OUTPUT_S подряд — выключить радио: появится позже (у телефона) — само не заиграет."""
+        await asyncio.sleep(max(0.0, since + WAIT_OUTPUT_S - time.monotonic()))
+        async with self._lock:
+            if self._waiting_since != since or not self.want_play or self.phase != "waiting_output":
+                return
+            self._wait_off = None
+            self._waiting_since = None
+            self.want_play = False
+            self.phase, self.error = "stopped", None
+        log.info("radio: no speaker for %.0f min - radio off", WAIT_OUTPUT_S / 60)
+        await asyncio.to_thread(self._save_state)  # после перезапуска — не продолжать
 
     async def _connect_watchdog(self) -> None:
         await asyncio.sleep(CONNECT_TIMEOUT_S)

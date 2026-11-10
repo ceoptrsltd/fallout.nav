@@ -699,7 +699,7 @@ async def test_steady_play_resets_the_backoff(tmp_path, monkeypatch):
         await until(lambda n=n: len(p.loads) > n)
     assert svc._attempt == 2
     p.cb("playing", True)
-    await asyncio.sleep(0.06)  # longer than STEADY_S without a break
+    await asyncio.sleep(0.1)  # longer than STEADY_S without a break (with room for a coarse timer on Windows)
     p.cb("buffering", True)  # the signal is gone again: the pauses start from the beginning
     assert svc.phase == "connecting" and svc._attempt == 0 and svc._flaps == 0
     p.cb("playing", True)
@@ -1035,3 +1035,45 @@ async def test_bt_no_speaker_calls_while_the_rear_view_is_on(tmp_path, monkeypat
     bt._connect = _AwaySpeaker._connect.__get__(bt)
     await bt._tick()
     assert bt.calls[-1] == "connect"  # back to the map: tried again on the next round
+
+
+async def test_radio_turns_off_after_waiting_too_long_for_the_speaker(tmp_path, monkeypatch):
+    """The speaker is shared with a phone: the radio waiting for it (switched on the day before, or a station key
+    pressed with no speaker) started over the phone's music as soon as the speaker came near. Waiting longer than
+    WAIT_OUTPUT_S in a row turns the radio off for good (saved: no resume after a restart); repeated re-applies do
+    not extend the wait, a new command starts it over, and a speaker that connects in time plays as before."""
+    monkeypatch.setattr(rmod, "WAIT_OUTPUT_S", 0.6)
+    p = CtlPlayer()
+    svc = _svc(tmp_path, p)
+    await svc.start()
+    st = RadioStation(uuid="u1", name="Jazz FM", url="http://jazz.example/stream")
+    spk = RadioOutput(address="AA:BB:CC:DD:EE:FF", name="JBL", connected=True)
+    await svc.play(st)
+    await asyncio.sleep(0.3)
+    assert svc.phase == "waiting_output"
+    p.cb("ready", True)  # mpv restarted: re-applied, the wait goes on from where it was
+    await asyncio.sleep(0.45)
+    assert svc.phase == "stopped" and not svc.want_play
+    assert json.loads((tmp_path / "radio_state.json").read_text())["playing"] is False
+    svc.set_output(spk)
+    await settle()
+    assert svc.phase == "stopped" and p.loads == []  # the speaker came later: the radio stays off
+    # a speaker in time: plays, the timer is gone
+    svc.set_output(spk.model_copy(update={"connected": False}))
+    await svc.play(st)
+    await asyncio.sleep(0.3)
+    svc.set_output(spk)
+    await settle()
+    assert svc.phase == "connecting" and p.loads
+    await asyncio.sleep(0.6)
+    assert svc.want_play and svc._wait_off is None
+    # the speaker went away while playing: off after the wait; a new command in between starts it over
+    svc.set_output(spk.model_copy(update={"connected": False}))
+    await settle()
+    await asyncio.sleep(0.45)
+    await svc.resume()
+    await asyncio.sleep(0.45)
+    assert svc.want_play and svc.phase == "waiting_output"
+    await asyncio.sleep(0.3)
+    assert not svc.want_play and svc.phase == "stopped"
+    await svc.stop()
