@@ -5,7 +5,7 @@
 ## Схема
 
 ```
-админка (Radio, Bluetooth) ──REST──► fnav-core ──► radio-browser.info (каталог станций, JSON)
+админка (Radio, Bluetooth) ──REST──► fnav-core ──► radio-browser.info + api.laut.fm (каталоги станций, JSON)
                                          │
                                          ├─ fnav/core/radio.py ──IPC (unix socket)──► fnav-radio.service (mpv --idle)
                                          │                                              └─► ALSA bluealsa ─► BT-колонка (A2DP)
@@ -35,6 +35,28 @@
   иначе ""),"homepage","favicon","tags","country","countrycode","language","codec","bitrate","votes","clickcount",
   "hls":bool}`. `url_original` (.pls/.m3u, редирект StreamTheWorld и т.п.) живёт дольше `url_resolved`, в котором
   часто токен CDN: избранное, недавние и последняя станция хранят оба и uuid.
+
+### laut.fm — второй каталог (`fnav/core/lautfm.py`)
+
+Открытый API без ключа (`https://api.laut.fm`, ~17 000 станций, свои серверы; ответ 0,1–0,4 с). Зачем: radio-browser —
+единственный каталог, и когда он не отвечает, в машине не переключить станцию ни клавишами, ни из админки.
+
+- **Плитки**: оба каталога спрашиваются одновременно; в сильных у laut.fm и безъязыковых плитках (jazz, blues,
+  classical, lounge, relax, meditation, sleep, 80s, 90s, oldies, dance, electronic) каждая третья станция — из laut.fm.
+  Ещё 8 (lofi, workout, party, romantic, pop, rock, hits, folk) — только запас. Нет вовсе: news, kids, chanson, hip hop.
+- **Отбор**: `GET /stations/genre/<Genre>?limit=120` (кэш 3 ч; laut.fm не ответил — минуту не спрашиваем); жанр плитки —
+  первый или второй у станции, `position` ≤ 1000 (первая тысяча их чарта), по чарту; без немецкоязычных и разговорных
+  жанров (Schlager, Deutsch*, Volksmusik, NDW, Talk, News, Hip-Hop, Rap, Gaming, Live…), названий (deutsch, german,
+  schlager, kinder, simulator…) и описаний (ETS2/ATS, «moderiert» — с ведущими), выключенных (`active: false`).
+- **Случайный режим**: каждая третья — из трёх случайных сильных жанров laut.fm.
+- **По имени**: сначала radio-browser, за ним совпадения категории `name` поиска `GET /search/stations?query=` (N=20).
+- **radio-browser не отвечает**: плитки (20 из 24), случайный режим и поиск по имени — из laut.fm; news, kids, chanson,
+  hip hop и популярное по стране — по-прежнему «каталог недоступен».
+- **Станция**: `name` — «Jazzloft · laut.fm» (видно, откуда она, и по этому имени её находят), `uuid` пустой — адрес
+  потока (`https://<name>.stream.laut.fm/<name>`) постоянный, `/json/url` radio-browser о нём не спрашиваем; станции
+  laut.fm, которые radio-browser уже вернул, не повторяются.
+- Не взяли: поиск по артисту — у laut.fm его нет (`/search/stations?query=Diana Krall` → 0), а перебор `top_artists` по
+  спискам жанров — мегабайты через телефон на каждый запрос.
 
 ## 2. API fnav-core
 

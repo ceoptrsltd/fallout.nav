@@ -1,4 +1,4 @@
-"""Интернет-радио: каталог radio-browser.info, плеер mpv (fnav-radio.service) по JSON IPC, состояние.
+"""Интернет-радио: каталог radio-browser.info (+ laut.fm, fnav/core/lautfm.py), плеер mpv (fnav-radio.service) по JSON IPC, состояние.
 
 docs/contracts/radio.md. Каталог — как в myAIfriend (RadioBrowser.kt): случайное зеркало, повтор после паузы,
 популярные станции жанра, отметка прослушивания. Звук — только в Bluetooth-колонку (bluealsa): нет колонки —
@@ -23,6 +23,7 @@ from urllib.parse import quote, urlencode
 import httpx
 
 from fnav.core.btvolume import SpeakerVolume
+from fnav.core.lautfm import LautFm, mix, stream_id
 from fnav.models import RadioOutput, RadioSettings, RadioState, RadioStation, RadioStatus
 
 log = logging.getLogger("fnav.core.radio")
@@ -116,16 +117,22 @@ def _stream_url_ok(url: str) -> bool:
 
 
 class RadioDirectory:
-    """radio-browser.info: зеркало выбирается один раз за запуск, при сбое — пауза и новое зеркало."""
+    """radio-browser.info: зеркало выбирается один раз за запуск, при сбое — пауза и новое зеркало. laut —
+    второй каталог (fnav/core/lautfm.py): подмешивается в жанры, случайный режим и поиск по имени, а когда
+    radio-browser не отвечает — жанры, случайный режим и поиск идут из него одного."""
 
-    def __init__(self, transport: httpx.AsyncBaseTransport | None = None, retry_pause_s: float = RETRY_PAUSE_S):
+    def __init__(self, transport: httpx.AsyncBaseTransport | None = None, retry_pause_s: float = RETRY_PAUSE_S,
+                 laut: LautFm | None = None):
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=10.0), transport=transport,
                                          headers={"User-Agent": USER_AGENT}, follow_redirects=True)
         self.mirror: str | None = None
         self.retry_pause_s = retry_pause_s
+        self.laut = laut
 
     async def close(self) -> None:
         await self._client.aclose()
+        if self.laut is not None:
+            await self.laut.close()
 
     async def _pick_mirror(self) -> str:
         try:
@@ -161,14 +168,33 @@ class RadioDirectory:
         c = {"tag": tag}
         if tag in SPEECH_TAGS:
             c["language"] = "english"
-        return await self.search(c, LIMIT_TAG)
+        if self.laut is None:
+            return await self.search(c, LIMIT_TAG)
+        rb, lf = await asyncio.gather(self.search(c, LIMIT_TAG), self.laut.by_tag(tag))
+        if rb is None:  # radio-browser не отвечает — плитка из laut.fm, если он её знает
+            fb = lf if lf else await self.laut.by_tag(tag, fallback=True)
+            return fb or None
+        return mix(rb, lf or [])
 
     async def random(self, limit: int = RANDOM_BATCH) -> list[RadioStation] | None:
-        """Случайные станции всего каталога: любой жанр, любая страна (только не помеченные неработающими)."""
-        return await self.search({}, limit, random_order=True)
+        """Случайные станции всего каталога: любой жанр, любая страна (только не помеченные неработающими);
+        каждая третья — из сильных жанров laut.fm."""
+        if self.laut is None:
+            return await self.search({}, limit, random_order=True)
+        rb, lf = await asyncio.gather(self.search({}, limit, random_order=True), self.laut.random(limit // 2))
+        if rb is None:
+            return lf or None
+        return mix(rb, lf or [])
 
     async def by_name(self, name: str) -> list[RadioStation] | None:
-        return await self.search({"name": name}, LIMIT_NAME)
+        """Сначала radio-browser, за ним совпадения по имени из laut.fm (их станции он знает не все)."""
+        if self.laut is None:
+            return await self.search({"name": name}, LIMIT_NAME)
+        rb, lf = await asyncio.gather(self.search({"name": name}, LIMIT_NAME), self.laut.by_name(name))
+        if rb is None:
+            return lf or None
+        have = {stream_id(s.url) for s in rb} - {None}
+        return rb + [s for s in lf or [] if stream_id(s.url) not in have]
 
     async def top(self, country: str | None) -> list[RadioStation] | None:
         cc = (country or "").strip().upper()
@@ -1060,6 +1086,7 @@ def create_radio(mock: bool, data_dir: Path, get_settings: Callable[[], RadioSet
         player = FakePlayer() if mock else MpvPlayer(os.environ.get("FNAV_RADIO_IPC", MPV_SOCKET))
     test_output = os.environ.get("FNAV_RADIO_TEST_OUTPUT", "") == "1"
     speaker = None if mock or test_output else SpeakerVolume()
-    return RadioService(RadioDirectory(transport=transport), player, data_dir / "radio_state.json",
+    laut = None if mock else LautFm(transport=transport, user_agent=USER_AGENT)
+    return RadioService(RadioDirectory(transport=transport, laut=laut), player, data_dir / "radio_state.json",
                         get_settings, save_volume, test_output=test_output, speaker=speaker)
 
