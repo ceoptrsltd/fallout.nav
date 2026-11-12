@@ -124,6 +124,12 @@ let layers = activeLayers(settings);
 let telemetry = null;
 let weather = null; // {"type":"weather"} от fnav-core (ui/weather.js)
 let lastInternet = null;
+// Сторож экрана в ядре (fnav/core/displaywatch.py): кинескоп (страница на самом Pi, не превью и не через сервер)
+// раз в ~10 с говорит «жива» — в ответ на телеметрию (таймеры скрытой страницы Chromium замедляет, приём — нет).
+// Упала или зависла — сигналов нет, через 2 минуты ядро перезапускает fnav-display.
+const KIOSK = !DEMO && !REMOTE && !PREVIEW;
+const ALIVE_S = 10;
+let aliveAt = -Infinity;
 let mapDirty = true;
 // экран «на охране» (map/standby.js, ui/standby.js): вместо кадров по rAF — таймер раз в секунду
 let standby = false;
@@ -219,6 +225,10 @@ function onMessage(msg) {
     const inet = msg.system ? msg.system.internet : null;
     if (inet === true && lastInternet === false) store.resetFailures(); // сеть вернулась — перезапросить
     lastInternet = inet;
+    if (KIOSK && t - aliveAt >= ALIVE_S && link) {
+      aliveAt = t;
+      link.send({ type: "alive" });
+    }
     checkStandby();
   } else if (msg.type === "weather") {
     weather = msg;
@@ -256,7 +266,7 @@ if (DEMO) {
   });
 } else {
   if (REMOTE) tileUrlFor = (layer, z, x, y) => esriTileUrl(settings, layer, z, x, y);
-  link = new Link(wsUrl("ws"), {
+  link = new Link(wsUrl("ws") + (KIOSK ? "?client=display" : ""), {
     onMessage,
     now: nowS,
     onOpen: () => store.resetFailures(),

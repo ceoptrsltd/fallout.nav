@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from fnav.core.camera import (
     CameraUnavailable,
 )
 from fnav.core.config import SettingsStore
+from fnav.core.displaywatch import DisplayWatch, display_active, restart_display
 from fnav.core.games import GamesService
 from fnav.core.guests import GuestLinks, redact_message
 from fnav.core.impact import ImpactService
@@ -160,6 +162,9 @@ class Core:
         self.auto_rear = AutoRear()  # задний вид при заднем ходе (fnav/core/autorear.py)
         self.system = SystemService(mock=opts.mock)
         self.video = VideoOutput(mock=opts.mock)
+        # страница кинескопа умерла (Chromium молча, 2026-11-10) — перезапустить fnav-display
+        self.display_watch = DisplayWatch(restart_display, display_active)
+        self.ws.on_display_alive = self.display_watch.alive
         relay = opts.relay or RelayConfig.from_env()
         self.tracking = TrackService(paths.data_dir() / "track_outbox.db", relay,
                                      lambda: (self.auth.password_hash, self.auth.session_secret),
@@ -299,6 +304,8 @@ class Core:
                 asyncio.create_task(self._telemetry_loop(), name="telemetry"),
                 asyncio.create_task(self._slow_loop(), name="slow-status"),
             ]
+            if not self.mock and sys.platform.startswith("linux"):
+                self._tasks.append(asyncio.create_task(self.display_watch.run(), name="display-watch"))
             self.tracking.start(lambda: self.hub.snapshot().gps, lambda: self.store.get().tracking)
             self.weather.start()
             self.speedlimits.start()

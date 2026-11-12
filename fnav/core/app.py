@@ -396,8 +396,9 @@ def _register_ws(app: FastAPI, core: Core) -> None:
         hello = [settings, core.build_telemetry().model_dump_json()]
         if (weather := core.weather.status()) is not None:
             hello.append(weather.model_dump_json())
+        display = ws.query_params.get("client") == "display" and core.auth.is_local(ws)  # кинескоп (сторож экрана)
         await core.ws.serve(ws, hello, REMOTE_TELEMETRY_EVERY if core.auth.is_remote(ws) else 1, guest=guest,
-                            guest_until=link.expires if link else None)
+                            guest_until=link.expires if link else None, display=display)
 
 
 # ───────────────────────── тайлы ─────────────────────────

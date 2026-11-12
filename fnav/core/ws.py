@@ -29,8 +29,9 @@ GUEST_DENIED = "Read-only guest access"
 
 class Client:
     def __init__(self, ws: WebSocket, telemetry_every: int = 1, guest: str | None = None,
-                 guest_until: float | None = None):
+                 guest_until: float | None = None, display: bool = False):
         self.ws = ws
+        self.display = display  # страница кинескопа на самом Pi (?client=display): её «alive» — сторожу экрана
         self.guest = guest is not None  # гостевая сессия: только просмотр
         self.guest_id = guest  # id гостевой ссылки
         self.guest_until = guest_until  # срок ссылки (unix): после него соединение закрывается
@@ -71,6 +72,7 @@ class WsManager:
         self.clients: set[Client] = set()
         # сообщение для гостя (без секретов); None — как всем (fnav/core/guests.py redact_message)
         self.guest_filter: Callable[[dict], dict] | None = None
+        self.on_display_alive: Callable[[], None] | None = None  # сторож экрана (fnav/core/displaywatch.py)
 
     def __len__(self) -> int:
         return len(self.clients)
@@ -120,10 +122,13 @@ class WsManager:
         return [c for c in self.clients if topic in c.topics]
 
     async def serve(self, ws: WebSocket, hello: list[str], telemetry_every: int = 1, guest: str | None = None,
-                    guest_until: float | None = None) -> None:
-        """hello — уже готовые для этого клиента сообщения (для гостя — без секретов); guest — id гостевой ссылки."""
+                    guest_until: float | None = None, display: bool = False) -> None:
+        """hello — уже готовые для этого клиента сообщения (для гостя — без секретов); guest — id гостевой ссылки;
+        display — страница кинескопа на самом Pi."""
         await ws.accept()
-        client = Client(ws, telemetry_every, guest, guest_until)
+        client = Client(ws, telemetry_every, guest, guest_until, display=display and guest is None)
+        if client.display:
+            self._display_alive()
         for h in hello:
             client.send(h)
         self.clients.add(client)
@@ -179,6 +184,16 @@ class WsManager:
             client.topics -= topics
         elif t == "ping":
             client.send(json.dumps({"type": "pong"}))
+        elif t == "alive" and client.display:
+            self._display_alive()
+
+    def _display_alive(self) -> None:
+        cb = self.on_display_alive
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                log.exception("display alive")
 
 
 def new_nmea_lines(tail: list[str], last: str | None) -> list[str]:
