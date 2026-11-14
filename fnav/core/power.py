@@ -9,6 +9,11 @@
 повторяются часто (CONNECT_RETRY_S), а если станции так и нет (не нашлась в эфире или долго не подключается) —
 всё реже (AWAY_BACKOFF_S): попытки занимают радио, общее с Wi-Fi. Пока на экране задний вид (quiet) — не
 подключаемся вовсе (как колонка, fnav/core/bluetooth.py); уже подключённые станции читаются.
+
+Команды (control): только по слайдеру в веб-интерфейсе (POST /api/power/{slot}/control) и мигание светом Fossibot при
+срабатывании охраны (flash_light, power.light_on_alarm). Каждый протокол сам собирает единственно допустимые кадры
+(fossibot.output_request, daly.mosfet_request, leadbatt.mode_request) — другое записать нельзя. Сами по себе (при
+запуске, переподключении, по таймеру) ничего не пишем. После команды — внеочередное чтение (видно новое состояние).
 """
 
 from __future__ import annotations
@@ -26,7 +31,14 @@ from typing import Any, Literal
 from fnav.core import daly, fossibot, leadbatt
 from fnav.core.ble import BleError, BleLink
 from fnav.core.util import cancel_tasks
-from fnav.models import PowerSettings, PowerSlot, PowerStationStatus, PowerStatus, PowerTelemetry
+from fnav.models import (
+    PowerControl,
+    PowerSettings,
+    PowerSlot,
+    PowerStationStatus,
+    PowerStatus,
+    PowerTelemetry,
+)
 
 log = logging.getLogger("fnav.core.power")
 
@@ -36,6 +48,7 @@ READ_TRIES = 3
 READ_FAILS_DROP = 3  # столько опросов подряд без ответа — переподключиться
 STALE_S = 100.0  # показания старше (три опроса подряд без ответа) — на экране прочерк
 LOW_SOC_PCT = 20.0
+CELL_DELTA_BAD_MV = 100  # Daly: разбаланс ячеек больше — опасно (на экране и в веб-интерфейсе мигает)
 # Станция в эфире, а подключение сорвалось («le-connection-abort-by-local» — частая случайность, бывает и 30 раз
 # подряд) — повторяем сериями: BURST_TRIES попыток через CONNECT_RETRY_S, пауза BURST_PAUSE_S, снова — пока не
 # получится. Станции нет в эфире («not found nearby»: поиск занимает радио) — всё реже, AWAY_BACKOFF_S.
@@ -69,6 +82,15 @@ LEAD = Protocol("lead", (leadbatt.STATUS_UUID,), leadbatt.STATUS_UUID, leadbatt.
                 leadbatt.Frames, leadbatt.parse)
 
 LinkFactory = Callable[[str, Callable[[str, bytes], None]], Any]
+AFTER_COMMAND_S = 1.5  # после команды прочитать через столько (станция успевает переключить)
+LIGHT_BLINK_S = 1.0  # свет при тревоге: столько горит, столько не горит
+
+
+class PowerError(Exception):
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
 
 
 class StationReader:
@@ -88,6 +110,8 @@ class StationReader:
         self._reply: asyncio.Future[bytes] | None = None
         self._task: asyncio.Task | None = None
         self.connect_lock = asyncio.Lock()  # PowerService ставит один на все станции
+        self._io = asyncio.Lock()  # чтение и команда не перемежаются
+        self._wake = asyncio.Event()  # после команды — прочитать сразу
 
     @property
     def connected(self) -> bool:
@@ -128,13 +152,26 @@ class StationReader:
             self._reply.set_exception(BleError("disconnected"))
 
     async def read_once(self) -> Any:
+        async with self._io:
+            return await self._read_once()
+
+    async def command(self, frame: bytes) -> None:
+        """Записать готовый кадр команды (собран протоколом) и прочитать новое состояние вскоре."""
+        if not self.connected:
+            raise PowerError(409, "The station is not connected")
+        async with self._io:
+            await self.link.write(self.proto.write_uuid, frame, self.proto.write_response)
+        self._wake.set()
+
+    async def _read_once(self) -> Any:
         loop = asyncio.get_running_loop()
         for _ in range(READ_TRIES):
             self._frames.clear()
             self._reply = loop.create_future()
             try:
                 await self.link.write(self.proto.write_uuid, self.proto.request, self.proto.write_response)
-                frame = await asyncio.wait_for(self._reply, READ_TIMEOUT_S)
+                async with asyncio.timeout(READ_TIMEOUT_S):  # не wait_for: тот (3.11) может «съесть» отмену
+                    frame = await self._reply
             except TimeoutError:
                 continue
             finally:
@@ -199,7 +236,13 @@ class StationReader:
                         with contextlib.suppress(Exception):
                             await self.link.disconnect()
                         break
-                await asyncio.sleep(POLL_S)
+                self._wake.clear()
+                try:
+                    async with asyncio.timeout(POLL_S):
+                        await self._wake.wait()
+                except TimeoutError:
+                    continue
+                await asyncio.sleep(AFTER_COMMAND_S)  # после команды — новое состояние
             if not self.connected:
                 log.info("power: %s %s disconnected", self.slot, self.mac)
 
@@ -209,9 +252,20 @@ class StationReader:
         if r is None:
             return PowerSlot()
         soc = float(r.soc_pct)
+        delta = None
+        if self.proto.kind == "daly":
+            outputs = {"charge": bool(r.charge_on), "discharge": bool(r.discharge_on)}
+            delta = r.delta_mv if r.delta_mv is not None else (
+                r.cell_max_mv - r.cell_min_mv if r.cell_max_mv and r.cell_min_mv else None)
+        elif self.proto.kind == "lead":
+            outputs = {"charger": bool(r.charging)}
+        else:
+            outputs = dict(r.outputs)
         return PowerSlot(soc_pct=soc, voltage_v=getattr(r, "voltage_v", None), charging=getattr(r, "charging", None),
                          low=soc <= LOW_SOC_PCT, input_w=getattr(r, "input_w", None),
-                         output_w=getattr(r, "output_w", None), to_empty_min=getattr(r, "to_empty_min", None))
+                         output_w=getattr(r, "output_w", None), to_empty_min=getattr(r, "to_empty_min", None),
+                         outputs=outputs, charger_mode=getattr(r, "mode", None), cell_delta_mv=delta,
+                         cell_delta_bad=delta is not None and delta > CELL_DELTA_BAD_MV)
 
     def status(self) -> PowerStationStatus:
         age = None if self.read_at is None else round(self.mono() - self.read_at, 1)
@@ -291,6 +345,7 @@ class PowerService:
         lock = asyncio.Lock()
         for r in (self.main, self.second, self.third):
             r.connect_lock = lock
+        self._light_task: asyncio.Task | None = None
         self.running = False
         self._lock = asyncio.Lock()  # настройки меняются подряд — переподключения по очереди
 
@@ -310,8 +365,75 @@ class PowerService:
             await self.second.set_mac(second_mac)
             await self.third.set_mac(third_mac)
 
+    # ── команды ──
+    def _reader(self, slot: str) -> StationReader:
+        r = {"main": self.main, "second": self.second, "third": self.third}.get(slot)
+        if r is None:
+            raise PowerError(404, "No such station")
+        return r
+
+    async def control(self, slot: str, cmd: PowerControl, source: str = "web") -> PowerStatus:
+        """Команда станции: собирает кадр её протокол; неподходящая команда — 422, станция не подключена — 409."""
+        r = self._reader(slot)
+        try:
+            if r.proto.kind == "fossibot" and cmd.output in fossibot.OUTPUT_REGS and cmd.on is not None:
+                frame, what = fossibot.output_request(cmd.output, cmd.on), f"{cmd.output} {'on' if cmd.on else 'off'}"
+            elif r.proto.kind == "daly" and cmd.output in daly.MOSFET_REGS and cmd.on is not None:
+                frame, what = daly.mosfet_request(cmd.output, cmd.on), f"{cmd.output} {'on' if cmd.on else 'off'}"
+            elif r.proto.kind == "lead" and cmd.output == "charger" and cmd.mode is not None:
+                frame, what = leadbatt.mode_request(cmd.mode), f"charger {cmd.mode}"
+            else:
+                raise PowerError(422, f"{cmd.output} cannot be switched on this station")
+        except KeyError as e:
+            raise PowerError(422, "Unknown output") from e
+        if slot == "main" and cmd.output == "light":
+            await self._stop_light_task()  # рука хозяина важнее мигания
+        log.warning("power: %s %s - %s (%s)", slot, r.mac, what, source)
+        await r.command(frame)
+        return self.status()
+
+    def flash_light(self, seconds: float) -> None:
+        """Охрана сработала: мигать светом Fossibot seconds секунд (новое событие продлевает), потом — как было."""
+        if not self.get_settings().light_on_alarm or not self.main.connected:
+            return
+        until = time.monotonic() + seconds
+        if self._light_task is not None and not self._light_task.done():
+            self._light_until = until
+            return
+        self._light_until = until
+        r = self.main.fresh()
+        was_on = bool(r is not None and r.outputs.get("light"))
+        self._light_task = asyncio.get_running_loop().create_task(self._blink(was_on), name="power-light")
+
+    async def _blink(self, was_on: bool) -> None:
+        on = not was_on
+        try:
+            while time.monotonic() < self._light_until and self.main.connected:
+                await self.main.command(fossibot.output_request("light", on))
+                on = not on
+                await asyncio.sleep(LIGHT_BLINK_S)
+        except Exception as e:  # noqa: BLE001 — станция отключилась и т.п.
+            log.info("power: light flash stopped: %s", e)
+        finally:
+            with contextlib.suppress(Exception):
+                if self.main.connected:
+                    await self.main.command(fossibot.output_request("light", was_on))
+
+    async def _stop_light_task(self) -> None:
+        if self._light_task is not None and not self._light_task.done():
+            self._light_until = 0.0  # _blink сам вернёт свет, как был
+            with contextlib.suppress(Exception):
+                async with asyncio.timeout(LIGHT_BLINK_S + READ_TIMEOUT_S):
+                    await asyncio.shield(self._light_task)
+        self._light_task = None
+
+    async def stop_light(self) -> None:
+        """Охрану сняли / заглушили — перестать мигать."""
+        await self._stop_light_task()
+
     async def stop(self) -> None:
         self.running = False
+        await cancel_tasks(self._light_task)
         await self.main.stop()
         await self.second.stop()
         await self.third.stop()

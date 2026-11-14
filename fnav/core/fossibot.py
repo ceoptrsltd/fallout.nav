@@ -6,7 +6,11 @@
 big-endian> <CRC>``, 168 байт; регистр N — байты 6 + 2N. Пароль и сопряжение не нужны; Wi-Fi и приложение станции
 не мешают.
 
-Ничего не записывать: запись некоторых настроек (например, 0 в регистр 68) превращала такие станции в кирпич.
+Запись — только выходы (output_request): функция 0x06, регистры 24 USB, 25 DC, 26 AC, 27 свет, значение 0/1 (оба
+источника: PROTOCOL.md dandwhelan и fbot.cpp ESP-FBot). Состояние выходов — input-регистр 41: бит 9 USB, 10 DC, 11 AC,
+12 свет (ESP-FBot; на нашей станции 0x0AA4 — включены AC и USB, они и были под нагрузкой). Ничего другого не
+записывать: запись настроек (например, 0 в регистр 68) превращала такие станции в кирпич, прошивка значения не
+проверяет; режимы света 2/3 в источниках перепутаны — не используем.
 Протокол: github.com/dandwhelan/fossibot-bluetooth, github.com/Ylianst/ESP-FBot.
 
 Здесь только протокол; подключение — fnav/core/ble.py, опрос — fnav/core/power.py.
@@ -34,6 +38,17 @@ def read_request(start: int = 0, count: int = REGS) -> bytes:
 
 REQUEST = read_request()  # 11 04 00 00 00 50 A6 F2
 HEADER = REQUEST[:6]
+
+OUTPUT_REGS = {"usb": 24, "dc": 25, "ac": 26, "light": 27}  # единственное, что можно записать
+OUTPUT_BITS = {"usb": 9, "dc": 10, "ac": 11, "light": 12}  # input-регистр 41
+
+
+def output_request(output: str, on: bool) -> bytes:
+    """Включить/выключить выход: ``11 06 00 <рег> 00 <0|1> <CRC старшим вперёд>``. Другой выход — KeyError."""
+    reg = OUTPUT_REGS[output]
+    p = bytes([ADDR, 0x06, 0x00, reg, 0x00, 1 if on else 0])
+    c = crc16(p)
+    return p + bytes([c >> 8, c & 0xFF])
 
 
 class Frames:
@@ -81,6 +96,7 @@ class FossibotReading:
     capacity_ah: float
     charging: bool  # вход > 0 (флаг регистра 48 не проверен на зарядке)
     status: int  # регистр 48: 0x8000 — заряжается, 0x4000 — нет (по документации)
+    outputs: dict[str, bool]  # включённые выходы: usb, dc, ac, light (регистр 41)
 
 
 def parse(frame: bytes) -> FossibotReading | None:
@@ -95,4 +111,5 @@ def parse(frame: bytes) -> FossibotReading | None:
         soc_pct=soc, input_w=r[6], ac_in_w=r[3], dc_in_w=r[4], output_w=r[39], ac_out_w=r[20],
         ac_out_v=r[18] / 10, ac_out_hz=r[19] / 10, usb_w=round(usb, 1), to_full_min=r[58], to_empty_min=r[59],
         capacity_ah=r[54] / 10, charging=r[6] > 0, status=r[48],
+        outputs={k: bool(r[41] >> b & 1) for k, b in OUTPUT_BITS.items()},
     )

@@ -1,11 +1,14 @@
 // fallout.nav — третья «станция»: свинцовый аккумулятор 12 V (docs/contracts/power.md «Третья станция»).
 // Seeed XIAO ESP32-C6. Меряет напряжение аккумулятора (A0) и входа 12 V (A1) через делители 100k/20k; есть 12 V на
-// входе — замыкает RC-реле (D3), и зарядное устройство заряжает аккумулятор. Отдаёт показания по Bluetooth LE
-// (только чтение): fnav-core (fnav/core/leadbatt.py) подключается и раз в 10 с пишет байт в CMD — модуль сразу
-// присылает STATUS (и сам — раз в 2 с, пока подключены).
+// входе — замыкает RC-реле (D3), и зарядное устройство заряжает аккумулятор. Отдаёт показания по Bluetooth LE:
+// fnav-core (fnav/core/leadbatt.py) подключается и раз в 30 с пишет 0x01 в CMD — модуль сразу присылает STATUS
+// (и сам — раз в 2 с, пока подключены).
 //
+// CMD (1 байт): 0x01 — прислать STATUS; 0x10 — зарядка «авто» (по входу 12 V); 0x11 — включить вручную; 0x12 —
+//   выключить вручную. Ручной режим живёт до перезагрузки модуля, после неё — снова авто. Другие байты — только STATUS.
 // STATUS, 14 байт, little-endian: 'F' 'L' ver(1) flags  vbat_mV(u16) vin_mV(u16) uptime_s(u32) crc16(u16)
-//   flags: bit0 — на входе есть 12 V, bit1 — реле (зарядка) включено. CRC16/Modbus первых 12 байт.
+//   flags: bit0 — на входе есть 12 V, bit1 — реле (зарядка) включено, bits 2–3 — режим (0 авто, 1 вкл, 2 выкл).
+//   CRC16/Modbus первых 12 байт.
 //
 // Сборка: arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32C6 firmware/lead-battery
 
@@ -50,6 +53,9 @@ static bool restartAdv = false;
 
 static float vBat = 0, vIn = 0;
 static bool inputOn = false;
+static volatile uint8_t mode = 0;  // 0 — авто (реле по входу), 1 — включено вручную, 2 — выключено вручную
+static volatile int pendingMode = -1;  // из обработчика записи — в loop()
+static bool relayOn = false;
 static uint32_t inSince = 0;  // с какого момента вход «другой», чем inputOn
 
 static uint16_t crc16(const uint8_t *p, size_t n) {
@@ -67,6 +73,17 @@ static float readVolts(int pin, float cal) {
   return mv / 8.0f / 1000.0f * DIVIDER * cal;
 }
 
+static void setRelay(bool on);
+
+static void applyRelay() {
+  bool want = mode == 1 ? true : mode == 2 ? false : inputOn;
+  if (want != relayOn) {
+    relayOn = want;
+    wantNotify = true;
+  }
+  setRelay(relayOn);
+}
+
 static void setRelay(bool on) {
   const uint32_t period = 1000000 / SERVO_HZ;
   ledcWrite(PIN_RELAY, (on ? ON_US : OFF_US) * ((1u << SERVO_BITS) - 1) / period);
@@ -79,7 +96,7 @@ static void fillStatus(uint8_t *b) {
   b[0] = 'F';
   b[1] = 'L';
   b[2] = 1;
-  b[3] = inputOn ? 0x03 : 0x00;  // реле всегда следует за входом: оба бита вместе
+  b[3] = (inputOn ? 0x01 : 0) | (relayOn ? 0x02 : 0) | (uint8_t)((mode & 0x03) << 2);
   b[4] = vb & 0xFF;
   b[5] = vb >> 8;
   b[6] = vi & 0xFF;
@@ -99,7 +116,14 @@ class ServerCb : public BLEServerCallbacks {
 };
 
 class CmdCb : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *) override { wantNotify = true; }  // любой байт — «пришли сейчас»
+  void onWrite(BLECharacteristic *c) override {
+    String v = c->getValue();
+    if (v.length() == 1) {
+      uint8_t b = (uint8_t)v[0];
+      if (b >= 0x10 && b <= 0x12) pendingMode = b - 0x10;  // режим зарядки
+    }
+    wantNotify = true;  // в ответ на любую запись — STATUS сейчас
+  }
 };
 
 void setup() {
@@ -149,12 +173,18 @@ void loop() {
     } else if (now - inSince >= (inputOn ? IN_OFF_MS : IN_ON_MS)) {
       inputOn = want;
       inSince = now;
-      setRelay(inputOn);
+      wantNotify = true;
+    }
+    if (pendingMode >= 0) {
+      mode = (uint8_t)pendingMode;
+      pendingMode = -1;
+      Serial.printf("charger mode %s\n", mode == 0 ? "auto" : mode == 1 ? "ON (manual)" : "OFF (manual)");
       wantNotify = true;
     }
   }
 
   uint8_t buf[14];
+  applyRelay();
   if (connected && (wantNotify || now - lastNotify >= NOTIFY_MS)) {
     wantNotify = false;
     lastNotify = now;
@@ -173,7 +203,7 @@ void loop() {
   }
   if (now - lastLog >= 2000) {
     lastLog = now;
-    Serial.printf("bat %.2f V  in %.2f V  charger %s  ble %s\n", vBat, vIn, inputOn ? "ON" : "off",
+    Serial.printf("bat %.2f V  in %.2f V  input %s  charger %s  ble %s\n", vBat, vIn, inputOn ? "12V" : "none", relayOn ? (mode ? "ON*" : "ON") : (mode ? "off*" : "off"),
                   connected ? "connected" : "advertising");
   }
   delay(5);

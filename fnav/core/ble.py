@@ -74,7 +74,8 @@ class BleLink:
         msg = Message(destination=dest, path=path, interface=iface, member=member, signature=signature,
                       body=body or [])
         try:
-            reply = await asyncio.wait_for(self.bus.call(msg), timeout)
+            async with asyncio.timeout(timeout):  # не wait_for: тот (3.11) может «съесть» отмену
+                reply = await self.bus.call(msg)
         except TimeoutError as e:
             raise BleError(f"{member}: no answer from BlueZ") from e
         if reply.message_type == MessageType.ERROR:

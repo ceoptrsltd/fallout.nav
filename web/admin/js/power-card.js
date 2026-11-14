@@ -61,7 +61,11 @@ export function powerCard() {
   function renderSettings(s) {
     const p = s?.power;
     if (!p) return;
-    clear(setBox).append(h(".bt-set-row", null, switchEl({ checked: !!p.show_on_screen, label: "Show on the screen", onchange: (v) => save("show_on_screen", v) })));
+    clear(setBox).append(
+      h(".bt-set-row", null, switchEl({ checked: !!p.show_on_screen, label: "Show on the screen", onchange: (v) => save("show_on_screen", v) })),
+      h(".bt-set-row", null, switchEl({ checked: p.light_on_alarm !== false, label: "Flash the Fossibot light when the alarm goes off", onchange: (v) => save("light_on_alarm", v) }),
+        h(".hint", null, "For as long as the hazard lights flash (Alarm → hazard seconds); then the light is put back as it was")),
+    );
     for (const { key } of SLOTS) if (inputs[key] && document.activeElement !== inputs[key]) inputs[key].value = p[key] || "";
   }
 

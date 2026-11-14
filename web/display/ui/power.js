@@ -4,7 +4,7 @@
 // Слева крупно заряд главной станции, %; справа две колонки — вторая (Powerbank) и третья (свинцовый аккумулятор):
 // сверху заряд, %, под ним напряжение; черта — посередине. Нет данных — прочерки; заряд ≤ 20 % (low) — мигает;
 // заряжается — анимация: у главной пульсирует молния под знаком %, в колонке между % и напряжением бегут сегменты
-// заряда (как на телефоне). Ширина постоянная (по самым широким значениям) — соседи не «дышат».
+// заряда (как на телефоне). У Powerbank мелко третьей строкой — разница ячеек «Δ60mV» (опасная — мигает). Ширина постоянная (по самым широким значениям) — соседи не «дышат».
 
 import { C, blinkOn, blit, fontNum, outlinedText, plateSprite, setting, spriteGeneration, textWidth } from "./theme.js";
 
@@ -16,6 +16,7 @@ const PCT = () => fontNum(24, 600);
 const CF = () => fontNum(26, 600); // % в колонках
 const CF_3 = () => fontNum(22, 600); // «100%»
 const CV = () => fontNum(19, 500); // напряжение под ним
+const CD = () => fontNum(16, 500); // Powerbank: разница ячеек, ещё ниже
 const COL_GAP = 10;
 const PCT_COL = 16; // место под «%» и молнию
 const SEP = 2;
@@ -29,6 +30,12 @@ export function powerVisible(state) {
 export function socText(slot) {
   const v = slot?.soc_pct;
   return Number.isFinite(v) ? String(Math.max(0, Math.min(100, Math.floor(v)))) : "--";
+}
+
+/** Разница ячеек «Δ60mV»; нет — "". */
+export function deltaText(slot) {
+  const d = slot?.cell_delta_mv;
+  return Number.isFinite(d) ? `Δ${Math.round(d)}mV` : "";
 }
 
 /** «20.8V»; нет данных — «--.-V». */
@@ -132,9 +139,13 @@ export function drawPower(ctx, state, safe) {
     const fill = ink(slot, known);
     const t = `${s}%`;
     const f = textWidth(ctx, CF(), t) > m.colW + 2 ? CF_3() : CF();
-    outlinedText(ctx, t, cx, y + 30, f, { lw: 4, fill });
-    outlinedText(ctx, voltText(slot), cx, y + 61, CV(), { lw: 4, fill: Number.isFinite(slot?.voltage_v) ? C.ink : C.inkDim });
-    if (slot?.charging) chargeBar(ctx, cx - m.colW / 2 + 2, y + 44, m.colW - 4, now);
+    outlinedText(ctx, t, cx, y + 23, f, { lw: 4, fill });
+    outlinedText(ctx, voltText(slot), cx, y + 51, CV(), { lw: 4, fill: Number.isFinite(slot?.voltage_v) ? C.ink : C.inkDim });
+    if (slot?.charging) chargeBar(ctx, cx - m.colW / 2 + 2, y + 36, m.colW - 4, now);
+    const d = deltaText(slot);
+    if (d && !(slot.cell_delta_bad && !blinkOn(now, 2, 0.6))) {
+      outlinedText(ctx, d, cx, y + 69, CD(), { lw: 3, fill: slot.cell_delta_bad ? C.ink : C.inkDim });
+    }
   });
   return { x, y, w: m.w, h: POWER_H };
 }

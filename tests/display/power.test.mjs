@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 globalThis.OffscreenCanvas = undefined; // спрайты не нужны (null — blit пропускает)
-const { drawPower, powerWidth, socText, voltText, chargeLit, CHARGE_SEGS, POWER_H } = await import("../../web/display/ui/power.js");
+const { drawPower, powerWidth, socText, voltText, deltaText, chargeLit, CHARGE_SEGS, POWER_H } = await import("../../web/display/ui/power.js");
 const { camState, drawIndicators, drawRecTag, rightColumnWidth, indicatorsWidth } = await import("../../web/display/ui/status.js");
 
 function recCtx() {
@@ -66,6 +66,19 @@ test("power: a charging station runs its charge segments", () => {
     return ctx.calls.filter((c) => c[0] === "fillRect").length;
   };
   assert.ok(rects(true) >= rects(false) + 2 * CHARGE_SEGS);
+});
+
+test("power: the powerbank's cell spread, small; a dangerous one blinks", () => {
+  assert.equal(deltaText({ cell_delta_mv: 60 }), "Δ60mV");
+  assert.equal(deltaText({}), "");
+  const shown = (bad, now) => {
+    const ctx = recCtx();
+    const power = { main: {}, second: { soc_pct: 50, voltage_v: 20.9, cell_delta_mv: bad ? 140 : 60, cell_delta_bad: bad }, third: {} };
+    drawPower(ctx, { now, telemetry: { power } }, SAFE);
+    return texts(ctx).some((t) => t.startsWith("Δ"));
+  };
+  assert.ok(shown(false, 0.1) && shown(false, 0.4), "steady");
+  assert.notEqual(shown(true, 0.1), shown(true, 0.4), "blinks");
 });
 
 test("power: low charge blinks", () => {

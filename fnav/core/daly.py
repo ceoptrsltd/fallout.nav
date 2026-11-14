@@ -5,7 +5,10 @@
 ``D2 03 7C <62 регистра big-endian> <CRC>`` — бывает несколькими notify, их склеиваем. Пароль и сопряжение не нужны;
 BMS держит одно подключение (пока подключены мы — приложение Daly на телефоне не подключится).
 
-Записей (функции 0x06/0x10) не шлём никогда: они меняют настройки BMS и могут отключить MOSFET.
+Запись — только MOSFET заряда и разряда (mosfet_request): функция 0x06, регистр 0xA5 — заряд, 0xA6 — разряд, 0/1;
+так делает само приложение Daly (перехват трафика в fl4p/batmon-ha issue #356, драйвер daly2 — проверено на BMS),
+пароль не нужен. Регистры 0x0C/0x0D из описания Daly отвечают, но MOSFET не переключают — не используем. Состояние —
+регистры 53 (заряд) и 54 (разряд), 52 — балансировка. Ничего другого не записываем: это настройки BMS.
 
 Здесь только протокол; подключение — fnav/core/ble.py, опрос — fnav/core/power.py.
 """
@@ -37,6 +40,15 @@ def read_request(start: int = 0, count: int = REGS) -> bytes:
 
 
 REQUEST = read_request()  # D2 03 00 00 00 3E D7 B9
+
+MOSFET_REGS = {"charge": 0xA5, "discharge": 0xA6}  # единственное, что можно записать
+
+
+def mosfet_request(which: str, on: bool) -> bytes:
+    """MOSFET заряда/разряда: ``D2 06 00 A5|A6 00 <0|1> <CRC младшим вперёд>``. Другое — KeyError."""
+    p = bytes([ADDR, 0x06, 0x00, MOSFET_REGS[which], 0x00, 1 if on else 0])
+    c = crc16(p)
+    return p + bytes([c & 0xFF, c >> 8])
 
 
 class Frames:
@@ -79,6 +91,9 @@ class DalyReading:
     cell_max_mv: int | None = None
     delta_mv: int | None = None
     cycles: int | None = None
+    charge_on: bool | None = None  # MOSFET заряда (регистр 53)
+    discharge_on: bool | None = None  # MOSFET разряда (регистр 54)
+    balancing: bool | None = None  # регистр 52
 
 
 def parse(frame: bytes) -> DalyReading | None:
@@ -102,4 +117,7 @@ def parse(frame: bytes) -> DalyReading | None:
         cell_min_mv=r[44] or None,
         cycles=r[51],
         delta_mv=r[56],
+        charge_on=bool(r[53]),
+        discharge_on=bool(r[54]),
+        balancing=bool(r[52]),
     )

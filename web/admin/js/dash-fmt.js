@@ -392,6 +392,8 @@ export function powerInfo(p) {
       big: s === null ? "—" : String(Math.floor(s)), unit: s === null ? "" : "%", kind: socKind(s),
       sub: v !== null ? `${v.toFixed(1)} V` : on ? "" : "no data",
       note: on && x.charging ? "charging" : "", noteKind: "ok", charging: on && !!x.charging,
+      // Daly: разница ячеек (опасная — красным и мигает)
+      cells: on && num(x.cell_delta_mv) ? `Δ ${Math.round(x.cell_delta_mv)} mV cells` : "", cellsBad: on && !!x.cell_delta_bad,
     };
   };
   return { main, second: side(p.second), third: side(p.third) };

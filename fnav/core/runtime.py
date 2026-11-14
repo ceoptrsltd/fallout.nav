@@ -203,6 +203,8 @@ class Core:
                                   snapshot=self.camera.snapshot, radio=self.radio, transport=opts.relay_transport,
                                   open_hazard=FakeHazard if opts.mock else open_gpio_hazard)
         self.alarm.protect_rear = self._protect_rear_quiet
+        self.alarm.light_flash = self.power.flash_light  # тревога — мигать светом Fossibot (power.light_on_alarm)
+        self.alarm.light_stop = self.power.stop_light
         self.alarm.snapshot_rear = self._snapshot_rear_quiet
         self.alarm.get_video = self._camera_video
         # отметки движения с камер (без тревоги) — серые метки на шкале записей

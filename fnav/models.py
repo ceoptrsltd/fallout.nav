@@ -450,6 +450,7 @@ class PowerSettings(_Model):
     show_on_screen: bool = True  # плашка справа внизу (телеметрия идёт и без неё — для веб-интерфейса)
     main_mac: str = "70:AF:09:06:E9:1A"  # главная — Fossibot F3600 Pro («POWER-0201»): заряд, % крупно
     second_mac: str = "74:C1:4E:10:00:9B"  # вторая — Daly BMS («Tattu powerbank»)
+    light_on_alarm: bool = True  # охрана сработала — мигать светом Fossibot (alarm.hazard.seconds)
     third_mac: str = "10:BD:A3:B2:48:5A"  # третья — свинцовый 12 V, модуль XIAO ESP32-C6 «FNAV-LEAD» (firmware/lead-battery)
 
     @field_validator("main_mac", "second_mac", "third_mac")
@@ -915,6 +916,11 @@ class PowerSlot(_Model):
     input_w: int | None = None  # Fossibot: вход (сеть + солнце/авто), Вт
     output_w: int | None = None  # Fossibot: выход всего, Вт
     to_empty_min: int | None = None  # Fossibot: до разряда, мин (по его оценке)
+    # что включено: Fossibot — usb, dc, ac, light; Daly — charge, discharge (MOSFET); свинцовый — charger (реле)
+    outputs: dict[str, bool] | None = None
+    charger_mode: Literal["auto", "on", "off"] | None = None  # свинцовый: зарядка по входу 12 V или вручную
+    cell_delta_mv: int | None = None  # Daly: разница самой высокой и самой низкой ячейки, мВ
+    cell_delta_bad: bool = False  # разница больше CELL_DELTA_BAD_MV (fnav/core/power.py) — мигает
 
 
 class PowerTelemetry(_Model):
@@ -933,6 +939,14 @@ class PowerStationStatus(_Model):
     age_s: float | None = None  # сколько секунд назад последнее показание
     error: str | None = None  # последняя ошибка подключения/чтения
     reading: dict | None = None  # fnav/core/fossibot.py FossibotReading / fnav/core/daly.py DalyReading
+
+
+class PowerControl(_Model):
+    """POST /api/power/{slot}/control — команда станции (только по слайдеру в веб-интерфейсе)."""
+
+    output: Literal["usb", "dc", "ac", "light", "charge", "discharge", "charger"]
+    on: bool | None = None  # usb/dc/ac/light/charge/discharge
+    mode: Literal["auto", "on", "off"] | None = None  # charger
 
 
 class PowerStatus(_Model):

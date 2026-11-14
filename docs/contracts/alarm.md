@@ -188,6 +188,8 @@ RTC могут отставать), срок прошёл, пока ядро с�
   открылась — причина только в ответе (503), в статусе ошибки нет: ею не пользуются.
 - `AlarmStatus.hazard = {enabled, active, error}`, `Telemetry.alarm.hazard: bool` (замкнуто сейчас).
 - `--mock` — ненастоящий вывод (только состояние и лог).
+- Свет Fossibot (power.md «Управление», `settings.power.light_on_alarm`): событие — мигает столько же, сколько
+  аварийка (`seconds`); `disarm`/`silence` — свет сразу как был (`AlarmService.light_flash` / `light_stop`).
 
 ## 3. Настройки `settings.alarm` (`AlarmSettings`)
 

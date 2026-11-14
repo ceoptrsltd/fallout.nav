@@ -988,6 +988,9 @@ class AlarmService:
         self.video = VideoWatch()
         self.siren = Siren(radio, data_dir / "alarm_siren.wav", allowed=lambda: self.state in DETECTED)
         self.hazard = HazardLights(lambda: self.get_settings().hazard, open_hazard, mono=mono)
+        # свет станции при тревоге (Core: fnav/core/power.py flash_light / stop_light)
+        self.light_flash: Callable[[float], None] | None = None
+        self.light_stop: Callable[[], Awaitable[None]] | None = None
         self.outbox = AlarmOutbox(data_dir / "alarm_outbox.db", max_rows=OUTBOX_MAX_ROWS, mono=mono)
         self._transport = transport
         self._client: httpx.AsyncClient | None = None  # создаётся при первой отправке (сервер может быть не настроен)
@@ -1185,6 +1188,7 @@ class AlarmService:
         self.video.reset()
         await self.siren.stop()
         await self.hazard.stop()
+        await self._light_stop()
         if was != "off":
             hz = self.get_settings().hazard
             if hz.enabled and hz.confirm:
@@ -1195,10 +1199,18 @@ class AlarmService:
             await self._changed()
         return self.status()
 
+    async def _light_stop(self) -> None:
+        if self.light_stop is not None:
+            try:
+                await self.light_stop()
+            except Exception:
+                log.exception("alarm: station light stop")
+
     async def silence(self) -> AlarmStatus:
-        """Сирена и аварийка замолкают, охрана остаётся."""
+        """Сирена, аварийка и свет станции замолкают, охрана остаётся."""
         await self.siren.stop()
         await self.hazard.stop()
+        await self._light_stop()
         return self.status()
 
     async def sound_siren(self, source: str = "web") -> str | None:
@@ -1315,6 +1327,11 @@ class AlarmService:
             spawn(self.siren.start(cfg.siren_s), name="alarm-siren-start")
         if cfg.hazard.enabled:
             self.hazard.flash(cfg.hazard.seconds)
+        if self.light_flash is not None:  # свет Fossibot (fnav/core/power.py; включается в settings.power)
+            try:
+                self.light_flash(cfg.hazard.seconds)
+            except Exception:
+                log.exception("alarm: station light")
         if first:
             self._kick.set()  # новое состояние — серверу сразу
         try:

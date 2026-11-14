@@ -29,6 +29,7 @@ from fnav.core.games import GamesError
 from fnav.core.guests import MAX_TTL_S, MIN_TTL_S, GuestError, redact_settings
 from fnav.core.level import LevelError
 from fnav.core.marks import CLIP_RE, CLIPS_DIR
+from fnav.core.power import PowerError
 from fnav.core.radio import GENRES, RadioError
 from fnav.core.recordings import (
     RecordingError,
@@ -41,7 +42,7 @@ from fnav.core.recordings import (
 from fnav.core.runtime import REMOTE_TELEMETRY_EVERY, Core, CoreOptions
 from fnav.core.system import SystemError_
 from fnav.core.tiles import TileError
-from fnav.models import RadioStation, Settings
+from fnav.models import PowerControl, RadioStation, Settings
 
 log = logging.getLogger("fnav.core.app")
 
@@ -845,6 +846,15 @@ def _register_bluetooth(app: FastAPI, core: Core) -> None:
     async def power_status():
         """Электростанции по BLE (docs/contracts/power.md): подключение и все показания."""
         return core.power.status().model_dump()
+
+    @app.exception_handler(PowerError)
+    async def _power_err(_r: Request, e: PowerError):
+        return _err(e.status, e.detail)
+
+    @app.post("/api/power/{slot}/control")
+    async def power_control(slot: str, body: PowerControl):
+        """Команда станции — только по слайдеру в веб-интерфейсе (docs/contracts/power.md «Управление»)."""
+        return (await core.power.control(slot, body)).model_dump()
 
     @app.post("/api/bluetooth/power")
     async def bt_power(body: PowerBody):

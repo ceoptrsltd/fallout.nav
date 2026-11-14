@@ -203,3 +203,123 @@ async def test_a_station_in_range_keeps_being_retried_in_bursts(fast, monkeypatc
         assert ScriptLink.tries == 50
     finally:
         await r.stop()
+
+
+# ── команды (только на имитации: ScriptLink записывает, что ушло бы станции) ──
+
+class RecLink(ScriptLink):
+    def __init__(self, proto, mac, cb) -> None:
+        super().__init__(proto, 1, mac, cb)
+        self.sent: list[tuple[str, bytes, bool]] = []
+
+    async def write(self, uuid, data, response=False) -> None:
+        self.sent.append((uuid, bytes(data), response))
+        await super().write(uuid, data, response)
+
+
+async def _service_with_links(fast):
+    from fnav.models import PowerControl  # noqa: F401 — проверка импорта
+
+    s = PowerSettings()
+    svc = pw.PowerService(lambda: s)
+    links = {}
+    for r, proto in ((svc.main, pw.FOSSIBOT), (svc.second, pw.DALY), (svc.third, pw.LEAD)):
+        def make(mac, cb, proto=proto, slot=r.slot):
+            links[slot] = RecLink(proto, mac, cb)
+            return links[slot]
+        r.link_factory = make
+    await svc.start()
+    await _until(lambda: all(r.fresh() is not None for r in (svc.main, svc.second, svc.third)))
+    return svc, links
+
+
+def _commands(link, proto):
+    return [d for u, d, _ in link.sent if d != proto.request]
+
+
+async def test_commands_send_exactly_the_documented_frames(fast):
+    from fnav.models import PowerControl
+
+    svc, links = await _service_with_links(fast)
+    try:
+        await svc.control("main", PowerControl(output="ac", on=True))
+        await svc.control("second", PowerControl(output="charge", on=False))
+        await svc.control("second", PowerControl(output="discharge", on=True))
+        await svc.control("third", PowerControl(output="charger", mode="auto"))
+        assert _commands(links["main"], pw.FOSSIBOT) == [bytes.fromhex("11 06 00 1A 00 01 5D 6B")]
+        assert links["main"].sent[-1][2] is True  # Fossibot: запись с подтверждением, как чтение
+        # Daly: кадры из перехвата приложения Daly (batmon-ha #356)
+        assert _commands(links["second"], pw.DALY) == [bytes.fromhex("D2 06 00 A5 00 00 8A 4A"),
+                                                        bytes.fromhex("D2 06 00 A6 00 01 BB 8A")]
+        assert _commands(links["third"], pw.LEAD) == [b"\x10"]
+    finally:
+        await svc.stop()
+
+
+async def test_anything_else_is_refused(fast):
+    from fnav.models import PowerControl
+
+    svc, links = await _service_with_links(fast)
+    try:
+        for slot, cmd in (("main", PowerControl(output="charge", on=True)),  # у Fossibot нет MOSFET
+                          ("second", PowerControl(output="ac", on=True)),
+                          ("third", PowerControl(output="charger", on=True)),  # у свинцового — режим, не on
+                          ("main", PowerControl(output="ac"))):
+            with pytest.raises(pw.PowerError) as e:
+                await svc.control(slot, cmd)
+            assert e.value.status == 422
+        with pytest.raises(pw.PowerError) as e:
+            await svc.control("fourth", PowerControl(output="ac", on=True))
+        assert e.value.status == 404
+        await svc.second.stop()
+        with pytest.raises(pw.PowerError) as e:
+            await svc.control("second", PowerControl(output="charge", on=True))
+        assert e.value.status == 409
+        assert all(_commands(links[k], p) == [] for k, p in (("main", pw.FOSSIBOT), ("third", pw.LEAD)))
+    finally:
+        await svc.stop()
+
+
+async def test_alarm_flashes_the_light_and_puts_it_back(fast, monkeypatch):
+    monkeypatch.setattr(pw, "LIGHT_BLINK_S", 0.02)
+    svc, links = await _service_with_links(fast)
+    try:
+        svc.flash_light(0.1)
+        await asyncio.sleep(0.2)
+        light = [d for d in _commands(links["main"], pw.FOSSIBOT)]
+        on, off = fossibot.output_request("light", True), fossibot.output_request("light", False)
+        assert len(light) >= 4 and set(light) == {on, off}
+        assert light[0] == on and light[-1] == off  # был выключен — выключен и остался
+        links["main"].sent.clear()
+        svc.flash_light(5)
+        await asyncio.sleep(0.05)
+        await svc.stop_light()  # охрану сняли
+        assert _commands(links["main"], pw.FOSSIBOT)[-1] == off
+        n = len(links["main"].sent)
+        await asyncio.sleep(0.1)
+        assert len(links["main"].sent) == n  # больше не мигает
+        s2 = PowerSettings(light_on_alarm=False)
+        svc.get_settings = lambda: s2
+        svc.flash_light(5)
+        assert svc._light_task is None or svc._light_task.done()
+    finally:
+        await svc.stop()
+
+
+def test_readings_carry_the_switch_states():
+    r = daly.parse(daly_frame({40: 208, 49: 6, 52: 0, 53: 1, 54: 0}))
+    assert r.charge_on is True and r.discharge_on is False and r.balancing is False
+    st = pw.StationReader("second", pw.DALY)
+    st.reading, st.read_at = daly.parse(daly_frame({40: 208, 42: 500, 49: 6, 56: 60})), st.mono()
+    assert (st.slot_view().cell_delta_mv, st.slot_view().cell_delta_bad) == (60, False)
+    st.reading = daly.parse(daly_frame({40: 208, 42: 500, 49: 6, 56: 140}))
+    assert st.slot_view().cell_delta_bad
+    body = bytearray(pw.fake_fossibot(80.0))
+    body[6 + 2 * 41:8 + 2 * 41] = (0x0AA4).to_bytes(2, "big")  # как на нашей станции: AC и USB
+    c = daly.crc16(bytes(body[:-2]))
+    body[-2:] = bytes([c >> 8, c & 0xFF])
+    f = fossibot.parse(bytes(body))
+    assert f.outputs == {"usb": True, "dc": False, "ac": True, "light": False}
+    from fnav.core import leadbatt
+    assert leadbatt.parse(leadbatt.frame(12.6, 0, 0b1010)).mode == "off"
+    assert leadbatt.parse(leadbatt.frame(12.6, 14, 0b0111)).mode == "on"

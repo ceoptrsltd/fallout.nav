@@ -12,6 +12,7 @@ import { alarmStateText, armLeft, kindInfo } from "../alarm-fmt.js";
 import { recLink } from "../rec-play.js";
 import { eventThumb } from "../snap-view.js";
 import { installEntry } from "../install.js";
+import { powerControls } from "../power-controls.js";
 import {
   EVENTS_N, ACT_COOL_MS, pollDelay, alarmLive, alarmActions, actCooldown, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
   recentEvents, recentKey, eventExtras, eventCamera, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
@@ -393,19 +394,26 @@ export function mount(root) {
     const unit = h("span.db-pw-unit");
     const bar = withBar ? h(".db-batt", null, h("i")) : null;
     const sub = h(".db-ts");
+    const cells = h(".db-ts", { hidden: true });
     const note = h(".db-ts");
-    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit), bar, sub, note), big, unit, bar, sub, note };
+    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit), bar, sub, cells, note), big, unit, bar, sub, cells, note };
   };
   const pwMain = pwCol("Fossibot", true);
   const pwSecond = pwCol("Powerbank", false);
   const pwThird = pwCol("Lead battery", false);
-  const pwTile = tile("#/bluetooth", "bolt", "Power", h(".db-power", null, pwMain.el, pwSecond.el, pwThird.el));
-  pwTile.classList.add("wide");
+  // the top links to the Bluetooth page; the switches below work right here (slide-to-switch, power-controls.js)
+  const pwCtl = powerControls();
+  const pwTile = h(".db-tile.wide", null,
+    h("a.db-rtop", { href: "#/bluetooth" },
+      h(".db-tl", null, icon("bolt"), h("span", null, "Power"), h("span.db-go", null, "›")),
+      h(".db-power", null, pwMain.el, pwSecond.el, pwThird.el)),
+    pwCtl);
   pwTile.hidden = true;
   function renderPower(t) {
     const pi = powerInfo(t.power);
     pwTile.hidden = !pi;
     if (!pi) return;
+    pwCtl.render(store.online ? t.power : null); // offline: switches greyed out
     for (const [c, x] of [[pwMain, pi.main], [pwSecond, pi.second], [pwThird, pi.third]]) {
       put(c.big, x.big);
       put(c.unit, x.unit);
@@ -414,6 +422,9 @@ export function mount(root) {
       put(c.note, x.note || "");
       cls(c.note, "db-ts " + kindCls(x.noteKind) + (x.charging ? " db-charging" : ""));
       c.note.hidden = !x.note;
+      put(c.cells, x.cells || "");
+      c.cells.hidden = !x.cells;
+      cls(c.cells, "db-ts" + (x.cellsBad ? " red db-blink" : ""));
       if (c.bar) {
         c.bar.className = "db-batt " + kindCls(x.kind);
         c.bar.firstChild.style.width = x.frac === null ? "0%" : `${Math.round(x.frac * 100)}%`;

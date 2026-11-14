@@ -498,10 +498,13 @@ def build_telemetry() -> dict:
     out["alarm"] = alarm.compact()  # alarm.md §4
     out["level"] = level.compact()  # level.md
     soc = round(80 + 10 * math.sin(t / 600), 1)  # power.md: Fossibot slowly discharging, the Daly powerbank low
+    lead_on = MOCK_POWER["mode"] == "on" or (MOCK_POWER["mode"] == "auto" and MOCK_POWER["input"])
     out["power"] = {"main": {"soc_pct": soc, "charging": False, "low": soc <= 20, "input_w": 0, "output_w": 156,
-                             "to_empty_min": 1000},
-                    "second": {"soc_pct": 9.0, "voltage_v": 20.8, "low": True},
-                    "third": {"soc_pct": 78.5, "voltage_v": 12.48, "charging": False, "low": False}}
+                             "to_empty_min": 1000, "outputs": dict(MOCK_POWER["main"])},
+                    "second": {"soc_pct": 9.0, "voltage_v": 20.8, "low": True, "cell_delta_mv": 60, "cell_delta_bad": False,
+                               "outputs": dict(MOCK_POWER["second"])},
+                    "third": {"soc_pct": 78.5, "voltage_v": 12.48, "charging": lead_on, "low": False,
+                              "outputs": {"charger": lead_on}, "charger_mode": MOCK_POWER["mode"]}}
     return out
 
 
@@ -1283,6 +1286,24 @@ def _bt_guard(mac: str | None = None):
 @app.get("/api/bluetooth/state")
 async def bt_state():
     return bt.state()
+
+
+# power.md «Управление»: the mock just flips its own state (no devices here)
+MOCK_POWER = {"main": {"usb": True, "dc": False, "ac": True, "light": False},
+              "second": {"charge": True, "discharge": True}, "mode": "auto", "input": False}
+
+
+@app.post("/api/power/{slot}/control")
+async def power_control(slot: str, request: Request):
+    b = await request.json()
+    out = b.get("output")
+    if slot in ("main", "second") and out in MOCK_POWER[slot] and isinstance(b.get("on"), bool):
+        MOCK_POWER[slot][out] = b["on"]
+    elif slot == "third" and out == "charger" and b.get("mode") in ("auto", "on", "off"):
+        MOCK_POWER["mode"] = b["mode"]
+    else:
+        return err(422, f"{out} cannot be switched on this station")
+    return await power_status()
 
 
 @app.get("/api/power")
