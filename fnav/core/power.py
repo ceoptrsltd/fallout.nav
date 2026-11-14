@@ -191,8 +191,9 @@ class StationReader:
         if r is None:
             return PowerSlot()
         soc = float(r.soc_pct)
-        return PowerSlot(soc_pct=soc, voltage_v=getattr(r, "voltage_v", None),
-                         charging=getattr(r, "charging", None), low=soc <= LOW_SOC_PCT)
+        return PowerSlot(soc_pct=soc, voltage_v=getattr(r, "voltage_v", None), charging=getattr(r, "charging", None),
+                         low=soc <= LOW_SOC_PCT, input_w=getattr(r, "input_w", None),
+                         output_w=getattr(r, "output_w", None), to_empty_min=getattr(r, "to_empty_min", None))
 
     def status(self) -> PowerStationStatus:
         age = None if self.read_at is None else round(self.mono() - self.read_at, 1)
@@ -286,9 +287,8 @@ class PowerService:
         await self.main.stop()
         await self.second.stop()
 
-    def telemetry(self) -> PowerTelemetry | None:
-        if not self.get_settings().show_on_screen:
-            return None
+    def telemetry(self) -> PowerTelemetry:
+        """Всегда (веб-интерфейс); плашку на экране прячет сам экран по power.show_on_screen."""
         return PowerTelemetry(main=self.main.slot_view(), second=self.second.slot_view())
 
     def status(self) -> PowerStatus:

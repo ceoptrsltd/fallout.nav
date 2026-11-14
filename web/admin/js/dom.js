@@ -90,6 +90,7 @@ const ICONS = {
   // siren: dome with a highlight, base, three rays
   alarm: "M4 18h16v3H4v-3zm2-1v-5a6 6 0 0 1 12 0v5H6zm3-4.5h1.5a1.5 1.5 0 0 1 1.5-1.5V9.5a3 3 0 0 0-3 3zM11 1h2v3h-2V1zM3.5 4.9l1.4-1.4L7 5.6 5.6 7 3.5 4.9zm17 0L18.4 7 17 5.6l2.1-2.1 1.4 1.4z",
   // spirit level: bar with a window and the bubble in it
+  bolt: "M13 2 4 14h6l-1 8 9-12h-6l1-8z",
   level: "M3 8h18a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2zm5 2v4h8v-4H8zm4 .6a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8z",
   // hazard lights: triangle ring with a small triangle inside
   hazard: "M12 2 1 21h22L12 2zm0 4.5L19.4 19H4.6L12 6.5zm0 4-3.5 6h7l-3.5-6z",

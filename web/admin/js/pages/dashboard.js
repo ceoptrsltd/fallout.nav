@@ -1,5 +1,5 @@
 // Dashboard: the alarm first (state, Arm / Disarm / Stop siren & lights, camera watch, problems), the latest alarm
-// events, then the van at a glance (position, camera, quick actions, system, level, radio). Live data from telemetry;
+// events, then the van at a glance (position, camera, quick actions, system, level, power stations, radio). Live data from telemetry;
 // api/alarm (camera watch, events) is polled slowly and fetched at once on a new event (telemetry alarm.seq) or state
 // change. Device unreachable: the last known data (this session's, or kept in localStorage — store.js keep) greyed out
 // with "Last seen …"; remotely the position may come from the server's journal (api/tracking/last).
@@ -16,7 +16,7 @@ import {
   EVENTS_N, ACT_COOL_MS, pollDelay, alarmLive, alarmActions, actCooldown, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
   recentEvents, recentKey, eventExtras, eventCamera, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
-  nextVolume, VOL_STEP,
+  nextVolume, VOL_STEP, powerInfo,
   newerAlarm, serverPos, videoAction, SCREEN_MODES, screenNowText, quickConfirm, protectedText,
 } from "../dash-fmt.js";
 
@@ -387,6 +387,40 @@ export function mount(root) {
   const lvTile = tile("#/level", "level", "Level", lvV, lvSub, lvNote);
   lvTile.hidden = true;
 
+  // power stations (docs/contracts/power.md): the main one's charge with a gauge, the other two in volts
+  const pwCol = (label, withBar) => {
+    const big = h("span.db-pw-big", null, "—");
+    const unit = h("span.db-pw-unit");
+    const bar = withBar ? h(".db-batt", null, h("i")) : null;
+    const sub = h(".db-ts");
+    const note = h(".db-ts");
+    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit), bar, sub, note), big, unit, bar, sub, note };
+  };
+  const pwMain = pwCol("Fossibot", true);
+  const pwSecond = pwCol("Powerbank", false);
+  const pwThird = pwCol("Station 3", false);
+  const pwTile = tile("#/bluetooth", "bolt", "Power", h(".db-power", null, pwMain.el, pwSecond.el, pwThird.el));
+  pwTile.classList.add("wide");
+  pwTile.hidden = true;
+  function renderPower(t) {
+    const pi = powerInfo(t.power);
+    pwTile.hidden = !pi;
+    if (!pi) return;
+    for (const [c, x] of [[pwMain, pi.main], [pwSecond, pi.second], [pwThird, pi.third]]) {
+      put(c.big, x.big);
+      put(c.unit, x.unit);
+      cls(c.big, "db-pw-big " + kindCls(x.kind));
+      put(c.sub, x.sub);
+      put(c.note, x.note || "");
+      cls(c.note, "db-ts " + kindCls(x.noteKind));
+      c.note.hidden = !x.note;
+      if (c.bar) {
+        c.bar.className = "db-batt " + kindCls(x.kind);
+        c.bar.firstChild.style.width = x.frac === null ? "0%" : `${Math.round(x.frac * 100)}%`;
+      }
+    }
+  }
+
   // radio: the top links to the Radio page, the buttons control it right here
   const eq = h(".eq.sm", { "aria-hidden": "true" }, h("i"), h("i"), h("i"), h("i"), h("i"));
   const rTitle = h("span.db-station");
@@ -584,7 +618,7 @@ export function mount(root) {
     put(modeNow, t ? screenNowText(t.display) : "");
   }
 
-  const tiles = h(".db-tiles", null, posTile, camTile, quickTile, sysTile, lvTile, radioTile);
+  const tiles = h(".db-tiles", null, posTile, camTile, quickTile, sysTile, lvTile, pwTile, radioTile);
   const install = installEntry("button.db-install", "Install app"); // hides itself in the installed app
   const van = h(".db-van", null, seenEl, errBox, tiles, h(".db-foot", null, install));
 
@@ -671,6 +705,7 @@ export function mount(root) {
       lvNote.hidden = !lv.note;
     }
 
+    renderPower(t);
     renderRadio(false);
 
     const errs = Array.isArray(t.errors) ? t.errors : [];

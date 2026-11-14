@@ -1,10 +1,11 @@
 // Электростанции — плашка справа внизу (docs/contracts/power.md, docs/contracts/display.md).
-// Данные — state.telemetry.power = {main, second, third: {soc_pct, voltage_v, charging, low}} | null (плашка выключена).
+// Данные — state.telemetry.power = {main, second, third: {soc_pct, voltage_v, charging, low, …}}; плашку выключает
+// настройка power.show_on_screen.
 // Слева крупно заряд главной станции, %; справа две строки — напряжения второй и третьей, выровнены по десятичной
 // точке; черта — посередине между ними. Нет данных — прочерки; заряд ≤ 20 % (low) — значение мигает; главная
 // заряжается — молния под знаком %. Ширина постоянная (по самым широким значениям) — соседи не «дышат».
 
-import { C, blinkOn, blit, fontNum, outlinedText, plateSprite, spriteGeneration, textWidth } from "./theme.js";
+import { C, blinkOn, blit, fontNum, outlinedText, plateSprite, setting, spriteGeneration, textWidth } from "./theme.js";
 
 export const POWER_H = 84; // как плашка радио/погоды (ui/radio.js RADIO_H): две строки индикаторов + поля
 const PAD = 16;
@@ -16,9 +17,9 @@ const VU = () => fontNum(20, 600);
 const PCT_COL = 16; // место под «%» и молнию
 const SEP = 2;
 
-/** Плашка на экране: есть telemetry.power (её выключают в настройках power.show_on_screen). */
+/** Плашка на экране: есть telemetry.power и не выключена в настройках (power.show_on_screen). */
 export function powerVisible(state) {
-  return !!state?.telemetry?.power;
+  return !!state?.telemetry?.power && setting(state, "power.show_on_screen", true) !== false;
 }
 
 /** «91» (из 91.3), нет данных — «--». */

@@ -49,7 +49,9 @@ test("power: values and dashes", () => {
   assert.equal(Math.round(r.x + r.w), Math.round(SAFE.x + SAFE.w));
   const t = texts(ctx);
   for (const s of ["91", "%", "20", ".8", "--", ".-"]) assert.ok(t.includes(s), `${s} in ${t}`);
-  assert.equal(drawPower(recCtx(), { telemetry: { power: null } }, SAFE), null, "switched off in the settings");
+  assert.equal(drawPower(recCtx(), { telemetry: { power: null } }, SAFE), null, "no data");
+  const off = { telemetry: { power }, settings: { power: { show_on_screen: false } } };
+  assert.equal(drawPower(recCtx(), off, SAFE), null, "switched off in the settings");
 });
 
 test("power: low charge blinks", () => {

@@ -358,6 +358,41 @@ export function levelInfo(l) {
   };
 }
 
+/** «16 h 40 min», «45 min». */
+export function fmtHm(min) {
+  if (!num(min) || min <= 0) return "";
+  const m = Math.round(min);
+  return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min` : `${m} min`;
+}
+
+const socKind = (soc) => (!num(soc) ? "" : soc <= 20 ? "bad" : soc <= 40 ? "warn" : "ok");
+
+/**
+ * Power tile (docs/contracts/power.md): telemetry.power → {main, second, third}. main: {big, unit, frac (0…1 | null),
+ * kind, sub, note, noteKind}; second/third: {big, unit, kind, sub}. null — no power data at all (older device).
+ */
+export function powerInfo(p) {
+  if (!p || typeof p !== "object") return null;
+  const m = p.main || {};
+  const soc = num(m.soc_pct) ? m.soc_pct : null;
+  const watts = num(m.input_w) || num(m.output_w);
+  const main = {
+    big: soc === null ? "—" : String(Math.round(soc)), unit: soc === null ? "" : "%",
+    frac: soc === null ? null : Math.max(0, Math.min(1, soc / 100)), kind: socKind(soc),
+    sub: soc === null ? "no data" : watts ? `In ${m.input_w ?? 0} W · Out ${m.output_w ?? 0} W` : "",
+    note: soc === null ? "" : m.charging ? "charging" : fmtHm(m.to_empty_min) ? `≈ ${fmtHm(m.to_empty_min)} left` : "",
+    noteKind: m.charging ? "ok" : "",
+  };
+  const volt = (x) => {
+    const v = x && num(x.voltage_v) ? x.voltage_v : null;
+    return {
+      big: v === null ? "—" : v.toFixed(1), unit: v === null ? "" : "V", kind: v === null ? "" : socKind(x.soc_pct),
+      sub: v === null ? "no data" : num(x.soc_pct) ? `BMS ${Math.round(x.soc_pct)} %` : "",
+    };
+  };
+  return { main, second: volt(p.second), third: volt(p.third) };
+}
+
 const RADIO_ACTIVE = new Set(["playing", "connecting", "waiting_output"]);
 
 /** Radio tile: {active, playing, title, off, line, lineKind, canPlay, volume}. */

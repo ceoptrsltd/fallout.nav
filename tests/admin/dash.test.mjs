@@ -274,3 +274,21 @@ test("hazard banner word: the car screen's words", async () => {
   assert.equal(bannerWord("test"), "ALARM");
   assert.equal(bannerWord(undefined), "ALARM");
 });
+
+test("power tile: main charge with a gauge, the others in volts, dashes without data", async () => {
+  const { powerInfo, fmtHm } = await import("../../web/admin/js/dash-fmt.js");
+  assert.equal(powerInfo(undefined), null);
+  const p = powerInfo({
+    main: { soc_pct: 87.4, input_w: 0, output_w: 156, to_empty_min: 1000, charging: false },
+    second: { voltage_v: 20.84, soc_pct: 9 },
+    third: {},
+  });
+  assert.deepEqual([p.main.big, p.main.unit, p.main.kind, p.main.sub, p.main.note], ["87", "%", "ok", "In 0 W · Out 156 W", "≈ 16 h 40 min left"]);
+  assert.ok(Math.abs(p.main.frac - 0.874) < 1e-9);
+  assert.deepEqual([p.second.big, p.second.unit, p.second.kind, p.second.sub], ["20.8", "V", "bad", "BMS 9 %"]);
+  assert.deepEqual([p.third.big, p.third.sub], ["—", "no data"]);
+  const c = powerInfo({ main: { soc_pct: 35, input_w: 350, output_w: 20, charging: true }, second: {}, third: {} });
+  assert.deepEqual([c.main.kind, c.main.note, c.main.noteKind], ["warn", "charging", "ok"]);
+  assert.equal(fmtHm(45), "45 min");
+  assert.equal(fmtHm(0), "");
+});

@@ -497,6 +497,10 @@ def build_telemetry() -> dict:
     out["radio"] = radio.compact()  # radio.md §5 (added as a dict: the model may not have the field yet)
     out["alarm"] = alarm.compact()  # alarm.md §4
     out["level"] = level.compact()  # level.md
+    soc = round(80 + 10 * math.sin(t / 600), 1)  # power.md: Fossibot slowly discharging, the Daly powerbank low
+    out["power"] = {"main": {"soc_pct": soc, "charging": False, "low": soc <= 20, "input_w": 0, "output_w": 156,
+                             "to_empty_min": 1000},
+                    "second": {"soc_pct": 9.0, "voltage_v": 20.8, "low": True}, "third": {}}
     return out
 
 

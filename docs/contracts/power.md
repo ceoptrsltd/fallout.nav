@@ -15,7 +15,7 @@
 
 | Поле | По умолчанию | |
 |---|---|---|
-| `show_on_screen` | `true` | плашка на экране; выключена — `telemetry.power = null`, радио/погода шире |
+| `show_on_screen` | `true` | плашка на экране; выключена — радио/погода шире (телеметрия идёт всё равно) |
 | `main_mac` | `70:AF:09:06:E9:1A` | Fossibot; `""` — не опрашивать |
 | `second_mac` | `74:C1:4E:10:00:9B` | Daly BMS; `""` — не опрашивать |
 
@@ -23,7 +23,8 @@
 
 ## Данные
 
-- `telemetry.power` = `{main, second, third}`, каждый `{soc_pct, voltage_v, charging, low}` (`null` — нет данных).
+- `telemetry.power` = `{main, second, third}`, каждый `{soc_pct, voltage_v, charging, low, input_w, output_w,
+  to_empty_min}` (`null` — нет данных; ватты и время — только у Fossibot). Плитка «Power» на Dashboard — по ней.
 - `GET /api/power` → `{stations: [{slot, kind, mac, connected, age_s, error, reading}]}`; `reading` — все поля
   `FossibotReading` / `DalyReading` (вход/выход, Вт; ячейки, температуры…).
 

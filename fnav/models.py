@@ -447,7 +447,7 @@ class PowerSettings(_Model):
     """Электростанции на экране (docs/contracts/power.md): по Bluetooth LE, только чтение. Пустой адрес — не
     опрашивать (на экране прочерки). Третья станция (нижняя строка) — пока заглушка."""
 
-    show_on_screen: bool = True  # плашка справа внизу
+    show_on_screen: bool = True  # плашка справа внизу (телеметрия идёт и без неё — для веб-интерфейса)
     main_mac: str = "70:AF:09:06:E9:1A"  # главная — Fossibot F3600 Pro («POWER-0201»): заряд, % крупно
     second_mac: str = "74:C1:4E:10:00:9B"  # вторая — Daly BMS («Tattu powerbank»): напряжение, верхняя строка
 
@@ -911,6 +911,9 @@ class PowerSlot(_Model):
     voltage_v: float | None = None
     charging: bool | None = None
     low: bool = False  # заряд ≤ 20 % — на экране мигает
+    input_w: int | None = None  # Fossibot: вход (сеть + солнце/авто), Вт
+    output_w: int | None = None  # Fossibot: выход всего, Вт
+    to_empty_min: int | None = None  # Fossibot: до разряда, мин (по его оценке)
 
 
 class PowerTelemetry(_Model):
@@ -951,5 +954,5 @@ class Telemetry(_Model):
     speed_limit: SpeedLimit | None = None
     alarm: AlarmTelemetry | None = None
     level: LevelTelemetry | None = None
-    power: PowerTelemetry | None = None  # None — плашка станций выключена (power.show_on_screen)
+    power: PowerTelemetry | None = None  # электростанции (docs/contracts/power.md)
     errors: list[str] = []

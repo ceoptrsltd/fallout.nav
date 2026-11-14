@@ -144,12 +144,13 @@ async def test_no_connect_while_the_rear_view_is_on_and_stale_readings_vanish(fa
         await r.stop()
 
 
-def test_low_charge_and_hidden_widget():
+def test_low_charge_and_main_station_details():
     s = PowerSettings(show_on_screen=False)
     svc = pw.PowerService(lambda: s)
-    assert svc.telemetry() is None
+    assert svc.telemetry().main.soc_pct is None  # телеметрия идёт и без плашки на экране
     r = svc.main
     r.reading, r.read_at = fossibot.parse(pw.fake_fossibot(15.0)), r.mono()
-    assert r.slot_view().low and r.slot_view().soc_pct == 15.0
+    v = r.slot_view()
+    assert v.low and v.soc_pct == 15.0 and v.output_w == 150 and v.to_empty_min == 960 and v.input_w == 0
     with pytest.raises(ValueError):
         PowerSettings(main_mac="nope")
