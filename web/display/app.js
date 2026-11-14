@@ -130,10 +130,11 @@ const KIOSK = !DEMO && !REMOTE && !PREVIEW;
 const ALIVE_S = 10;
 let aliveAt = -Infinity;
 let mapDirty = true;
-// экран «на охране» (map/standby.js, ui/standby.js): вместо кадров по rAF — таймер раз в секунду
+// экран «на охране» (map/standby.js, ui/standby.js): бегущая строка — кадры по rAF (с ?fps=), иначе таймер раз в секунду
 let standby = false;
 let rafId = 0;
 let standbyTimer = null;
+let standbyAt = -Infinity; // время последнего кадра «на охране», с
 const HUD_REFRESH_S = 2; // страховка: HUD проигрывается не реже (map/retained.js)
 
 const STUB_TELEMETRY = {
@@ -595,8 +596,9 @@ function drawDebug(lines) {
 }
 
 // ───────────── экран «на охране» ─────────────
-// Пока охрана в состоянии armed (map/standby.js): ни карты, ни тайлов, ни ветра, ни камеры, ни геймпада;
-// вместо rAF — таймер раз в секунду, HUD-холст проигрывается, только когда сменилась минута.
+// Пока охрана в состоянии armed (map/standby.js): ни карты, ни тайлов, ни ветра, ни камеры, ни геймпада.
+// drawStandby вернул animated (бегущая строка) — кадры по rAF не чаще ?fps=; иначе таймер раз в секунду,
+// HUD-холст проигрывается, только когда сменилась минута.
 
 function loop(tms) {
   rafId = 0;
@@ -610,6 +612,11 @@ function loop(tms) {
 
 function standbyFrame() {
   const t = nowS();
+  if (standby && FPS_CAP && t - standbyAt < 1 / FPS_CAP - 0.004) {
+    rafId = requestAnimationFrame(loop);
+    return;
+  }
+  standbyAt = t;
   if (!standby) {
     standby = true;
     camera.suspend(true);
@@ -629,8 +636,9 @@ function standbyFrame() {
   lastState = state;
   const rec = hudLayer.begin();
   rec.setTransform(PR, 0, 0, PR, 0, 0);
+  let animated = false;
   if (ui.drawStandby) {
-    callUi("drawStandby", rec, state);
+    animated = callUi("drawStandby", rec, state)?.animated === true;
   } else {
     rec.fillStyle = "#000";
     rec.fillRect(0, 0, W, H);
@@ -638,6 +646,11 @@ function standbyFrame() {
   hudLayer.end(t, FULL, PR);
   if (DEBUG) drawDebug([`standby (alarm armed)  ui ${uiName}`, layerStats()]);
   clearTimeout(standbyTimer);
+  standbyTimer = null;
+  if (animated) {
+    rafId = requestAnimationFrame(loop);
+    return;
+  }
   standbyTimer = setTimeout(() => {
     standbyTimer = null;
     if (!rafId) rafId = requestAnimationFrame(loop);
