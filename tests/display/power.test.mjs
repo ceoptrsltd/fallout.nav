@@ -37,6 +37,7 @@ const fills = (ctx, text) => {
 
 test("power: values and dashes", () => {
   assert.equal(socText({ soc_pct: 91.3 }), "91");
+  assert.equal(socText({ soc_pct: 83.5 }), "83", "the whole part, as the station shows it");
   assert.equal(socText({ soc_pct: 100 }), "100");
   assert.equal(socText(null), "--");
   assert.deepEqual(voltParts({ voltage_v: 20.84 }), ["20", ".8"]);

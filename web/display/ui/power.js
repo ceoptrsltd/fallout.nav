@@ -22,10 +22,10 @@ export function powerVisible(state) {
   return !!state?.telemetry?.power && setting(state, "power.show_on_screen", true) !== false;
 }
 
-/** «91» (из 91.3), нет данных — «--». */
+/** Целая часть, как на самой станции: «83» из 83.5 (не 84); нет данных — «--». */
 export function socText(slot) {
   const v = slot?.soc_pct;
-  return Number.isFinite(v) ? String(Math.max(0, Math.min(100, Math.round(v)))) : "--";
+  return Number.isFinite(v) ? String(Math.max(0, Math.min(100, Math.floor(v)))) : "--";
 }
 
 /** «20.8» → ["20", ".8"]; нет данных — ["--", ".-"]. */

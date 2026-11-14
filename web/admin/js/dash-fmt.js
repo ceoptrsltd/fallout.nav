@@ -377,7 +377,7 @@ export function powerInfo(p) {
   const soc = num(m.soc_pct) ? m.soc_pct : null;
   const watts = num(m.input_w) || num(m.output_w);
   const main = {
-    big: soc === null ? "—" : String(Math.round(soc)), unit: soc === null ? "" : "%",
+    big: soc === null ? "—" : String(Math.floor(soc)) /* as the station shows it: 83.5 → 83 */, unit: soc === null ? "" : "%",
     frac: soc === null ? null : Math.max(0, Math.min(1, soc / 100)), kind: socKind(soc),
     sub: soc === null ? "no data" : watts ? `In ${m.input_w ?? 0} W · Out ${m.output_w ?? 0} W` : "",
     note: soc === null ? "" : m.charging ? "charging" : fmtHm(m.to_empty_min) ? `≈ ${fmtHm(m.to_empty_min)} left` : "",
@@ -387,7 +387,7 @@ export function powerInfo(p) {
     const v = x && num(x.voltage_v) ? x.voltage_v : null;
     return {
       big: v === null ? "—" : v.toFixed(1), unit: v === null ? "" : "V", kind: v === null ? "" : socKind(x.soc_pct),
-      sub: v === null ? "no data" : num(x.soc_pct) ? `BMS ${Math.round(x.soc_pct)} %` : "",
+      sub: v === null ? "no data" : num(x.soc_pct) ? `BMS ${Math.floor(x.soc_pct)} %` : "",
     };
   };
   return { main, second: volt(p.second), third: volt(p.third) };

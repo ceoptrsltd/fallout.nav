@@ -280,7 +280,7 @@ test("power tile: main charge with a gauge, the others in volts, dashes without 
   assert.equal(powerInfo(undefined), null);
   const p = powerInfo({
     main: { soc_pct: 87.4, input_w: 0, output_w: 156, to_empty_min: 1000, charging: false },
-    second: { voltage_v: 20.84, soc_pct: 9 },
+    second: { voltage_v: 20.84, soc_pct: 9.9 },
     third: {},
   });
   assert.deepEqual([p.main.big, p.main.unit, p.main.kind, p.main.sub, p.main.note], ["87", "%", "ok", "In 0 W · Out 156 W", "≈ 16 h 40 min left"]);
