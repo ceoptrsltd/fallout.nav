@@ -4,6 +4,7 @@
 import { compassStyles, drawHud, drawTrail, drawVehicle, loadUi } from "./index.js";
 import { canvasScale, getPxPerMm, onPxPerMmChange, renderCalibrator } from "./physical.js";
 import { drawVehicleScaled } from "./vehicle.js";
+import { drawStandby } from "./standby.js";
 
 const W = 768;
 const H = 576;
@@ -514,6 +515,25 @@ function renderMain(v, now) {
   }
 }
 
+/** Экран «на охране» (ui/standby.js): визитка хозяина, бегущая строка; часы — сейчас, сдвиг — по минутам. */
+function renderStandby(v, now) {
+  const wallMs = v.cfg.wallMs ?? Date.now();
+  drawStandby(v.g, {
+    now,
+    telemetry: { system: { utc_offset_min: -new Date(wallMs).getTimezoneOffset(), time_synced: true } },
+    view: { wallMs },
+    canvas: { w: W, h: H },
+  });
+  if (v.cfg.safeGuide) {
+    v.g.save();
+    v.g.setLineDash([6, 6]);
+    v.g.strokeStyle = "rgba(255,255,255,.35)";
+    v.g.lineWidth = 1;
+    v.g.strokeRect(SAFE.x, SAFE.y, SAFE.w, SAFE.h);
+    v.g.restore();
+  }
+}
+
 function renderVehicleCloseup(v, now) {
   const { g } = v;
   g.fillStyle = tex.satPat;
@@ -560,6 +580,7 @@ function frame(ts) {
   for (const v of views) {
     if (v.cfg.kind === "closeup") renderVehicleCloseup(v, now);
     else if (v.cfg.kind === "life") renderVehicleLife(v, now);
+    else if (v.cfg.kind === "standby") renderStandby(v, now);
     else renderMain(v, now);
   }
   if (now - perf.shown > 1 && perf.n) {
@@ -604,6 +625,9 @@ async function main() {
 
   const ah = document.getElementById("alarm");
   for (const [cfg, cap] of ALARM_VIEWS) addView(ah, { style: "v1", orient: "heading_up", cond: "ok", ...cfg }, cap);
+  const sb = document.getElementById("standby");
+  addView(sb, { kind: "standby" }, "<b>Alarm on</b> (armed): owner's logo and phone, the marquee runs continuously; the picture shifts every minute");
+  addView(sb, { kind: "standby", safeGuide: true, wallMs: Date.UTC(2026, 10, 14, 22, 4) }, "<b>Largest shift</b> (−26 px, +16 px) with the 5% safe area (dashed)");
   const lh = document.getElementById("level");
   for (const [cfg, cap] of LEVEL_VIEWS) addView(lh, { style: "v1", orient: "heading_up", cond: "ok", ...cfg }, cap);
 
