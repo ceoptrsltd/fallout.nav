@@ -3,7 +3,7 @@
 Главная — Fossibot (fnav/core/fossibot.py): заряд, % — на экране крупно. Вторая — Daly BMS (fnav/core/daly.py):
 напряжение — верхняя строка. Третья — пока заглушка (нижняя строка «--.-V»).
 
-Каждая станция — свой StationReader: держит постоянное подключение (fnav/core/ble.py) и раз в POLL_S читает
+Каждая станция — свой StationReader: держит постоянное подключение (fnav/core/ble.py) и раз в POLL_S (30 с) читает
 показания. Подключаются станции по очереди (общий connect_lock). Подключение LE у встроенного чипа Pi удаётся не с первого
 раза (ble.py), поэтому неудачи сначала
 повторяются часто (CONNECT_RETRY_S), а если станции так и нет (не нашлась в эфире или долго не подключается) —
@@ -30,11 +30,11 @@ from fnav.models import PowerSettings, PowerSlot, PowerStationStatus, PowerStatu
 
 log = logging.getLogger("fnav.core.power")
 
-POLL_S = 10.0
+POLL_S = 30.0  # чаще не нужно: радио общее с Wi-Fi и колонкой (A2DP)
 READ_TIMEOUT_S = 3.0  # ответ приходит за 0.1–0.3 с
 READ_TRIES = 3
 READ_FAILS_DROP = 3  # столько опросов подряд без ответа — переподключиться
-STALE_S = 60.0  # показания старше — на экране прочерк
+STALE_S = 100.0  # показания старше (три опроса подряд без ответа) — на экране прочерк
 LOW_SOC_PCT = 20.0
 CONNECT_RETRY_S = 2.0  # «le-connection-abort-by-local» — обычное дело: повторить сразу
 FAST_TRIES = 30  # столько быстрых попыток подряд (~1–1.5 мин), дальше — реже
