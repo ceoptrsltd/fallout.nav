@@ -191,3 +191,15 @@ async def test_stations_connect_one_at_a_time(fast):
         assert peak[0] == 1
     finally:
         await svc.stop()
+
+
+async def test_a_station_in_range_keeps_being_retried_in_bursts(fast, monkeypatch):
+    """«abort-by-local» бывает десятки раз подряд: станция в эфире — повторы сериями, без долгих пауз."""
+    monkeypatch.setattr(pw, "BURST_PAUSE_S", 0.05)
+    r = pw.StationReader("third", pw.LEAD, link_factory=lambda mac, cb: ScriptLink(pw.LEAD, 50, mac, cb))
+    await r.set_mac("10:BD:A3:B2:48:5A")
+    try:
+        await _until(lambda: r.fresh() is not None)
+        assert ScriptLink.tries == 50
+    finally:
+        await r.stop()

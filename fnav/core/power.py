@@ -36,8 +36,12 @@ READ_TRIES = 3
 READ_FAILS_DROP = 3  # столько опросов подряд без ответа — переподключиться
 STALE_S = 100.0  # показания старше (три опроса подряд без ответа) — на экране прочерк
 LOW_SOC_PCT = 20.0
-CONNECT_RETRY_S = 2.0  # «le-connection-abort-by-local» — обычное дело: повторить сразу
-FAST_TRIES = 30  # столько быстрых попыток подряд (~1–1.5 мин), дальше — реже
+# Станция в эфире, а подключение сорвалось («le-connection-abort-by-local» — частая случайность, бывает и 30 раз
+# подряд) — повторяем сериями: BURST_TRIES попыток через CONNECT_RETRY_S, пауза BURST_PAUSE_S, снова — пока не
+# получится. Станции нет в эфире («not found nearby»: поиск занимает радио) — всё реже, AWAY_BACKOFF_S.
+CONNECT_RETRY_S = 2.0
+BURST_TRIES = 20
+BURST_PAUSE_S = 30.0
 AWAY_BACKOFF_S = (30.0, 60.0, 120.0, 300.0)
 QUIET_POLL_S = 2.0
 # Подключаемся строго по одной станции: чип Pi устанавливает одно LE-подключение за раз, а одновременные попытки
@@ -149,6 +153,7 @@ class StationReader:
 
     async def _run(self) -> None:
         fails = 0
+        away = 0  # подряд «нет в эфире»
         while True:
             if self.quiet():
                 await asyncio.sleep(QUIET_POLL_S)
@@ -160,18 +165,23 @@ class StationReader:
             except Exception as e:  # noqa: BLE001 — BleError, нет dbus-fast, шина
                 fails += 1
                 self.error = str(e) or type(e).__name__
-                away = "not found" in self.error or fails >= FAST_TRIES
-                if away:
-                    delay = AWAY_BACKOFF_S[min(max(fails - FAST_TRIES, 0), len(AWAY_BACKOFF_S) - 1)]
-                    log.info("power: %s %s not connected (%s), next try in %.0f s", self.slot, self.mac,
-                             self.error, delay)
+                if "not found" in self.error:
+                    away += 1
+                    delay = AWAY_BACKOFF_S[min(away - 1, len(AWAY_BACKOFF_S) - 1)]
+                elif fails % BURST_TRIES == 0:
+                    away = 0
+                    delay = BURST_PAUSE_S
                 else:
+                    away = 0
                     delay = CONNECT_RETRY_S
+                if delay > CONNECT_RETRY_S:
+                    log.info("power: %s %s not connected after %d tries (%s), next try in %.0f s", self.slot,
+                             self.mac, fails, self.error, delay)
                 await asyncio.sleep(delay)
                 continue
             log.info("power: %s %s (%s) connected after %d failed tries", self.slot, self.mac, self.proto.kind,
                      fails)
-            fails = 0
+            fails = away = 0
             self.error = None
             read_fails = 0
             while self.connected:
