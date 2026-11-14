@@ -5,6 +5,7 @@ import { api, errText } from "../api.js";
 import { store, on, applySettings } from "../store.js";
 import { toast, banner, badge, switchEl, confirmDialog } from "../ui.js";
 import { rssiBars, btIconName, btName, sortDevices, splitDevices } from "../radio-fmt.js";
+import { powerCard } from "../power-card.js";
 
 const SCAN_S = 20;
 
@@ -206,6 +207,7 @@ export function mount(root) {
   const offSet = on("settings", renderSettings);
   renderSettings(store.settings);
 
+  const power = powerCard();
   root.append(
     h(".page-head", null, h("h1", null, "Bluetooth"), powerSw),
     unavail,
@@ -217,6 +219,7 @@ export function mount(root) {
     h(".card", null,
       h(".card-head", null, h("h2", null, "Devices"), scanBtn, h("button.btn.sm", { type: "button", title: "Refresh", onclick: () => load() }, icon("refresh"))),
       listBody),
+    power,
   );
 
   // seconds counters (busy, scan) without waiting for the next poll
@@ -228,5 +231,6 @@ export function mount(root) {
     clearTimeout(timer);
     clearInterval(tick);
     offSet();
+    power.cleanup();
   };
 }

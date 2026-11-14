@@ -1,9 +1,9 @@
-// HUD в тоннеле (счисление пути): DR в строке GPS вместо мигающего NO GPS, иконка тусклая, но не мигает.
+// HUD в тоннеле (счисление пути): DR на плашке спутников вместо мигающего NO GPS, иконка тусклая, но не мигает.
 import test from "node:test";
 import assert from "node:assert/strict";
 
 globalThis.OffscreenCanvas = undefined; // спрайты не нужны (null — blit пропускает)
-const { drawIndicators, drawWarnings } = await import("../../web/display/ui/status.js");
+const { drawSatsTag, drawWarnings } = await import("../../web/display/ui/status.js");
 const { vehicleAlpha } = await import("../../web/display/ui/vehicle.js");
 
 function recCtx() {
@@ -31,16 +31,16 @@ const state = (view, gps = { fix: "none", sats_visible: 9, sats_used: 0 }) => ({
   now: 12.3, telemetry: { gps }, view: { connected: true, ...view }, settings: {},
 });
 
-test("status: no fix — NO GPS warning and satellites; in a tunnel — DR in the GPS row, no NO GPS", () => {
+test("status: no fix — NO GPS warning and satellites; in a tunnel — DR on the satellites tag, no NO GPS", () => {
   let ctx = recCtx();
   drawWarnings(ctx, state({ hasFix: false }), SAFE, 40);
-  drawIndicators(ctx, state({ hasFix: false }), SAFE);
+  drawSatsTag(ctx, 600, 200, state({ hasFix: false }));
   assert.ok(texts(ctx).includes("NO GPS"));
   assert.ok(texts(ctx).includes("9/0"));
 
   ctx = recCtx();
   drawWarnings(ctx, state({ hasFix: false, deadReckoning: true }), SAFE, 40);
-  drawIndicators(ctx, state({ hasFix: false, deadReckoning: true }), SAFE);
+  drawSatsTag(ctx, 600, 200, state({ hasFix: false, deadReckoning: true }));
   assert.ok(!texts(ctx).includes("NO GPS"), "the tunnel does not flash a warning");
   assert.ok(texts(ctx).includes("DR"));
   assert.ok(!texts(ctx).includes("9/0"));
@@ -50,7 +50,7 @@ test("status: no fix — NO GPS warning and satellites; in a tunnel — DR in th
   assert.deepEqual(texts(ctx).filter((t) => t.startsWith("NO")), ["NO LINK"]);
 
   ctx = recCtx(); // фикс есть — флаг ни на что не влияет
-  drawIndicators(ctx, state({ hasFix: true, deadReckoning: true }, { fix: "3d", sats_visible: 14, sats_used: 11 }), SAFE);
+  drawSatsTag(ctx, 600, 200, state({ hasFix: true, deadReckoning: true }, { fix: "3d", sats_visible: 14, sats_used: 11 }));
   assert.ok(texts(ctx).includes("14/11"));
 });
 

@@ -1280,6 +1280,25 @@ async def bt_state():
     return bt.state()
 
 
+@app.get("/api/power")
+async def power_status():
+    """Power stations (docs/contracts/power.md): a configured address «connects» and reads plausible values."""
+    p = settings.power
+    t = time.time()
+    main = {"soc_pct": round(80 + 10 * math.sin(t / 600), 1), "input_w": 0, "ac_in_w": 0, "dc_in_w": 0, "output_w": 156,
+            "ac_out_w": 124, "ac_out_v": 229.9, "ac_out_hz": 50.0, "usb_w": 32.1, "to_full_min": 0, "to_empty_min": 1000,
+            "capacity_ah": 77.8, "charging": False, "status": 16384}
+    second = {"voltage_v": 20.8, "current_a": 0.0, "soc_pct": 9.0, "cells_mv": [3492, 3487, 3434, 3490, 3494, 3486],
+              "temps_c": [26, 25], "cell_min_mv": 3434, "cell_max_mv": 3494, "delta_mv": 60, "cycles": 0}
+
+    def st(slot, kind, mac, reading):
+        return {"slot": slot, "kind": kind, "mac": mac, "connected": bool(mac), "age_s": 3.2 if mac else None,
+                "error": None, "reading": reading if mac else None}
+    return {"stations": [st("main", "fossibot", p.main_mac, main), st("second", "daly", p.second_mac, second),
+                         {"slot": "third", "kind": "none", "mac": "", "connected": False, "age_s": None, "error": None,
+                          "reading": None}]}
+
+
 @app.post("/api/bluetooth/power")
 async def bt_power(request: Request):
     if (r := _bt_guard()) is not None:

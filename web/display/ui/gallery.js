@@ -284,7 +284,10 @@ const COND = {
   nohead: { headingDeg: null, headingSource: "none" },
   offline: { internet: false },
   norec: { recording: false },
-  all: { hasFix: false, fix: "none", sats: 0, connected: false, internet: false, recording: false, headingDeg: null, headingSource: "none", speedMps: null, timeSynced: false },
+  norear: { rear: false },
+  lowpower: { soc: 15 },
+  charging: { soc: 64, charging: true },
+  all: { hasFix: false, fix: "none", sats: 0, connected: false, internet: false, recording: false, rear: false, soc: null, headingDeg: null, headingSource: "none", speedMps: null, timeSynced: false },
 };
 
 const ui = { units: "kmh", cond: "ok", bg: "sat", paused: false, motion: "turns" };
@@ -312,6 +315,12 @@ function makeState(cfg, now) {
       heading: { deg: headingDeg, source: headingSource },
       display: { mode: cfg.mode ?? "map", reason: "speed", target_zoom: 18, orientation },
       camera: { state: "recording", recording: o.recording ?? true },
+      camera_rear: o.rear === false ? null : { state: "recording", camera: "rear", recording: o.recording ?? true },
+      power: o.power === false ? null : {
+        main: "soc" in o ? { soc_pct: o.soc, charging: !!o.charging, low: o.soc != null && o.soc <= 20 } : { soc_pct: 87 },
+        second: { voltage_v: o.connected === false ? null : 20.8, low: false },
+        third: {},
+      },
       system: { internet: o.internet ?? true, time_synced: o.timeSynced ?? true },
       radio: typeof cfg.radio === "function" ? cfg.radio(now) : cfg.radio ?? null,
       alarm: typeof cfg.alarm === "function" ? cfg.alarm(now) : cfg.alarm ?? null,

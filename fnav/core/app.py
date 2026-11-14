@@ -841,6 +841,11 @@ def _register_bluetooth(app: FastAPI, core: Core) -> None:
     async def bt_state():
         return core.bt.state().model_dump()
 
+    @app.get("/api/power")
+    async def power_status():
+        """Электростанции по BLE (docs/contracts/power.md): подключение и все показания."""
+        return core.power.status().model_dump()
+
     @app.post("/api/bluetooth/power")
     async def bt_power(body: PowerBody):
         return (await core.bt.set_power(body.on)).model_dump()

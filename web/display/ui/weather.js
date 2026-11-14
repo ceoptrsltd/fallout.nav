@@ -4,10 +4,11 @@
 // цвет — только акцент. Устаревший прогноз (нет интернета дольше 3 ч) — цифры тусклее.
 
 import { radioRect } from "./radio.js";
-import { indicatorsWidth } from "./status.js";
+import { rightColumnWidth } from "./status.js";
 import { C, DEG, blit, fontNum, outlinedText, plateSprite, setting, sprite, textWidth } from "./theme.js";
 
 const PAD = 12;
+const SEP_GAP = 9; // наименьший зазор от черты до текста
 const ICON = { w: 38, h: 34 };
 const DAY_ICON = { w: 26, h: 23 };
 const DAYS_LBL = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
@@ -216,47 +217,55 @@ function windArrow(ctx, x, y, a, len, lw = 2.4) {
 export function drawWeather(ctx, state, safe, liftPx = 0) {
   if (!weatherVisible(state)) return null;
   const w = state.weather;
-  const r = radioRect(safe, indicatorsWidth(ctx), liftPx);
+  const r = radioRect(safe, rightColumnWidth(ctx, state), liftPx);
   const { x, y, h } = r;
   const x1 = x + r.w - PAD;
   blit(ctx, plateSprite(r.w, h, { chamfer: 9 }), x, y);
   const ink = w.stale ? C.inkDim : C.ink;
 
-  // сейчас: значок + температура (ширина блока — постоянная, по «88°»)
+  // сейчас: значок + температура; «-12°» и шире — чуть мельче
   const tf = fontNum(42, 700);
-  const tempW = Math.ceil(textWidth(ctx, tf, "88°"));
   const ix = x + PAD - 2;
   blit(ctx, iconSprite(weatherKind(w.code), w.is_day !== false, ICON.w, ICON.h), ix, y + 8);
   const tx = ix + ICON.w + 4;
   const temp = fmtTemp(w.temp_c);
-  const tfit = textWidth(ctx, tf, temp) <= tempW + 4 ? tf : fontNum(34, 700); // «-12°» — чуть мельче
+  const tfit = textWidth(ctx, tf, temp) <= textWidth(ctx, tf, "88°") + 4 ? tf : fontNum(34, 700);
   outlinedText(ctx, temp, tx, y + 27, tfit, { align: "left", lw: 5, fill: ink });
+  let leftEnd = tx + textWidth(ctx, tfit, temp);
   // ветер: стрелка «куда дует» (как струйки на карте) + скорость
   const wy = y + h - 19;
   const a = windScreenAngle(state);
   if (a !== null && Number.isFinite(w.wind_ms)) {
     if (w.wind_ms >= 0.5) windArrow(ctx, ix + 12, wy, a, 18);
-    outlinedText(ctx, `${Math.round(w.wind_ms)} m/s`, ix + 28, wy, fontNum(25, 600), { align: "left", lw: 4, fill: ink });
+    const wf = fontNum(25, 600);
+    const wt = `${Math.round(w.wind_ms)} m/s`;
+    outlinedText(ctx, wt, ix + 28, wy, wf, { align: "left", lw: 4, fill: ink });
+    leftEnd = Math.max(leftEnd, ix + 28 + textWidth(ctx, wf, wt));
   }
 
-  // черта
-  const xs = tx + tempW + 6;
-  ctx.fillStyle = C.metal;
-  ctx.fillRect(xs, y + 12, 2, h - 24);
-
-  // завтра, послезавтра: «MON [значок] 14°/6°» (день — узкими цифрами спидометра: место под мин/макс)
+  // завтра, послезавтра: «MON [значок] 14°/6°» — блок прижат к правому краю (не сдвигается от смены температуры
+  // «сейчас»); минимум — если помещается в обеих строках, иначе только максимум
   const lf = fontNum(25, 600);
   const nf = fontNum(25, 600);
   const lblW = Math.max(...DAYS_LBL.map((d) => textWidth(ctx, lf, d)));
-  const dx0 = xs + 9;
-  (w.days || []).slice(0, 2).forEach((d, k) => {
+  const days = (w.days || []).slice(0, 2).map((d) => ({ d, hi: fmtTemp(d.t_max), lo: `/${fmtTemp(d.t_min)}` }));
+  const head = lblW + 5 + DAY_ICON.w + 5;
+  const fullW = Math.max(0, ...days.map((t) => textWidth(ctx, nf, t.hi + t.lo)));
+  const hiW = Math.max(0, ...days.map((t) => textWidth(ctx, nf, t.hi)));
+  const withLo = x1 - (leftEnd + 2 * SEP_GAP + 2) >= head + fullW;
+  const dx0 = Math.round(x1 - head - (withLo ? fullW : hiW));
+
+  // черта — посередине между «сейчас» и прогнозом: зазоры слева и справа равны
+  const xs = Math.round((leftEnd + dx0) / 2 - 1);
+  ctx.fillStyle = C.metal;
+  ctx.fillRect(xs, y + 12, 2, h - 24);
+
+  days.forEach(({ d, hi, lo }, k) => {
     const cy = y + 24 + k * 36;
     outlinedText(ctx, d.weekday, dx0, cy, lf, { align: "left", lw: 4, fill: k === 0 ? C.accent : ink });
     const icx = dx0 + lblW + 5;
     blit(ctx, iconSprite(weatherKind(d.code), true, DAY_ICON.w, DAY_ICON.h), icx, Math.round(cy - DAY_ICON.h / 2 - 1));
-    const room = x1 - (icx + DAY_ICON.w + 5);
-    const hi = fmtTemp(d.t_max), lo = `/${fmtTemp(d.t_min)}`;
-    if (textWidth(ctx, nf, hi + lo) <= room) {
+    if (withLo) {
       outlinedText(ctx, lo, x1, cy, nf, { align: "right", lw: 4, fill: C.inkDim });
       outlinedText(ctx, hi, x1 - textWidth(ctx, nf, lo), cy, nf, { align: "right", lw: 4, fill: ink });
     } else {

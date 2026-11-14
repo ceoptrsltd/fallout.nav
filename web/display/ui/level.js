@@ -21,6 +21,9 @@ const PLATE = { w: 236, h: 224 };
 const TAG_OVER = 18; // бирка UNCAL выступает над плашкой на столько
 /** Габарит виджета (плашка + выступ бирки UNCAL сверху). Ширина — как у спидометра. */
 export const LEVEL_BOX = { w: PLATE.w, h: PLATE.h + TAG_OVER };
+const COMPACT_H = 156; // на экране: только две строки углов, без схемы колёс и рамки LEVEL
+/** Габарит виджета на экране (opts.compact). */
+export const LEVEL_BOX_HUD = { w: PLATE.w, h: COMPACT_H + TAG_OVER };
 
 const VIS_MAX = 22; // предел усиленного угла силуэта, °
 const VIS_GAIN = 5; // усиление малых углов: 1° → ≈5°
@@ -533,12 +536,14 @@ function drawLevelBadge(ctx, x, y, w, h) {
  * Виджет уровня с левым верхним углом габарита LEVEL_BOX в (x, y): level — telemetry.level
  * ({sensor_ok, calibrated, pitch_deg, roll_deg, wheels_cm}). Не зависит от состояния HUD (для превью в админке).
  * opts.noSensor — нарисовать «нет датчика» (в HUD виджет тогда скрыт, здесь — для превью).
+ * opts.compact — без нижней части (схема колёс / LEVEL): так на экране, габарит LEVEL_BOX_HUD.
  */
 export function drawLevelPanel(ctx, x, y, level, now = 0, opts = {}) {
   const l = level ?? {};
   const px = Math.round(x);
   const py = Math.round(y + TAG_OVER);
-  const { w, h } = PLATE;
+  const w = PLATE.w;
+  const h = opts.compact ? COMPACT_H : PLATE.h;
   const pitch = l.pitch_deg;
   const roll = l.roll_deg;
   const noSensor = opts.noSensor || l.sensor_ok === false;
@@ -560,13 +565,15 @@ export function drawLevelPanel(ctx, x, y, level, now = 0, opts = {}) {
     drawAngleText(ctx, colR, colW, r.y, noSensor ? "NO SENSOR" : r.word, noSensor ? null : r.a, axisLevel(r.a));
   }
 
-  // черта и нижняя часть: LEVEL или колёса
-  ctx.fillStyle = C.metal;
-  ctx.fillRect(px + 14, py + 148, w - 28, 2);
-  const by = py + 154;
-  const bh = h - 154 - 10;
-  if (!noSensor && isLevel(pitch, roll)) drawLevelBadge(ctx, px + 12, by, w - 24, bh);
-  else drawWheels(ctx, px + 14, by, w - 28, bh, noSensor ? null : l.wheels_cm);
+  // черта и нижняя часть: LEVEL или колёса (не на экране — opts.compact)
+  if (!opts.compact) {
+    ctx.fillStyle = C.metal;
+    ctx.fillRect(px + 14, py + 148, w - 28, 2);
+    const by = py + 154;
+    const bh = h - 154 - 10;
+    if (!noSensor && isLevel(pitch, roll)) drawLevelBadge(ctx, px + 12, by, w - 24, bh);
+    else drawWheels(ctx, px + 14, by, w - 28, bh, noSensor ? null : l.wheels_cm);
+  }
 
   // без калибровки — бирка над правым краем плашки
   if (l.calibrated === false && !noSensor) {
@@ -592,7 +599,7 @@ export function drawLevelPanel(ctx, x, y, level, now = 0, opts = {}) {
 export function drawLevel(ctx, state, safe) {
   if (!levelVisible(ctx, state)) return null;
   const x = Math.round(safe.x);
-  const y = Math.round(safe.y + safe.h - LEVEL_BOX.h);
-  return drawLevelPanel(ctx, x, y, state.telemetry.level, state?.now ?? 0);
+  const y = Math.round(safe.y + safe.h - LEVEL_BOX_HUD.h);
+  return drawLevelPanel(ctx, x, y, state.telemetry.level, state?.now ?? 0, { compact: true });
 }
 

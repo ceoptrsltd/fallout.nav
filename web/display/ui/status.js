@@ -1,6 +1,9 @@
-// Индикаторы (GPS, REC, сеть, охрана) и крупные предупреждения (NO GPS, NO LINK).
+// Индикаторы и крупные предупреждения: спутники — плашкой под компасом (drawSatsTag, её рисует compass.js),
+// запись — плашкой справа от часов (drawRecTag); справа внизу над плашкой станций (ui/power.js) — строки
+// «нет сети», охрана, аварийка (drawIndicators); слева — NO GPS, NO LINK (drawWarnings).
 
 import { HAZARD_HZ, alarmIndicator, drawHazardSign, drawLock, hazardOn } from "./alarm.js";
+import { POWER_H, powerVisible, powerWidth } from "./power.js";
 import { C, blinkOn, blit, chamferPath, fontLabel, fontNum, fontStencil, hazardSprite, outlinedText, plateSprite, sprite, textWidth } from "./theme.js";
 
 const ROW_H = 36;
@@ -75,12 +78,14 @@ export function satsText(gps) {
   return `${n(g.sats_visible)}/${n(g.sats_used)}`;
 }
 
-/**
- * Ширина двух нижних строк индикаторов (GPS, REC) с запасом на самые широкие значения — постоянная,
- * чтобы соседние элементы (плашка радио) не «дышали» при смене числа спутников.
- */
+/** Ширина колонки строк справа внизу без плашки станций (постоянная — плашка радио/погоды не «дышит»). */
 export function indicatorsWidth(ctx) {
   return Math.max(rowWidth(ctx, SATS_WIDEST, 26, SATS_FONT()), rowWidth(ctx, "REC", 22));
+}
+
+/** Сколько занято справа внизу: плашка станций, а без неё — колонка строк. Левее — радио или погода. */
+export function rightColumnWidth(ctx, state) {
+  return powerVisible(state) ? powerWidth(ctx) : indicatorsWidth(ctx);
 }
 
 /** Высота строк индикаторов и зазор между ними. */
@@ -112,52 +117,17 @@ function row(ctx, xr, y, text, iconW, drawIcon, { dim = false, font = FONT(), mi
   return w;
 }
 
-/** Индикаторы в правом нижнем углу зоны безопасности. */
+/**
+ * Строки справа внизу — над плашкой станций (ui/power.js), а без неё — от низа зоны безопасности: «нет сети»,
+ * охрана (ARM 45 / ARMED / ALARM), мигающий знак аварийки. Возвращает занятый прямоугольник.
+ */
 export function drawIndicators(ctx, state, safe) {
   const v = state?.view ?? {};
   const t = state?.telemetry ?? {};
   const now = state?.now ?? 0;
   const xr = safe.x + safe.w;
-  let y = safe.y + safe.h - ROW_H;
-
-  // GPS: тип фикса, видимые / используемые спутники; ширина постоянная — не «дышит» от числа спутников.
-  // Тоннель (view.deadReckoning: фикса нет, машина едет по счислению) — вместо спутников DR
-  const gps = t.gps ?? {};
-  const hasFix = v.hasFix !== false && gps.fix !== "none";
-  const dr = !hasFix && v.deadReckoning === true;
-  row(ctx, xr, y, dr ? "DR" : satsText(gps), 26, (x, yy) => iconSat(ctx, x, yy, hasFix), {
-    dim: !hasFix && !dr, font: dr ? FONT() : SATS_FONT(), minW: rowWidth(ctx, SATS_WIDEST, 26, SATS_FONT()),
-  });
-  y -= ROW_H + 6;
-
-  // REC: мигающая заполненная точка; без записи — пустой перечёркнутый круг
-  const rec = !!v.recording;
-  row(ctx, xr, y, "REC", 22, (x, yy) => {
-    ctx.beginPath();
-    ctx.arc(x, yy, 9, 0, 2 * Math.PI);
-    if (rec) {
-      if (blinkOn(now, 1, 0.6)) {
-        ctx.fillStyle = C.rec;
-        ctx.fill();
-        ctx.lineWidth = 2.5;
-        ctx.strokeStyle = C.ink;
-        ctx.stroke();
-      } else {
-        ctx.lineWidth = 2.5;
-        ctx.strokeStyle = C.inkDim;
-        ctx.stroke();
-      }
-    } else {
-      ctx.lineWidth = 2.5;
-      ctx.strokeStyle = C.inkDim;
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(x - 8, yy + 8);
-      ctx.lineTo(x + 8, yy - 8);
-      ctx.stroke();
-    }
-  }, { dim: !rec });
-  y -= ROW_H + 6;
+  const bottom = safe.y + safe.h - (powerVisible(state) ? POWER_H + 6 : 0);
+  let y = bottom - ROW_H;
 
   // интернет: показываем только когда точно нет (null = неизвестно — молчим)
   if (v.internet === false) {
@@ -180,7 +150,150 @@ export function drawIndicators(ctx, state, safe) {
     drawHazardSign(ctx, xr - 20, y + ROW_H / 2, 28, blinkOn(now, HAZARD_HZ, 0.5));
     y -= ROW_H + 6;
   }
-  return { x: xr - 200, y, w: 200, h: safe.y + safe.h - y };
+  const top = y + ROW_H + 6;
+  return { x: xr - 200, y: top, w: 200, h: bottom - top };
+}
+
+// ── спутники: плашка под компасом (на месте прежней метки источника курса) ──
+
+const SATS_H = 32;
+
+/** Ширина плашки спутников (постоянная, по «88/88»). */
+export function satsTagWidth(ctx) {
+  return Math.ceil(12 + 24 + 6 + textWidth(ctx, SATS_FONT(), SATS_WIDEST) + 12);
+}
+
+/**
+ * Плашка спутников с центром (cx, cy): видимые / используемые («34/20»); без фикса — тусклые цифры и пустые панели
+ * значка; тоннель (счисление пути, view.deadReckoning) — DR. Возвращает ширину.
+ */
+export function drawSatsTag(ctx, cx, cy, state) {
+  const v = state?.view ?? {};
+  const gps = state?.telemetry?.gps ?? {};
+  const hasFix = v.hasFix !== false && gps.fix !== "none";
+  const dr = !hasFix && v.deadReckoning === true;
+  const w = satsTagWidth(ctx);
+  const h = SATS_H;
+  const x0 = Math.round(cx - w / 2);
+  const y0 = Math.round(cy - h / 2);
+  chamferPath(ctx, x0, y0, w, h, 6);
+  ctx.fillStyle = C.plateSolid;
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = C.dark;
+  ctx.stroke();
+  chamferPath(ctx, x0 + 2.5, y0 + 2.5, w - 5, h - 5, 5);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = C.ink;
+  ctx.stroke();
+  iconSat(ctx, x0 + 24, cy, hasFix);
+  outlinedText(ctx, dr ? "DR" : satsText(gps), x0 + w - 12, cy, dr ? FONT() : SATS_FONT(), {
+    align: "right",
+    lw: 4,
+    fill: hasFix || dr ? C.ink : C.inkDim,
+  });
+  return w;
+}
+
+// ── запись: плашка справа от часов ──
+
+const REC_H = 62; // как часы (ui/clock.js CLOCK_H)
+const REC_NUM = () => fontNum(40, 700);
+const REC_W = 16 + 38 + 10 + 30 + 6 + 30 + 14;
+
+/** Габарит плашки записи. */
+export const REC_BOX = { w: REC_W, h: REC_H };
+
+/**
+ * Состояние камеры для плашки записи: "rec" — пишет; "idle" — работает, но не пишет (запускается, запись
+ * выключена); "absent" — камеры нет (выключена, остановлена, ошибка, нет данных).
+ */
+export function camState(cam) {
+  if (!cam) return "absent";
+  if (cam.recording) return "rec";
+  return cam.state === "starting" || cam.state === "live" ? "idle" : "absent";
+}
+
+/** Значок видеокамеры: "on" — пишет (красный корпус), "blink" — фаза мигания (контур), "off" — перечёркнута. */
+function cameraIcon(ctx, x, y, mode) {
+  const bh = 19;
+  ctx.save();
+  ctx.lineJoin = "round";
+  const body = () => {
+    ctx.beginPath();
+    ctx.roundRect(x - 17, y - bh / 2, 26, bh, 3);
+  };
+  const lens = () => {
+    ctx.beginPath();
+    ctx.moveTo(x + 11, y - 3);
+    ctx.lineTo(x + 19, y - 8);
+    ctx.lineTo(x + 19, y + 8);
+    ctx.lineTo(x + 11, y + 3);
+    ctx.closePath();
+  };
+  for (const part of [body, lens]) {
+    part();
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = C.shadow;
+    ctx.stroke();
+    if (mode === "on") {
+      ctx.fillStyle = part === body ? C.rec : C.ink;
+      ctx.fill();
+    }
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = mode === "on" ? C.ink : C.inkDim;
+    ctx.stroke();
+  }
+  if (mode === "off") {
+    ctx.beginPath();
+    ctx.moveTo(x - 18, y + 13);
+    ctx.lineTo(x + 18, y - 13);
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = C.shadow;
+    ctx.stroke();
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = C.inkDim;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function camNumber(ctx, n, cx, cy, st) {
+  outlinedText(ctx, String(n), cx, cy, REC_NUM(), { lw: 5, fill: st === "rec" ? C.ink : C.inkDim });
+  if (st === "absent") {
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - 12, cy + 16);
+    ctx.lineTo(cx + 12, cy - 16);
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = C.shadow;
+    ctx.stroke();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = C.ink;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/**
+ * Плашка записи с левым верхним углом (x, y): значок камеры (пишет хоть одна — мигает; ни одна — перечёркнут) и
+ * номера камер: 1 — передняя (telemetry.camera), 2 — задняя (telemetry.camera_rear); пишет — ярко, работает без
+ * записи — тускло, камеры нет — перечёркнут. Возвращает прямоугольник.
+ */
+export function drawRecTag(ctx, state, x, y) {
+  const t = state?.telemetry ?? {};
+  const now = state?.now ?? 0;
+  const cams = [camState(t.camera), camState(t.camera_rear)];
+  blit(ctx, plateSprite(REC_W, REC_H, { chamfer: 8, rivets: false }), x, y);
+  const cy = y + REC_H / 2;
+  const any = cams.includes("rec");
+  cameraIcon(ctx, x + 34, cy, !any ? "off" : blinkOn(now, 1, 0.6) ? "on" : "blink");
+  ctx.fillStyle = C.metal;
+  ctx.fillRect(x + 58, y + 11, 2, REC_H - 22);
+  camNumber(ctx, 1, x + 79, cy, cams[0]);
+  camNumber(ctx, 2, x + 115, cy, cams[1]);
+  return { x, y, w: REC_W, h: REC_H };
 }
 
 const WARN = { w: 214, h: 44 };

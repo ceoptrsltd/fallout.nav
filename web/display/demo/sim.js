@@ -261,6 +261,13 @@ export class DemoSim {
       heading: { deg: round(heading), source, mag_deg: round(mag), gps_course_deg: round(gpsCourse), declination_deg: 11.2 },
       compass: { x: 0, y: 0, z: -45, chip: "demo", ok: true },
       camera: { state: "recording", recording: true, frames_dropped: 0, recordings_count: 42, recordings_gb: 12.5, time_synced: true },
+      camera_rear: { state: "recording", camera: "rear", recording: true },
+      // электростанции (docs/contracts/power.md): главная медленно разряжается, третья — пока заглушка
+      power: {
+        main: { soc_pct: round(Math.max(20, 86 - this.dist / 2000), 1), charging: false, low: false },
+        second: { voltage_v: 20.8, soc_pct: 55, low: false },
+        third: {},
+      },
       disk: {},
       system: { internet: true, time_synced: true },
       errors: [],

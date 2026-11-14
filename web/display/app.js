@@ -23,7 +23,7 @@ import { RetainedLayer, bumpEpoch } from "./map/retained.js";
 import { armedStandby, standbyDelayMs } from "./map/standby.js";
 import { Link, wsUrl } from "./map/link.js";
 import { REMOTE, appUrl } from "./map/root.js";
-import { ESRI_ATTRIBUTION, esriTileUrl } from "./map/esri.js";
+import { esriTileUrl } from "./map/esri.js";
 import { GamesMenu } from "./ui/games-menu.js";
 import { clamp, makeView, metersPerPixel } from "./map/mercator.js";
 import * as debugHud from "./map/debug-hud.js";
@@ -44,7 +44,6 @@ const DPR_PARAM = Number(params.get("dpr")) || 0;
 let PR = clamp(DPR_PARAM || 1, 1, 3);
 const TILE_CAPACITY = 300;
 const FORCE_DEBUG_UI = params.get("ui") === "debug";
-const DIRECT_TILES = DEMO || REMOTE; // Esri напрямую: на карте нужна подпись источников
 
 const nowS = () => performance.now() / 1000;
 
@@ -351,24 +350,6 @@ let mapMsEma = 0;
 let hudMsEma = 0;
 let hudShift = { dx: 0, dy: 0 }; // сдвиг HUD от выжигания в этом кадре (map/burnin.js)
 
-/** Тайлы напрямую (демо, удалённо): атрибуция Esri на холсте (условия Esri), мелко, внизу по центру. */
-function drawAttribution(ctx, state) {
-  const l = settings.display.layers || {};
-  const text = l.street_map_instead ? ESRI_ATTRIBUTION.street : ESRI_ATTRIBUTION.imagery;
-  const sf = state.canvas.safe;
-  ctx.save();
-  ctx.font = '11px "DejaVu Sans", Arial, sans-serif';
-  ctx.textAlign = "center";
-  ctx.textBaseline = "bottom";
-  const w = ctx.measureText(text).width + 10;
-  const x = W / 2, y = sf.y + sf.h;
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(x - w / 2, y - 15, w, 15);
-  ctx.fillStyle = "rgba(255,255,255,0.85)";
-  ctx.fillText(text, x, y - 2);
-  ctx.restore();
-}
-
 // без фикса карта перерисовывается только ради мигающей иконки машины — ей хватает 12 к/с
 const BLINK_REDRAW_S = 1 / 12;
 
@@ -475,7 +456,6 @@ function frame(tms) {
       wallMs: Date.now(), // часы на экране (ui/clock.js)
       vehicleX: pose.ax, // где машина на экране (ветер вокруг неё, ui/weather.js)
       vehicleY: pose.ay,
-      attribution: DIRECT_TILES && mode === "map", // подпись Esri внизу по центру — радио над ней
     },
     canvas: {
       w: W,
@@ -553,7 +533,6 @@ function frame(tms) {
   const hrec = hudLayer.begin();
   hrec.setTransform(PR, 0, 0, PR, burn.dx * PR, burn.dy * PR);
   callUi("drawHud", hrec, state, { wind: !windOwn });
-  if (DIRECT_TILES && mode === "map") drawAttribution(hrec, state);
   hudLayer.end(t, FULL, PR);
   if (verify) verifyFrame(state, windOwn, mode);
   if (DEBUG) {
@@ -593,7 +572,6 @@ function verifyFrame(state, windOwn, mode) {
   vh.setTransform(PR, 0, 0, PR, hudShift.dx * PR, hudShift.dy * PR);
   vh.clearRect(0, 0, W, H);
   callUi("drawHud", vh, state, { wind: !windOwn });
-  if (DIRECT_TILES && mode === "map") drawAttribution(vh, state);
   vw.setTransform(PR, 0, 0, PR, 0, 0);
   vw.clearRect(0, 0, W, H);
   if (windOwn) callUi("drawWind", vw, state);

@@ -8,6 +8,7 @@ import {
   C, CARDINALS, DEG, blit, blitCentered, chamferPath, fixedDigits, fontLabel, fontNum, fontStencil,
   norm360, outlinedText, plateSprite, point16, rhumb, rivet, screw, sprite, textWidth,
 } from "./theme.js";
+import { drawSatsTag, satsTagWidth } from "./status.js";
 
 export const compassStyles = [
   { id: "v1", name: "Riveted dial", description: "Round gauge with a riveted steel bezel, digital heading in the centre" },
@@ -49,55 +50,6 @@ function readHeading(state) {
 function headingStr(hd) {
   if (hd.heading == null) return "---";
   return String(Math.round(hd.heading) % 360).padStart(3, "0");
-}
-
-const TAG_TEXT = { gps: "GPS", mag: "MAG", blend: "BLEND", none: "NO HDG" };
-
-/**
- * Плашка источника курса. Форма тоже кодирует источник (для ч/б):
- * GPS — светлая заливка, MAG — тёмная с рамкой, BLEND — наполовину, нет курса — светлая «аварийная».
- * (x, y) — центр. Возвращает ширину.
- */
-export function drawSourceTag(ctx, x, y, source) {
-  const text = TAG_TEXT[source] ?? String(source).toUpperCase();
-  const font = fontLabel(25);
-  const w = Math.ceil(textWidth(ctx, font, text) + 22);
-  const h = 32;
-  const x0 = Math.round(x - w / 2);
-  const y0 = Math.round(y - h / 2);
-  chamferPath(ctx, x0, y0, w, h, 6);
-  const light = source === "gps" || source === "none";
-  ctx.fillStyle = light ? (source === "none" ? C.hazard : C.ink) : C.plateSolid;
-  ctx.fill();
-  if (source === "blend") {
-    ctx.save();
-    ctx.clip();
-    ctx.fillStyle = C.ink;
-    ctx.beginPath();
-    ctx.moveTo(x0, y0 + h);
-    ctx.lineTo(x0 + w * 0.42, y0 + h);
-    ctx.lineTo(x0 + w * 0.42 - h, y0);
-    ctx.lineTo(x0, y0);
-    ctx.fill();
-    ctx.restore();
-  }
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = C.dark;
-  chamferPath(ctx, x0, y0, w, h, 6);
-  ctx.stroke();
-  if (!light) {
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = C.ink;
-    chamferPath(ctx, x0 + 2.5, y0 + 2.5, w - 5, h - 5, 5);
-    ctx.stroke();
-  }
-  if (source === "blend") {
-    // половина — светлая: текст с обводкой, чтобы читался на обеих половинах
-    outlinedText(ctx, text, x, y, font, { fill: C.ink, lw: 4 });
-  } else {
-    outlinedText(ctx, text, x, y, font, { fill: light ? C.dark : C.ink, lw: light ? 0 : 4 });
-  }
-  return w;
 }
 
 /** Треугольный указатель: остриём к центру; (cx,cy) — центр шкалы, angRad — от верха по часовой. */
@@ -264,7 +216,7 @@ function drawV1(ctx, state, safe) {
     lw: 5,
   });
 
-  drawSourceTag(ctx, cx, cy + R + 6, hd.source);
+  drawSatsTag(ctx, cx, cy + R + 6, state); // спутники — под компасом
   return { x: cx - R - 2, y: cy - R - 2, w: 2 * R + 4, h: 2 * R + 26 };
 }
 
@@ -446,8 +398,8 @@ function drawV2(ctx, state, safe) {
     fill: hd.known ? C.ink : C.inkDim,
     lw: 4,
   });
-  const tagW = textWidth(ctx, fontLabel(25), TAG_TEXT[hd.source] ?? "GPS") + 22;
-  drawSourceTag(ctx, cx + bw / 2 + 8 + tagW / 2, by + bh / 2, hd.source);
+  const tagW = satsTagWidth(ctx);
+  drawSatsTag(ctx, cx + bw / 2 + 8 + tagW / 2, by + bh / 2, state);
   return { x: x0, y: y0, w: W, h: H + 6 + bh };
 }
 
@@ -671,9 +623,9 @@ function drawV3(ctx, state, safe) {
     lw: 0,
     align: "right",
   });
-  const tagW = textWidth(ctx, fontLabel(25), TAG_TEXT[hd.source] ?? "GPS") + 22;
-  // источник — слева от таблички, на уровне её середины
-  drawSourceTag(ctx, px0 - 6 - tagW / 2, py + ph / 2, hd.source);
+  const tagW = satsTagWidth(ctx);
+  // спутники — слева от таблички, на уровне её середины
+  drawSatsTag(ctx, px0 - 6 - tagW / 2, py + ph / 2, state);
   return { x: cx - R - 2, y: cy - R - 2, w: 2 * R + 4, h: 2 * R + ph };
 }
 

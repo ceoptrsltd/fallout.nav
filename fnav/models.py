@@ -12,9 +12,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class _Model(BaseModel):
@@ -442,6 +443,23 @@ class VehicleSettings(_Model):
         return self
 
 
+class PowerSettings(_Model):
+    """Электростанции на экране (docs/contracts/power.md): по Bluetooth LE, только чтение. Пустой адрес — не
+    опрашивать (на экране прочерки). Третья станция (нижняя строка) — пока заглушка."""
+
+    show_on_screen: bool = True  # плашка справа внизу
+    main_mac: str = "70:AF:09:06:E9:1A"  # главная — Fossibot F3600 Pro («POWER-0201»): заряд, % крупно
+    second_mac: str = "74:C1:4E:10:00:9B"  # вторая — Daly BMS («Tattu powerbank»): напряжение, верхняя строка
+
+    @field_validator("main_mac", "second_mac")
+    @classmethod
+    def _mac(cls, v: str) -> str:
+        m = (v or "").strip().upper().replace("-", ":")
+        if m and not re.fullmatch(r"[0-9A-F]{2}(:[0-9A-F]{2}){5}", m):
+            raise ValueError("Invalid Bluetooth address")
+        return m
+
+
 class SystemSettings(_Model):
     """Система устройства (fnav/core/timezone.py)."""
 
@@ -472,6 +490,7 @@ class Settings(_Model):
     level: LevelSettings = LevelSettings()
     system: SystemSettings = SystemSettings()
     vehicle: VehicleSettings = VehicleSettings()
+    power: PowerSettings = PowerSettings()
 
 
 # ───────────────────────────── Датчики ─────────────────────────────
@@ -885,6 +904,37 @@ class LevelTelemetry(_Model):
     wheels_cm: WheelsCm | None = None
 
 
+class PowerSlot(_Model):
+    """Одна станция на экране; None — нет свежих данных (не настроена, не подключилась, данные старше минуты)."""
+
+    soc_pct: float | None = None
+    voltage_v: float | None = None
+    charging: bool | None = None
+    low: bool = False  # заряд ≤ 20 % — на экране мигает
+
+
+class PowerTelemetry(_Model):
+    main: PowerSlot = PowerSlot()  # крупно, %
+    second: PowerSlot = PowerSlot()  # верхняя строка, В
+    third: PowerSlot = PowerSlot()  # нижняя строка, В (пока заглушка)
+
+
+class PowerStationStatus(_Model):
+    """Для админки (GET /api/power): подключение и все показания станции."""
+
+    slot: Literal["main", "second", "third"]
+    kind: Literal["fossibot", "daly", "none"]
+    mac: str = ""
+    connected: bool = False
+    age_s: float | None = None  # сколько секунд назад последнее показание
+    error: str | None = None  # последняя ошибка подключения/чтения
+    reading: dict | None = None  # fnav/core/fossibot.py FossibotReading / fnav/core/daly.py DalyReading
+
+
+class PowerStatus(_Model):
+    stations: list[PowerStationStatus] = []
+
+
 class Telemetry(_Model):
     type: Literal["telemetry"] = "telemetry"
     t: float  # unix-время сервера, с
@@ -901,4 +951,5 @@ class Telemetry(_Model):
     speed_limit: SpeedLimit | None = None
     alarm: AlarmTelemetry | None = None
     level: LevelTelemetry | None = None
+    power: PowerTelemetry | None = None  # None — плашка станций выключена (power.show_on_screen)
     errors: list[str] = []

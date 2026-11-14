@@ -39,6 +39,7 @@ from fnav.core.keypad import KeypadService
 from fnav.core.level import LevelService
 from fnav.core.marks import MarkLog
 from fnav.core.navlogic import NavLogic
+from fnav.core.power import PowerService
 from fnav.core.radio import MOCK_STATION, Player, create_radio
 from fnav.core.recgps import RecGps
 from fnav.core.recordings import Recordings
@@ -183,6 +184,8 @@ class Core:
         self.bt.on_output(self.radio.set_output)
         # задний вид на экране: колонку не вызывать — вызов глушит Wi-Fi общего чипа, а с ним и заднюю камеру
         self.bt.radio_quiet = lambda: self.view_camera == "rear" and self.camera_rear.enabled
+        # электростанции по BLE (docs/contracts/power.md): подключаются тоже не при заднем виде
+        self.power = PowerService(lambda: self.store.get().power, mock=opts.mock, quiet=self.bt.radio_quiet)
         self.speedlimits = SpeedLimitService(paths.data_dir() / "speedlimits.sqlite", lambda: self.hub.snapshot().gps)
         self.timezone = TimeZoneFollower(lambda: self.store.get().system.auto_timezone, mock=opts.mock)
         self.weather = WeatherService(paths.data_dir() / "weather.json", lambda: self.hub.snapshot().gps,
@@ -288,7 +291,7 @@ class Core:
             log.exception("radio/bluetooth start")
         # охрана, отметки, fnav-watch, уровень, датчик — каждый сам по себе: сбой одного не оставит без остальных
         for name, start in (("alarm", self.alarm.start), ("marks", self.marks.start), ("vision", self.vision.start),
-                            ("level", self.level.start), ("impact", self.impact.start)):
+                            ("level", self.level.start), ("impact", self.impact.start), ("power", self.power.start)):
             try:
                 await start(background=bg)
             except Exception:
@@ -320,7 +323,7 @@ class Core:
         self._tasks.clear()
         for closer in (self.imu.stop, self.vision.stop, self.marks.stop, self.alarm.stop, self.level.stop, self.speedlimits.stop, self.weather.stop,
                        self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop,
-                       self.impact.stop, self.recgps.stop,
+                       self.impact.stop, self.recgps.stop, self.power.stop,
                        self.hub.stop, self.camera.stop, self.camera_rear.stop, self.tiles.stop):
             try:
                 await closer()
@@ -351,6 +354,7 @@ class Core:
             self.alarm.apply_settings(s.alarm)
         except Exception:
             log.exception("alarm apply_settings")
+        spawn(self.power.apply_settings(s.power), name="power-settings")
 
     async def _save_radio_volume(self, volume: int) -> None:
         await self.store.patch({"radio": {"volume": volume}})
@@ -417,6 +421,7 @@ class Core:
             speed_limit=self.speedlimits.status(),
             alarm=self.alarm.telemetry(),
             level=self.level.telemetry(),
+            power=self.power.telemetry(),
             errors=errors,
         )
 

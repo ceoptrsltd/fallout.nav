@@ -13,7 +13,7 @@
 
 import { FLASH_S as ALARM_FLASH_S, alarmFlashFor, drawFlashPlate, flashText, lockSprite, newestFlash } from "./alarm.js";
 import { SPEED_BOX } from "./speed.js";
-import { INDICATOR_ROW, indicatorsWidth } from "./status.js";
+import { INDICATOR_ROW, rightColumnWidth } from "./status.js";
 import {
   C, SS, blit, capHeight, fontLabel, fontNum, fontStencil, hazardSprite, makeCanvas, plateSprite, setting, sprite,
   spriteGeneration, textWidth,
@@ -48,7 +48,7 @@ export function radioVisible(state) {
   return !!r && VISIBLE.has(r.state) && setting(state, "display.radio_panel", true) !== false;
 }
 
-/** Прямоугольник плашки (логические px): между спидометром и индикаторами, низ — по зоне безопасности. */
+/** Прямоугольник плашки (логические px): между спидометром и плашкой станций, низ — по зоне безопасности. */
 export function radioRect(safe, indicatorsW, liftPx = 0) {
   const x0 = Math.round(safe.x + SPEED_BOX.w + GAP);
   const x1 = Math.round(safe.x + safe.w - indicatorsW - GAP);
@@ -498,7 +498,7 @@ export function drawRadio(ctx, state, safe, liftPx = 0) {
   const now = state?.now ?? 0;
   update(p, radio, now);
 
-  const r = radioRect(safe, indicatorsWidth(ctx), liftPx);
+  const r = radioRect(safe, rightColumnWidth(ctx, state), liftPx);
   const { x, y, w, h } = r;
   const appear = clamp01((now - p.appearT0) / APPEAR_S);
   ctx.save();
@@ -616,7 +616,7 @@ function drawTrackLine(ctx, p, now, tx0, tx1, yc, wipe, barX) {
 export function drawAlarmFlash(ctx, state, safe, liftPx = 0) {
   const f = alarmFlashFor(ctx, state?.now ?? 0);
   if (!f) return null;
-  const r = radioRect(safe, indicatorsWidth(ctx), liftPx);
+  const r = radioRect(safe, rightColumnWidth(ctx, state), liftPx);
   drawFlashPlate(ctx, r, f, plateSprite(r.w, r.h, { chamfer: 9 }));
   return r;
 }
