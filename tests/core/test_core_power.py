@@ -166,3 +166,28 @@ def test_lead_battery_module_frame_and_charge_estimate():
     assert r.soc_pct == 70.0 and r.uptime_s == 3600
     assert leadbatt.soc_from_voltage(11.0) == 0.0 and leadbatt.soc_from_voltage(13.5) == 100.0
     assert leadbatt.parse(f[:-1] + bytes([f[-1] ^ 1])) is None
+
+
+async def test_stations_connect_one_at_a_time(fast):
+    """Чип Pi ставит одно LE-подключение за раз: попытки станций не перекрываются."""
+    busy = [0]
+    peak = [0]
+
+    class SlowLink(ScriptLink):
+        async def connect(self, subscribe, need) -> None:
+            busy[0] += 1
+            peak[0] = max(peak[0], busy[0])
+            await asyncio.sleep(0.05)
+            busy[0] -= 1
+            await super().connect(subscribe, need)
+
+    s = PowerSettings()
+    svc = pw.PowerService(lambda: s)
+    for r, proto in ((svc.main, pw.FOSSIBOT), (svc.second, pw.DALY), (svc.third, pw.LEAD)):
+        r.link_factory = lambda mac, cb, proto=proto: SlowLink(proto, 4, mac, cb)
+    await svc.start()
+    try:
+        await _until(lambda: all(r.fresh() is not None for r in (svc.main, svc.second, svc.third)))
+        assert peak[0] == 1
+    finally:
+        await svc.stop()

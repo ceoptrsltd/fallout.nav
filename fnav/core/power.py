@@ -4,7 +4,8 @@
 напряжение — верхняя строка. Третья — пока заглушка (нижняя строка «--.-V»).
 
 Каждая станция — свой StationReader: держит постоянное подключение (fnav/core/ble.py) и раз в POLL_S читает
-показания. Подключение LE у встроенного чипа Pi удаётся не с первого раза (ble.py), поэтому неудачи сначала
+показания. Подключаются станции по очереди (общий connect_lock). Подключение LE у встроенного чипа Pi удаётся не с первого
+раза (ble.py), поэтому неудачи сначала
 повторяются часто (CONNECT_RETRY_S), а если станции так и нет (не нашлась в эфире или долго не подключается) —
 всё реже (AWAY_BACKOFF_S): попытки занимают радио, общее с Wi-Fi. Пока на экране задний вид (quiet) — не
 подключаемся вовсе (как колонка, fnav/core/bluetooth.py); уже подключённые станции читаются.
@@ -39,6 +40,9 @@ CONNECT_RETRY_S = 2.0  # «le-connection-abort-by-local» — обычное д�
 FAST_TRIES = 30  # столько быстрых попыток подряд (~1–1.5 мин), дальше — реже
 AWAY_BACKOFF_S = (30.0, 60.0, 120.0, 300.0)
 QUIET_POLL_S = 2.0
+# Подключаемся строго по одной станции: чип Pi устанавливает одно LE-подключение за раз, а одновременные попытки
+# мешают друг другу (2026-11-15: три станции сразу после перезапуска — по 30 «abort-by-local» у каждой, ни одной удачи).
+# Замок общий у станций одной PowerService (StationReader.connect_lock).
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,7 @@ class StationReader:
         self._frames = proto.frames()
         self._reply: asyncio.Future[bytes] | None = None
         self._task: asyncio.Task | None = None
+        self.connect_lock = asyncio.Lock()  # PowerService ставит один на все станции
 
     @property
     def connected(self) -> bool:
@@ -139,7 +144,8 @@ class StationReader:
         if self.link is None:
             self.link = self.link_factory(self.mac, self._on_value)
             self.link.on_lost = self._on_lost
-        await self.link.connect(list(self.proto.subscribe), [self.proto.write_uuid])
+        async with self.connect_lock:
+            await self.link.connect(list(self.proto.subscribe), [self.proto.write_uuid])
 
     async def _run(self) -> None:
         fails = 0
@@ -272,6 +278,9 @@ class PowerService:
         self.main = StationReader("main", FOSSIBOT, quiet, factory(FOSSIBOT))
         self.second = StationReader("second", DALY, quiet, factory(DALY))
         self.third = StationReader("third", LEAD, quiet, factory(LEAD))
+        lock = asyncio.Lock()
+        for r in (self.main, self.second, self.third):
+            r.connect_lock = lock
         self.running = False
         self._lock = asyncio.Lock()  # настройки меняются подряд — переподключения по очереди
 
