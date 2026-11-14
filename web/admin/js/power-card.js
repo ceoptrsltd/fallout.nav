@@ -1,5 +1,5 @@
 // Power stations card (Bluetooth page): BLE addresses and live readings (docs/contracts/power.md).
-// Main — Fossibot (charge, % large on screen), second — Daly BMS (voltage, top row), third — not implemented yet.
+// Main — Fossibot (charge, % large on screen), second — Daly BMS, third — lead battery via the FNAV-LEAD module.
 import { h, clear } from "./dom.js";
 import { api, errText } from "./api.js";
 import { store, on, applySettings } from "./store.js";
@@ -7,7 +7,8 @@ import { toast, switchEl } from "./ui.js";
 
 const SLOTS = [
   { slot: "main", key: "main_mac", title: "Main — Fossibot", hint: "Charge, % — large on the screen" },
-  { slot: "second", key: "second_mac", title: "Second — Daly BMS", hint: "Voltage — top row on the screen" },
+  { slot: "second", key: "second_mac", title: "Second — Daly BMS", hint: "Charge and voltage — middle column on the screen" },
+  { slot: "third", key: "third_mac", title: "Third — lead battery (FNAV-LEAD)", hint: "XIAO ESP32-C6 module: charge (by voltage), voltage, charger — right column" },
 ];
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
 
@@ -25,6 +26,13 @@ export function readingRows(kind, r) {
       ["AC out", `${n1(r.ac_out_v)} V, ${n1(r.ac_out_hz)} Hz`],
       ["To empty / full", `${mins(r.to_empty_min)} / ${mins(r.to_full_min)}`],
       ["Battery", `${n1(r.capacity_ah)} Ah`],
+    ];
+  }
+  if (kind === "lead") {
+    return [
+      ["Battery", `${n1(r.voltage_v)} V (≈ ${n1(r.soc_pct)} %)`],
+      ["12 V input", `${n1(r.input_v)} V — ${r.input_on ? "present" : "none"}`],
+      ["Charger", r.charging ? "on" : "off"],
     ];
   }
   const cells = r.cells_mv || [];
@@ -83,7 +91,7 @@ export function powerCard() {
   function render() {
     clear(body);
     for (const def of SLOTS) body.append(stationBlock(def, st?.stations?.find((x) => x.slot === def.slot)));
-    body.append(h(".hint", null, "Third station (bottom row) — not connected yet. Read-only: nothing is ever written to the stations. "
+    body.append(h(".hint", null, "Read-only: nothing is ever written to the stations. "
       + "The Daly BMS accepts one connection — while the device holds it, the Daly phone app cannot connect."));
   }
 

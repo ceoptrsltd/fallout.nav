@@ -285,10 +285,12 @@ test("power tile: main charge with a gauge, the others in volts, dashes without 
   });
   assert.deepEqual([p.main.big, p.main.unit, p.main.kind, p.main.sub, p.main.note], ["87", "%", "ok", "In 0 W · Out 156 W", "≈ 16 h 40 min left"]);
   assert.ok(Math.abs(p.main.frac - 0.874) < 1e-9);
-  assert.deepEqual([p.second.big, p.second.unit, p.second.kind, p.second.sub], ["20.8", "V", "bad", "BMS 9 %"]);
+  assert.deepEqual([p.second.big, p.second.unit, p.second.kind, p.second.sub], ["9", "%", "bad", "20.8 V"]);
   assert.deepEqual([p.third.big, p.third.sub], ["—", "no data"]);
-  const c = powerInfo({ main: { soc_pct: 35, input_w: 350, output_w: 20, charging: true }, second: {}, third: {} });
-  assert.deepEqual([c.main.kind, c.main.note, c.main.noteKind], ["warn", "charging", "ok"]);
+  const c = powerInfo({ main: { soc_pct: 35, input_w: 350, output_w: 20, charging: true }, second: {},
+    third: { soc_pct: 100, voltage_v: 13.6, charging: true } });
+  assert.deepEqual([c.main.kind, c.main.note, c.main.noteKind, c.main.charging], ["warn", "charging", "ok", true]);
+  assert.deepEqual([c.third.big, c.third.sub, c.third.note, c.third.charging], ["100", "13.6 V", "charging", true]);
   assert.equal(fmtHm(45), "45 min");
   assert.equal(fmtHm(0), "");
 });

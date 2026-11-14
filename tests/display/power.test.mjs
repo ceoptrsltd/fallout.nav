@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 globalThis.OffscreenCanvas = undefined; // спрайты не нужны (null — blit пропускает)
-const { drawPower, powerWidth, socText, voltParts, POWER_H } = await import("../../web/display/ui/power.js");
+const { drawPower, powerWidth, socText, voltText, chargeLit, CHARGE_SEGS, POWER_H } = await import("../../web/display/ui/power.js");
 const { camState, drawIndicators, drawRecTag, rightColumnWidth, indicatorsWidth } = await import("../../web/display/ui/status.js");
 
 function recCtx() {
@@ -40,19 +40,32 @@ test("power: values and dashes", () => {
   assert.equal(socText({ soc_pct: 83.5 }), "83", "the whole part, as the station shows it");
   assert.equal(socText({ soc_pct: 100 }), "100");
   assert.equal(socText(null), "--");
-  assert.deepEqual(voltParts({ voltage_v: 20.84 }), ["20", ".8"]);
-  assert.deepEqual(voltParts({ voltage_v: null }), ["--", ".-"]);
+  assert.equal(voltText({ voltage_v: 20.84 }), "20.8V");
+  assert.equal(voltText({ voltage_v: null }), "--.-V");
 
   const ctx = recCtx();
-  const power = { main: { soc_pct: 91.3, charging: false, low: false }, second: { voltage_v: 20.8, low: false }, third: {} };
+  const power = { main: { soc_pct: 91.3, charging: false, low: false }, second: { soc_pct: 9.4, voltage_v: 20.8, low: false }, third: {} };
   const r = drawPower(ctx, { now: 0.1, telemetry: { power } }, SAFE);
   assert.ok(r && r.h === POWER_H && r.w === powerWidth(ctx));
   assert.equal(Math.round(r.x + r.w), Math.round(SAFE.x + SAFE.w));
   const t = texts(ctx);
-  for (const s of ["91", "%", "20", ".8", "--", ".-"]) assert.ok(t.includes(s), `${s} in ${t}`);
+  for (const s of ["91", "%", "9%", "20.8V", "--%", "--.-V"]) assert.ok(t.includes(s), `${s} in ${t}`);
   assert.equal(drawPower(recCtx(), { telemetry: { power: null } }, SAFE), null, "no data");
   const off = { telemetry: { power }, settings: { power: { show_on_screen: false } } };
   assert.equal(drawPower(recCtx(), off, SAFE), null, "switched off in the settings");
+});
+
+test("power: a charging station runs its charge segments", () => {
+  const lit = [0, 0.5, 1, 1.5, 2, 2.3].map(chargeLit);
+  assert.deepEqual(lit, [0, 1, 2, 3, 4, 0], "fill one by one, then again");
+  assert.equal(CHARGE_SEGS, 4);
+  const rects = (charging) => {
+    const ctx = recCtx();
+    const power = { main: {}, second: {}, third: { soc_pct: 90, voltage_v: 13.6, charging } };
+    drawPower(ctx, { now: 1, telemetry: { power } }, SAFE);
+    return ctx.calls.filter((c) => c[0] === "fillRect").length;
+  };
+  assert.ok(rects(true) >= rects(false) + 2 * CHARGE_SEGS);
 });
 
 test("power: low charge blinks", () => {

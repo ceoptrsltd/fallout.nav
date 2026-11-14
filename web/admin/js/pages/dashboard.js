@@ -398,7 +398,7 @@ export function mount(root) {
   };
   const pwMain = pwCol("Fossibot", true);
   const pwSecond = pwCol("Powerbank", false);
-  const pwThird = pwCol("Station 3", false);
+  const pwThird = pwCol("Lead battery", false);
   const pwTile = tile("#/bluetooth", "bolt", "Power", h(".db-power", null, pwMain.el, pwSecond.el, pwThird.el));
   pwTile.classList.add("wide");
   pwTile.hidden = true;
@@ -412,7 +412,7 @@ export function mount(root) {
       cls(c.big, "db-pw-big " + kindCls(x.kind));
       put(c.sub, x.sub);
       put(c.note, x.note || "");
-      cls(c.note, "db-ts " + kindCls(x.noteKind));
+      cls(c.note, "db-ts " + kindCls(x.noteKind) + (x.charging ? " db-charging" : ""));
       c.note.hidden = !x.note;
       if (c.bar) {
         c.bar.className = "db-batt " + kindCls(x.kind);

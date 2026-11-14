@@ -154,3 +154,15 @@ def test_low_charge_and_main_station_details():
     assert v.low and v.soc_pct == 15.0 and v.output_w == 150 and v.to_empty_min == 960 and v.input_w == 0
     with pytest.raises(ValueError):
         PowerSettings(main_mac="nope")
+
+
+def test_lead_battery_module_frame_and_charge_estimate():
+    from fnav.core import leadbatt
+
+    f = leadbatt.frame(12.37, 13.8, 0x03, 3600)
+    assert len(f) == leadbatt.FRAME_LEN and leadbatt.Frames().feed(f) == f
+    r = leadbatt.parse(f)
+    assert r is not None and r.voltage_v == 12.37 and r.input_v == 13.8 and r.input_on and r.charging
+    assert r.soc_pct == 70.0 and r.uptime_s == 3600
+    assert leadbatt.soc_from_voltage(11.0) == 0.0 and leadbatt.soc_from_voltage(13.5) == 100.0
+    assert leadbatt.parse(f[:-1] + bytes([f[-1] ^ 1])) is None

@@ -368,8 +368,9 @@ export function fmtHm(min) {
 const socKind = (soc) => (!num(soc) ? "" : soc <= 20 ? "bad" : soc <= 40 ? "warn" : "ok");
 
 /**
- * Power tile (docs/contracts/power.md): telemetry.power → {main, second, third}. main: {big, unit, frac (0…1 | null),
- * kind, sub, note, noteKind}; second/third: {big, unit, kind, sub}. null — no power data at all (older device).
+ * Power tile (docs/contracts/power.md): telemetry.power → {main, second, third}, each {big, unit, kind, sub, note,
+ * noteKind, charging}; main also frac (0…1 | null) for its gauge. Second (Daly powerbank) and third (lead battery):
+ * charge, % large, the voltage under it. null — no power data at all (older device).
  */
 export function powerInfo(p) {
   if (!p || typeof p !== "object") return null;
@@ -381,16 +382,19 @@ export function powerInfo(p) {
     frac: soc === null ? null : Math.max(0, Math.min(1, soc / 100)), kind: socKind(soc),
     sub: soc === null ? "no data" : watts ? `In ${m.input_w ?? 0} W · Out ${m.output_w ?? 0} W` : "",
     note: soc === null ? "" : m.charging ? "charging" : fmtHm(m.to_empty_min) ? `≈ ${fmtHm(m.to_empty_min)} left` : "",
-    noteKind: m.charging ? "ok" : "",
+    noteKind: m.charging ? "ok" : "", charging: !!m.charging && soc !== null,
   };
-  const volt = (x) => {
+  const side = (x) => {
+    const s = x && num(x.soc_pct) ? x.soc_pct : null;
     const v = x && num(x.voltage_v) ? x.voltage_v : null;
+    const on = s !== null || v !== null;
     return {
-      big: v === null ? "—" : v.toFixed(1), unit: v === null ? "" : "V", kind: v === null ? "" : socKind(x.soc_pct),
-      sub: v === null ? "no data" : num(x.soc_pct) ? `BMS ${Math.floor(x.soc_pct)} %` : "",
+      big: s === null ? "—" : String(Math.floor(s)), unit: s === null ? "" : "%", kind: socKind(s),
+      sub: v !== null ? `${v.toFixed(1)} V` : on ? "" : "no data",
+      note: on && x.charging ? "charging" : "", noteKind: "ok", charging: on && !!x.charging,
     };
   };
-  return { main, second: volt(p.second), third: volt(p.third) };
+  return { main, second: side(p.second), third: side(p.third) };
 }
 
 const RADIO_ACTIVE = new Set(["playing", "connecting", "waiting_output"]);

@@ -318,8 +318,8 @@ function makeState(cfg, now) {
       camera_rear: o.rear === false ? null : { state: "recording", camera: "rear", recording: o.recording ?? true },
       power: o.power === false ? null : {
         main: "soc" in o ? { soc_pct: o.soc, charging: !!o.charging, low: o.soc != null && o.soc <= 20 } : { soc_pct: 87 },
-        second: { voltage_v: o.connected === false ? null : 20.8, low: false },
-        third: {},
+        second: o.connected === false ? {} : { voltage_v: 20.8, soc_pct: 55, low: false },
+        third: o.connected === false ? {} : { voltage_v: 13.6, soc_pct: 100, charging: true, low: false },
       },
       system: { internet: o.internet ?? true, time_synced: o.timeSynced ?? true },
       radio: typeof cfg.radio === "function" ? cfg.radio(now) : cfg.radio ?? null,

@@ -500,7 +500,8 @@ def build_telemetry() -> dict:
     soc = round(80 + 10 * math.sin(t / 600), 1)  # power.md: Fossibot slowly discharging, the Daly powerbank low
     out["power"] = {"main": {"soc_pct": soc, "charging": False, "low": soc <= 20, "input_w": 0, "output_w": 156,
                              "to_empty_min": 1000},
-                    "second": {"soc_pct": 9.0, "voltage_v": 20.8, "low": True}, "third": {}}
+                    "second": {"soc_pct": 9.0, "voltage_v": 20.8, "low": True},
+                    "third": {"soc_pct": 78.5, "voltage_v": 12.48, "charging": False, "low": False}}
     return out
 
 
@@ -1299,8 +1300,8 @@ async def power_status():
         return {"slot": slot, "kind": kind, "mac": mac, "connected": bool(mac), "age_s": 3.2 if mac else None,
                 "error": None, "reading": reading if mac else None}
     return {"stations": [st("main", "fossibot", p.main_mac, main), st("second", "daly", p.second_mac, second),
-                         {"slot": "third", "kind": "none", "mac": "", "connected": False, "age_s": None, "error": None,
-                          "reading": None}]}
+                         st("third", "lead", p.third_mac, {"voltage_v": 12.48, "soc_pct": 78.5, "input_v": 0.0,
+                                                           "input_on": False, "charging": False, "uptime_s": 3600})]}
 
 
 @app.post("/api/bluetooth/power")

@@ -266,7 +266,7 @@ export class DemoSim {
       power: {
         main: { soc_pct: round(Math.max(20, 86 - this.dist / 2000), 1), charging: false, low: false },
         second: { voltage_v: 20.8, soc_pct: 55, low: false },
-        third: {},
+        third: { voltage_v: 12.4, soc_pct: 72, charging: false, low: false },
       },
       disk: {},
       system: { internet: true, time_synced: true },

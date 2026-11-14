@@ -1072,6 +1072,9 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .db-batt.green i { background: var(--green); }
 .db-batt.amber i { background: var(--amber); }
 .db-batt.red i { background: var(--red); }
+.db-charging::before { content: "⚡ "; }
+@media (prefers-reduced-motion: no-preference) { .db-charging::before { animation: db-pulse 1.2s ease-in-out infinite; } }
+@keyframes db-pulse { 50% { opacity: .25; } }
 @media (max-width: 420px) { .db-pw-big { font-size: 25px; } .db-power { gap: 4px 10px; } .db-pw-col + .db-pw-col { padding-left: 10px; } }
 a.db-tile:hover, a.db-tile:active { --face: linear-gradient(180deg, #1d2219, #151912 45%); }
 .db-van.stale .db-tile { opacity: .5; }

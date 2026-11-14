@@ -1,19 +1,22 @@
 // Электростанции — плашка справа внизу (docs/contracts/power.md, docs/contracts/display.md).
 // Данные — state.telemetry.power = {main, second, third: {soc_pct, voltage_v, charging, low, …}}; плашку выключает
 // настройка power.show_on_screen.
-// Слева крупно заряд главной станции, %; справа две строки — напряжения второй и третьей, выровнены по десятичной
-// точке; черта — посередине между ними. Нет данных — прочерки; заряд ≤ 20 % (low) — значение мигает; главная
-// заряжается — молния под знаком %. Ширина постоянная (по самым широким значениям) — соседи не «дышат».
+// Слева крупно заряд главной станции, %; справа две колонки — вторая (Powerbank) и третья (свинцовый аккумулятор):
+// сверху заряд, %, под ним напряжение; черта — посередине. Нет данных — прочерки; заряд ≤ 20 % (low) — мигает;
+// заряжается — анимация: у главной пульсирует молния под знаком %, в колонке между % и напряжением бегут сегменты
+// заряда (как на телефоне). Ширина постоянная (по самым широким значениям) — соседи не «дышат».
 
 import { C, blinkOn, blit, fontNum, outlinedText, plateSprite, setting, spriteGeneration, textWidth } from "./theme.js";
 
 export const POWER_H = 84; // как плашка радио/погоды (ui/radio.js RADIO_H): две строки индикаторов + поля
-const PAD = 16;
-const BIG = () => fontNum(46, 700);
+const PAD = 14;
+const BIG = () => fontNum(44, 700);
 const BIG_3 = () => fontNum(38, 700); // «100»
 const PCT = () => fontNum(24, 600);
-const VF = () => fontNum(27, 600);
-const VU = () => fontNum(20, 600);
+const CF = () => fontNum(26, 600); // % в колонках
+const CF_3 = () => fontNum(22, 600); // «100%»
+const CV = () => fontNum(19, 500); // напряжение под ним
+const COL_GAP = 10;
 const PCT_COL = 16; // место под «%» и молнию
 const SEP = 2;
 
@@ -28,22 +31,19 @@ export function socText(slot) {
   return Number.isFinite(v) ? String(Math.max(0, Math.min(100, Math.floor(v)))) : "--";
 }
 
-/** «20.8» → ["20", ".8"]; нет данных — ["--", ".-"]. */
-export function voltParts(slot) {
+/** «20.8V»; нет данных — «--.-V». */
+export function voltText(slot) {
   const v = slot?.voltage_v;
-  if (!Number.isFinite(v)) return ["--", ".-"];
-  const [i, f] = v.toFixed(1).split(".");
-  return [i, "." + f];
+  return Number.isFinite(v) ? `${v.toFixed(1)}V` : "--.-V";
 }
 
 let metrics = null;
 function measure(ctx) {
   if (metrics && metrics.gen === spriteGeneration()) return metrics; // шрифты загрузились — заново
   const bigW = Math.ceil(textWidth(ctx, BIG(), "88"));
-  const intW = Math.ceil(textWidth(ctx, VF(), "88"));
-  const fracW = Math.ceil(textWidth(ctx, VF(), ".8") + 1 + textWidth(ctx, VU(), "V"));
-  // черта посередине между «88%» и вольтами: по 10 px с каждой стороны при самых широких значениях
-  metrics = { gen: spriteGeneration(), bigW, intW, fracW, w: PAD + bigW + 2 + PCT_COL + 10 + SEP + 10 + intW + fracW + PAD };
+  const colW = Math.ceil(Math.max(textWidth(ctx, CF(), "88%"), textWidth(ctx, CV(), "88.8V")));
+  // черта посередине между «88%» и колонками: по 10 px с каждой стороны при самых широких значениях
+  metrics = { gen: spriteGeneration(), bigW, colW, w: PAD + bigW + 2 + PCT_COL + 8 + SEP + 8 + 2 * colW + COL_GAP + PAD - 4 };
   return metrics;
 }
 
@@ -52,15 +52,17 @@ export function powerWidth(ctx) {
   return measure(ctx).w;
 }
 
-function bolt(ctx, cx, cy) {
+function bolt(ctx, cx, cy, k = 1) {
   ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(k, k);
   ctx.beginPath();
-  ctx.moveTo(cx + 3, cy - 10);
-  ctx.lineTo(cx - 5, cy + 2);
-  ctx.lineTo(cx, cy + 2);
-  ctx.lineTo(cx - 3, cy + 10);
-  ctx.lineTo(cx + 5, cy - 2);
-  ctx.lineTo(cx, cy - 2);
+  ctx.moveTo(3, -10);
+  ctx.lineTo(-5, 2);
+  ctx.lineTo(0, 2);
+  ctx.lineTo(-3, 10);
+  ctx.lineTo(5, -2);
+  ctx.lineTo(0, -2);
   ctx.closePath();
   ctx.lineJoin = "round";
   ctx.lineWidth = 4;
@@ -68,6 +70,30 @@ function bolt(ctx, cx, cy) {
   ctx.stroke();
   ctx.fillStyle = C.accent;
   ctx.fill();
+  ctx.restore();
+}
+
+export const CHARGE_SEGS = 4;
+export const CHARGE_STEP_S = 0.45;
+
+/** Сколько сегментов полосы заряда горит сейчас: 0…CHARGE_SEGS по кругу (заполняются по одному, потом снова). */
+export function chargeLit(now) {
+  return Math.floor(now / CHARGE_STEP_S) % (CHARGE_SEGS + 1);
+}
+
+/** Полоса заряда: CHARGE_SEGS сегментов, горящие — ярко, остальные — контур. */
+function chargeBar(ctx, x, y, w, now) {
+  const lit = chargeLit(now);
+  const gap = 3;
+  const sw = (w - gap * (CHARGE_SEGS - 1)) / CHARGE_SEGS;
+  ctx.save();
+  for (let i = 0; i < CHARGE_SEGS; i++) {
+    const sx = Math.round(x + i * (sw + gap));
+    ctx.fillStyle = C.shadow;
+    ctx.fillRect(sx - 1, y - 1, Math.round(sw) + 2, 7);
+    ctx.fillStyle = i < lit ? C.ink : C.inkFaint;
+    ctx.fillRect(sx, y, Math.round(sw), 5);
+  }
   ctx.restore();
 }
 
@@ -92,22 +118,23 @@ export function drawPower(ctx, state, safe) {
   outlinedText(ctx, pct, xn, cy + 2, big, { align: "left", lw: 6, fill: mainInk });
   const xp = xn + textWidth(ctx, big, pct) + 1;
   outlinedText(ctx, "%", xp, cy - 11, PCT(), { align: "left", lw: 4, fill: mainInk });
-  if (main?.charging) bolt(ctx, xp + 8, cy + 15);
+  if (main?.charging && blinkOn(now, 1, 0.65)) bolt(ctx, xp + 8, cy + 15);
   const leftEnd = xp + textWidth(ctx, PCT(), "%");
 
-  // справа: вольты, по десятичной точке; блок прижат к правому краю
-  const xr = x + m.w - PAD;
-  const xPoint = xr - m.fracW;
-  const rightStart = xPoint - m.intW;
+  // справа: две колонки (вторая, третья), прижаты к правому краю; в колонке по центру: %, под ним напряжение
+  const rightStart = x + m.w - (PAD - 4) - 2 * m.colW - COL_GAP;
   ctx.fillStyle = C.metal;
   ctx.fillRect(Math.round((leftEnd + rightStart) / 2 - SEP / 2), y + 12, SEP, POWER_H - 24);
   [p.second, p.third].forEach((slot, k) => {
-    const ry = y + 24 + k * 36;
-    const [i, f] = voltParts(slot);
-    const fill = ink(slot, i !== "--");
-    outlinedText(ctx, i, xPoint, ry, VF(), { align: "right", lw: 4, fill });
-    outlinedText(ctx, f, xPoint, ry, VF(), { align: "left", lw: 4, fill });
-    outlinedText(ctx, "V", xPoint + textWidth(ctx, VF(), f) + 1, ry + 2, VU(), { align: "left", lw: 4, fill });
+    const cx = rightStart + k * (m.colW + COL_GAP) + m.colW / 2;
+    const s = socText(slot);
+    const known = s !== "--";
+    const fill = ink(slot, known);
+    const t = `${s}%`;
+    const f = textWidth(ctx, CF(), t) > m.colW + 2 ? CF_3() : CF();
+    outlinedText(ctx, t, cx, y + 30, f, { lw: 4, fill });
+    outlinedText(ctx, voltText(slot), cx, y + 61, CV(), { lw: 4, fill: Number.isFinite(slot?.voltage_v) ? C.ink : C.inkDim });
+    if (slot?.charging) chargeBar(ctx, cx - m.colW / 2 + 2, y + 44, m.colW - 4, now);
   });
   return { x, y, w: m.w, h: POWER_H };
 }

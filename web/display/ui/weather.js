@@ -244,15 +244,18 @@ export function drawWeather(ctx, state, safe, liftPx = 0) {
   }
 
   // завтра, послезавтра: «MON [значок] 14°/6°» — блок прижат к правому краю (не сдвигается от смены температуры
-  // «сейчас»); минимум — если помещается в обеих строках, иначе только максимум
+  // «сейчас»); минимум — если помещается в обеих строках, иначе только максимум; совсем тесно (плашка станций,
+  // ui/power.js) — и без значков у дней
   const lf = fontNum(25, 600);
   const nf = fontNum(25, 600);
   const lblW = Math.max(...DAYS_LBL.map((d) => textWidth(ctx, lf, d)));
   const days = (w.days || []).slice(0, 2).map((d) => ({ d, hi: fmtTemp(d.t_max), lo: `/${fmtTemp(d.t_min)}` }));
-  const head = lblW + 5 + DAY_ICON.w + 5;
   const fullW = Math.max(0, ...days.map((t) => textWidth(ctx, nf, t.hi + t.lo)));
   const hiW = Math.max(0, ...days.map((t) => textWidth(ctx, nf, t.hi)));
-  const withLo = x1 - (leftEnd + 2 * SEP_GAP + 2) >= head + fullW;
+  const room = x1 - (leftEnd + 2 * SEP_GAP + 2);
+  const icons = room >= lblW + 5 + DAY_ICON.w + 5 + hiW;
+  const head = icons ? lblW + 5 + DAY_ICON.w + 5 : lblW + 8;
+  const withLo = room >= head + fullW;
   const dx0 = Math.round(x1 - head - (withLo ? fullW : hiW));
 
   // черта — посередине между «сейчас» и прогнозом: зазоры слева и справа равны
@@ -263,8 +266,10 @@ export function drawWeather(ctx, state, safe, liftPx = 0) {
   days.forEach(({ d, hi, lo }, k) => {
     const cy = y + 24 + k * 36;
     outlinedText(ctx, d.weekday, dx0, cy, lf, { align: "left", lw: 4, fill: k === 0 ? C.accent : ink });
-    const icx = dx0 + lblW + 5;
-    blit(ctx, iconSprite(weatherKind(d.code), true, DAY_ICON.w, DAY_ICON.h), icx, Math.round(cy - DAY_ICON.h / 2 - 1));
+    if (icons) {
+      const icx = dx0 + lblW + 5;
+      blit(ctx, iconSprite(weatherKind(d.code), true, DAY_ICON.w, DAY_ICON.h), icx, Math.round(cy - DAY_ICON.h / 2 - 1));
+    }
     if (withLo) {
       outlinedText(ctx, lo, x1, cy, nf, { align: "right", lw: 4, fill: C.inkDim });
       outlinedText(ctx, hi, x1 - textWidth(ctx, nf, lo), cy, nf, { align: "right", lw: 4, fill: ink });

@@ -445,13 +445,14 @@ class VehicleSettings(_Model):
 
 class PowerSettings(_Model):
     """Электростанции на экране (docs/contracts/power.md): по Bluetooth LE, только чтение. Пустой адрес — не
-    опрашивать (на экране прочерки). Третья станция (нижняя строка) — пока заглушка."""
+    опрашивать (на экране прочерки)."""
 
     show_on_screen: bool = True  # плашка справа внизу (телеметрия идёт и без неё — для веб-интерфейса)
     main_mac: str = "70:AF:09:06:E9:1A"  # главная — Fossibot F3600 Pro («POWER-0201»): заряд, % крупно
-    second_mac: str = "74:C1:4E:10:00:9B"  # вторая — Daly BMS («Tattu powerbank»): напряжение, верхняя строка
+    second_mac: str = "74:C1:4E:10:00:9B"  # вторая — Daly BMS («Tattu powerbank»)
+    third_mac: str = "10:BD:A3:B2:48:5A"  # третья — свинцовый 12 V, модуль XIAO ESP32-C6 «FNAV-LEAD» (firmware/lead-battery)
 
-    @field_validator("main_mac", "second_mac")
+    @field_validator("main_mac", "second_mac", "third_mac")
     @classmethod
     def _mac(cls, v: str) -> str:
         m = (v or "").strip().upper().replace("-", ":")
@@ -926,7 +927,7 @@ class PowerStationStatus(_Model):
     """Для админки (GET /api/power): подключение и все показания станции."""
 
     slot: Literal["main", "second", "third"]
-    kind: Literal["fossibot", "daly", "none"]
+    kind: Literal["fossibot", "daly", "lead", "none"]
     mac: str = ""
     connected: bool = False
     age_s: float | None = None  # сколько секунд назад последнее показание

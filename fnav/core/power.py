@@ -22,7 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from fnav.core import daly, fossibot
+from fnav.core import daly, fossibot, leadbatt
 from fnav.core.ble import BleError, BleLink
 from fnav.core.util import cancel_tasks
 from fnav.models import PowerSettings, PowerSlot, PowerStationStatus, PowerStatus, PowerTelemetry
@@ -43,7 +43,7 @@ QUIET_POLL_S = 2.0
 
 @dataclass(frozen=True)
 class Protocol:
-    kind: Literal["fossibot", "daly"]
+    kind: Literal["fossibot", "daly", "lead"]
     subscribe: tuple[str, ...]
     reply_uuid: str
     write_uuid: str
@@ -57,12 +57,14 @@ FOSSIBOT = Protocol("fossibot", (fossibot.NOTIFY_UUID, fossibot.INDICATE_UUID), 
                     fossibot.WRITE_UUID, True, fossibot.REQUEST, fossibot.Frames, fossibot.parse)
 DALY = Protocol("daly", (daly.NOTIFY_UUID,), daly.NOTIFY_UUID, daly.WRITE_UUID, False, daly.REQUEST, daly.Frames,
                 daly.parse)
+LEAD = Protocol("lead", (leadbatt.STATUS_UUID,), leadbatt.STATUS_UUID, leadbatt.CMD_UUID, False, leadbatt.REQUEST,
+                leadbatt.Frames, leadbatt.parse)
 
 LinkFactory = Callable[[str, Callable[[str, bytes], None]], Any]
 
 
 class StationReader:
-    def __init__(self, slot: Literal["main", "second"], proto: Protocol, quiet: Callable[[], bool] = lambda: False,
+    def __init__(self, slot: Literal["main", "second", "third"], proto: Protocol, quiet: Callable[[], bool] = lambda: False,
                  link_factory: LinkFactory = BleLink, mono: Callable[[], float] = time.monotonic) -> None:
         self.slot = slot
         self.proto = proto
@@ -219,8 +221,12 @@ class FakeLink:
 
     async def write(self, uuid: str, data: bytes, response: bool = False) -> None:
         t = time.monotonic() - self.t0
-        frame = fake_fossibot(80 + 15 * math.sin(t / 300)) if self.proto.kind == "fossibot" \
-            else fake_daly(20.6 + 0.4 * math.sin(t / 200))
+        if self.proto.kind == "fossibot":
+            frame = fake_fossibot(80 + 15 * math.sin(t / 300))
+        elif self.proto.kind == "daly":
+            frame = fake_daly(20.6 + 0.4 * math.sin(t / 200))
+        else:
+            frame = leadbatt.frame(12.5 + 0.2 * math.sin(t / 250), 0.0, 0, int(t))
         loop = asyncio.get_running_loop()
         loop.call_later(0.05, self.on_value, self.proto.reply_uuid, frame)
 
@@ -265,6 +271,7 @@ class PowerService:
 
         self.main = StationReader("main", FOSSIBOT, quiet, factory(FOSSIBOT))
         self.second = StationReader("second", DALY, quiet, factory(DALY))
+        self.third = StationReader("third", LEAD, quiet, factory(LEAD))
         self.running = False
         self._lock = asyncio.Lock()  # настройки меняются подряд — переподключения по очереди
 
@@ -275,22 +282,24 @@ class PowerService:
     async def apply_settings(self, s: PowerSettings) -> None:
         if not self.running:
             return
-        main_mac, second_mac = s.main_mac, s.second_mac
+        main_mac, second_mac, third_mac = s.main_mac, s.second_mac, s.third_mac
         if self.mock:  # в демо станции «есть» и без настроек
             main_mac, second_mac = main_mac or "70:AF:09:00:00:01", second_mac or "74:C1:4E:00:00:02"
+            third_mac = third_mac or "58:8C:81:00:00:03"
         async with self._lock:
             await self.main.set_mac(main_mac)
             await self.second.set_mac(second_mac)
+            await self.third.set_mac(third_mac)
 
     async def stop(self) -> None:
         self.running = False
         await self.main.stop()
         await self.second.stop()
+        await self.third.stop()
 
     def telemetry(self) -> PowerTelemetry:
         """Всегда (веб-интерфейс); плашку на экране прячет сам экран по power.show_on_screen."""
-        return PowerTelemetry(main=self.main.slot_view(), second=self.second.slot_view())
+        return PowerTelemetry(main=self.main.slot_view(), second=self.second.slot_view(), third=self.third.slot_view())
 
     def status(self) -> PowerStatus:
-        return PowerStatus(stations=[self.main.status(), self.second.status(),
-                                     PowerStationStatus(slot="third", kind="none")])
+        return PowerStatus(stations=[self.main.status(), self.second.status(), self.third.status()])
