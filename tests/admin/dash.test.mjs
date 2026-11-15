@@ -280,7 +280,7 @@ test("power tile: main charge with a gauge, the others in volts, dashes without 
   assert.equal(powerInfo(undefined), null);
   const p = powerInfo({
     main: { soc_pct: 87.4, input_w: 0, output_w: 156, to_empty_min: 1000, charging: false },
-    second: { voltage_v: 20.84, soc_pct: 9.9, cell_delta_mv: 140, cell_delta_bad: true, balancing: true },
+    second: { voltage_v: 20.84, soc_pct: 9.9, cell_delta_mv: 140, cell_delta_bad: true, balancing: true, cells_mv: [3487, 3436] },
     third: {},
   });
   assert.deepEqual([p.main.big, p.main.unit, p.main.kind, p.main.sub, p.main.note], ["87", "%", "ok", "In 0 W · Out 156 W", "≈ 16 h 40 min left"]);
@@ -288,6 +288,8 @@ test("power tile: main charge with a gauge, the others in volts, dashes without 
   assert.deepEqual([p.second.big, p.second.unit, p.second.kind, p.second.sub], ["9", "%", "bad", "20.8 V"]);
   assert.deepEqual([p.second.cells, p.second.cellsBad], ["Δ 140 mV cells", true]);
   assert.deepEqual([p.second.balance, p.second.balancing], ["balancing", true]);
+  assert.deepEqual(p.second.cellVolts, ["3.487", "3.436"]);
+  assert.deepEqual(p.third.cellVolts, []);
   assert.equal(powerInfo({ second: { soc_pct: 50, balancing: false } }).second.balance, "balancing off");
   assert.equal(p.third.balance, "", "no balancing line where the station has none");
   assert.deepEqual([p.third.big, p.third.sub], ["—", "no data"]);

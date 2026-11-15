@@ -397,7 +397,8 @@ export function mount(root) {
     const cells = h(".db-ts", { hidden: true });
     const bal = h(".db-ts", { hidden: true });
     const note = h(".db-ts");
-    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit), bar, sub, cells, bal, note), big, unit, bar, sub, cells, bal, note };
+    const volts = h("span.db-pw-cells", { hidden: true, title: "cell voltages, V" });
+    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit, volts), bar, sub, cells, bal, note), big, unit, bar, sub, cells, bal, note, volts };
   };
   const pwMain = pwCol("Fossibot", true);
   const pwSecond = pwCol("Powerbank", false);
@@ -429,6 +430,12 @@ export function mount(root) {
       put(c.bal, x.balance || "");
       c.bal.hidden = !x.balance;
       cls(c.bal, "db-ts" + (x.balancing ? " green db-balancing" : ""));
+      const cv = x.cellVolts || [];
+      if (c.volts.dataset.v !== cv.join(" ")) {
+        c.volts.dataset.v = cv.join(" ");
+        c.volts.replaceChildren(...cv.map((v) => h("span", null, v)));
+      }
+      c.volts.hidden = !cv.length;
       if (c.bar) {
         c.bar.className = "db-batt " + kindCls(x.kind);
         c.bar.firstChild.style.width = x.frac === null ? "0%" : `${Math.round(x.frac * 100)}%`;

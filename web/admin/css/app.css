@@ -1066,6 +1066,11 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .db-pw-big.amber { color: var(--amber); }
 .db-pw-big.red { color: var(--red); }
 .db-pw-unit { margin-left: 3px; font-size: 14px; color: var(--dim); }
+/* Daly: напряжения ячеек мелко справа от процента, по 3 в столбце */
+.db-pw-cells { display: inline-grid; grid-template-rows: repeat(3, auto); grid-auto-flow: column; gap: 0 8px;
+  margin-left: 10px; vertical-align: middle; font-family: var(--f-num); font-size: 11px; line-height: 1.2; color: var(--dim); }
+.db-pw-cells[hidden] { display: none; }
+@media (max-width: 420px) { .db-pw-cells:not([hidden]) { display: grid; width: max-content; margin: 2px 0 0; } }
 .db-batt { position: relative; height: 9px; margin: 3px 6px 3px 0; border: 1px solid var(--metal); border-radius: 2px; }
 .db-batt::after { content: ""; position: absolute; right: -5px; top: 2px; width: 3px; height: 3px; background: var(--metal); }
 .db-batt i { display: block; height: 100%; width: 0; background: var(--ink); transition: width .6s; }

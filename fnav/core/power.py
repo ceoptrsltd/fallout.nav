@@ -252,8 +252,9 @@ class StationReader:
         if r is None:
             return PowerSlot()
         soc = float(r.soc_pct)
-        delta = balancing = None
+        delta = balancing = cells = None
         if self.proto.kind == "daly":
+            cells = list(r.cells_mv) or None
             balancing = None if r.balancing is None else bool(r.balancing)
             outputs = {"charge": bool(r.charge_on), "discharge": bool(r.discharge_on)}
             delta = r.delta_mv if r.delta_mv is not None else (
@@ -266,7 +267,8 @@ class StationReader:
                          low=soc <= LOW_SOC_PCT, input_w=getattr(r, "input_w", None),
                          output_w=getattr(r, "output_w", None), to_empty_min=getattr(r, "to_empty_min", None),
                          outputs=outputs, charger_mode=getattr(r, "mode", None), cell_delta_mv=delta,
-                         cell_delta_bad=delta is not None and delta > CELL_DELTA_BAD_MV, balancing=balancing)
+                         cell_delta_bad=delta is not None and delta > CELL_DELTA_BAD_MV, balancing=balancing,
+                         cells_mv=cells)
 
     def status(self) -> PowerStationStatus:
         age = None if self.read_at is None else round(self.mono() - self.read_at, 1)

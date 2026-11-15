@@ -502,6 +502,7 @@ def build_telemetry() -> dict:
     out["power"] = {"main": {"soc_pct": soc, "charging": False, "low": soc <= 20, "input_w": 0, "output_w": 156,
                              "to_empty_min": 1000, "outputs": dict(MOCK_POWER["main"])},
                     "second": {"soc_pct": 9.0, "voltage_v": 20.8, "low": True, "cell_delta_mv": 60, "cell_delta_bad": False, "balancing": True,
+                               "cells_mv": [3487, 3487, 3436, 3488, 3488, 3496],
                                "outputs": dict(MOCK_POWER["second"])},
                     "third": {"soc_pct": 78.5, "voltage_v": 12.48, "charging": lead_on, "low": False,
                               "outputs": {"charger": lead_on}, "charger_mode": MOCK_POWER["mode"]}}

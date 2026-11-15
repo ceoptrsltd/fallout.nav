@@ -397,6 +397,8 @@ export function powerInfo(p) {
       // Daly: балансировка ячеек — идёт или нет (у других станций строки нет)
       balance: on && typeof x.balancing === "boolean" ? (x.balancing ? "balancing" : "balancing off") : "",
       balancing: on && x.balancing === true,
+      // Daly: напряжения ячеек мелко рядом с процентом, «3.487»
+      cellVolts: on && Array.isArray(x.cells_mv) ? x.cells_mv.filter(num).map((mv) => (mv / 1000).toFixed(3)) : [],
     };
   };
   return { main, second: side(p.second), third: side(p.third) };
