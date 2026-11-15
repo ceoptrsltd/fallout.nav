@@ -91,6 +91,10 @@ const ICONS = {
   alarm: "M4 18h16v3H4v-3zm2-1v-5a6 6 0 0 1 12 0v5H6zm3-4.5h1.5a1.5 1.5 0 0 1 1.5-1.5V9.5a3 3 0 0 0-3 3zM11 1h2v3h-2V1zM3.5 4.9l1.4-1.4L7 5.6 5.6 7 3.5 4.9zm17 0L18.4 7 17 5.6l2.1-2.1 1.4 1.4z",
   // spirit level: bar with a window and the bubble in it
   bolt: "M13 2 4 14h6l-1 8 9-12h-6l1-8z",
+  // tuner: a tuning fork; the microphone; a tick
+  tuner: "M8 2h2v8a2 2 0 0 0 4 0V2h2v8a4 4 0 0 1-3 3.87V22h-2v-8.13A4 4 0 0 1 8 10V2z",
+  mic: "M12 15a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v7a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V22h2v-3.1A7 7 0 0 0 19 12h-2z",
+  check: "M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z",
   // radio: shuffle (crossing arrows), the star (filled / outline), a list with a star — play the favorites
   shuffle: "M10.6 9.2 5.4 4 4 5.4l5.2 5.2 1.4-1.4zM14.5 4l2 2L4 18.6 5.4 20 18 7.5l2 2V4h-5.5zm.3 9.4-1.4 1.4 3.1 3.1-2 2.1H20v-5.5l-2 2-3.2-3.1z",
   star: "M12 17.3 18.2 21l-1.7-7L22 9.2l-7.2-.6L12 2 9.2 8.6 2 9.2 7.5 14l-1.7 7z",

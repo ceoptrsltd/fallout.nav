@@ -1464,3 +1464,87 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
   .db-qseg { flex: 1 1 100%; flex-wrap: nowrap; }
   .db-qseg label { flex: 1 1 0; justify-content: center; }
 }
+
+/* ───── tuner (pages/tuner.js): the gauge, the note, the strings as on a headstock ───── */
+.tn-page { max-width: 760px; }
+.tn-card { display: flex; flex-direction: column; gap: 16px; }
+.tn-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 18px; }
+.tn-lbl { font-family: var(--f-label); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.tn-tun { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 260px; }
+.tn-sel { flex: 1 1 auto; min-width: 0; max-width: 360px; }
+.tn-a4 { display: flex; align-items: center; gap: 6px; flex: none; }
+.tn-a4v { min-width: 62px; text-align: center; font-family: var(--f-num); font-size: 15px; color: var(--ink); }
+.tn-display { position: relative; display: flex; flex-direction: column; align-items: center; padding: 6px 0 2px; }
+.tn-gauge { display: block; width: 100%; max-width: 460px; height: auto; overflow: visible; }
+.tn-arc { fill: none; stroke: var(--line2); stroke-width: 2; }
+.tn-zone { fill: none; stroke-width: 8; stroke-linecap: butt; }
+.tn-zone.close { stroke: rgba(255, 182, 46, .28); }
+.tn-zone.good { stroke: rgba(93, 255, 138, .75); }
+.tn-tick { stroke: var(--faint); stroke-width: 1.2; }
+.tn-tick.major { stroke: var(--dim); stroke-width: 2; }
+.tn-tlbl { font-family: var(--f-num); font-size: 12px; fill: var(--faint); }
+.tn-flat, .tn-sharp { font-size: 22px; fill: var(--dim); }
+.tn-needle line { stroke: var(--dim); stroke-width: 3.5; stroke-linecap: round; transition: stroke .2s; }
+.tn-needle circle { fill: var(--panel3); stroke: var(--metal); stroke-width: 2; }
+.tn-needle.idle line { stroke: var(--line2); }
+.tn-needle.off line { stroke: var(--red); filter: drop-shadow(0 0 4px rgba(255, 90, 74, .6)); }
+.tn-needle.close line { stroke: var(--amber); filter: drop-shadow(0 0 4px rgba(255, 182, 46, .6)); }
+.tn-needle.good line { stroke: var(--green); filter: drop-shadow(0 0 6px rgba(93, 255, 138, .8)); }
+.tn-needle.held { opacity: .45; }
+/* the note under the needle's pivot */
+.tn-read { display: flex; align-items: baseline; justify-content: center; gap: 14px; margin-top: 6px; min-height: 66px; }
+.tn-notebox { display: flex; align-items: baseline; }
+.tn-note { font-family: var(--f-stencil); font-size: 64px; line-height: 1; color: var(--ink); letter-spacing: .02em; transition: color .2s; }
+.tn-note.good { color: var(--green); text-shadow: 0 0 18px rgba(93, 255, 138, .45); }
+.tn-note.close { color: var(--amber); }
+.tn-note.off { color: #ff8a7c; }
+.tn-oct { font-family: var(--f-num); font-size: 22px; color: var(--dim); margin-left: 2px; min-width: 12px; }
+.tn-nums { display: flex; flex-direction: column; gap: 2px; min-width: 84px; }
+.tn-cents { font-family: var(--f-num); font-size: 22px; color: var(--ink); white-space: nowrap; }
+.tn-cents.good { color: var(--green); }
+.tn-cents.close { color: var(--amber); }
+.tn-cents.off { color: #ff8a7c; }
+.tn-hz { font-family: var(--f-num); font-size: 14px; color: var(--dim); white-space: nowrap; }
+.tn-hint { margin-top: 10px; font-family: var(--f-label); font-size: 15px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink); min-height: 1.3em; }
+.tn-hint.good { color: var(--green); }
+.tn-hint.close { color: var(--amber); }
+.tn-hint.off { color: #ff8a7c; }
+.tn-hint.dim { color: var(--faint); }
+.tn-target { margin-top: 4px; font-size: 12.5px; color: var(--faint); font-family: var(--f-num); letter-spacing: .02em; }
+/* strings: six pegs, the 6th (lowest) on the left */
+.tn-strrow { display: flex; align-items: stretch; gap: 10px; }
+.tn-strings { flex: 1 1 auto; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+.tn-str { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; min-height: 64px; padding: 6px 2px;
+  border: 1px solid var(--line2); border-radius: var(--radius); background: var(--panel2, #12160f); color: var(--text); cursor: pointer;
+  transition: border-color .2s, background .2s; -webkit-tap-highlight-color: transparent; }
+.tn-str:hover { border-color: var(--metal); }
+.tn-str-n { font-family: var(--f-stencil); font-size: 24px; line-height: 1.05; color: var(--ink); }
+.tn-str-k { font-family: var(--f-num); font-size: 11px; color: var(--faint); }
+.tn-str-ok { position: absolute; top: 3px; right: 4px; color: var(--green); line-height: 0; visibility: hidden; }
+.tn-str-ok svg { width: 14px; height: 14px; }
+.tn-str.ok .tn-str-ok { visibility: visible; }
+.tn-str.ok { border-color: rgba(93, 255, 138, .45); }
+.tn-str.target { border-color: var(--amber); background: #251c08; box-shadow: 0 0 0 1px var(--amber) inset; }
+.tn-str.target .tn-str-n { color: var(--amber); }
+.tn-str.picked::after { content: ""; position: absolute; left: 50%; bottom: 4px; width: 14px; height: 2px; margin-left: -7px; background: var(--amber); }
+.tn-auto { flex: none; min-width: 64px; font-family: var(--f-label); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+.tn-auto.on { color: var(--amber); border-color: var(--amber-d); background: #2a1f07; }
+.tn-ctl { display: flex; align-items: center; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.tn-mic { min-height: 48px; min-width: 132px; gap: 8px; font-size: 15px; }
+.tn-tone { min-height: 48px; gap: 7px; margin-left: auto; }
+.tn-meter { flex: 1 1 auto; max-width: 260px; height: 8px; border: 1px solid var(--line2); border-radius: 4px; overflow: hidden; background: var(--bg); }
+.tn-meter i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--green), var(--amber)); transition: width .08s; }
+.tn-help ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; color: var(--dim); font-size: 13.5px; line-height: 1.5; }
+.tn-help b { color: var(--ink); font-weight: 600; }
+.tn-page .tn-help { margin-top: 16px; }
+.tn-page > div > .banner { margin-bottom: 14px; }
+@media (max-width: 600px) {
+  .tn-read { gap: 10px; }
+  .tn-note { font-size: 54px; }
+  .tn-strings { gap: 6px; }
+  .tn-str { min-height: 58px; }
+  .tn-str-n { font-size: 21px; }
+  .tn-strrow { flex-direction: column; }
+  .tn-auto { min-height: 40px; }
+  .tn-mic { min-width: 112px; }
+}

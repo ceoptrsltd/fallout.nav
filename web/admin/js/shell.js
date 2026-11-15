@@ -26,6 +26,7 @@ const PAGES = [
   { id: "nav", title: "Navigation", icon: "nav", load: () => import("./pages/nav.js") },
   { id: "compass", title: "Compass", icon: "compass", load: () => import("./pages/compass.js") },
   { id: "level", title: "Level", icon: "level", load: () => import("./pages/level.js") },
+  { id: "tuner", title: "Tuner", icon: "tuner", load: () => import("./pages/tuner.js") },
   { id: "gps", title: "GPS", icon: "gps", load: () => import("./pages/gps.js") },
   { id: "controls", title: "Controls", icon: "keys", load: () => import("./pages/controls.js") },
   { id: "system", title: "System", icon: "sys", load: () => import("./pages/system.js") },

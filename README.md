@@ -75,7 +75,8 @@ fallout.nav turns a Raspberry Pi Compute Module 4 behind the dashboard of a 2001
   default) for its own phone app; the Dashboard shows the cell voltages and balancing of the powerbank.
 - **Web UI** (phone or laptop, installable as an app) — dashboard, alarm, live video from both cameras (WebRTC, or
   an on‑demand H.264 stream with the rear camera's sound), recordings with alarm events on the timeline,
-  navigation/compass/level/GPS/radio/controls/system settings, and a **1:1 physical‑size preview** of the car screen.
+  navigation/compass/level/GPS/radio/controls/system settings, a **1:1 physical‑size preview** of the car screen,
+  and a **guitar tuner** — six strings, eight tunings, by the phone's microphone (pitch detection in the browser).
 - **Composite video straight from the SoC** — a wire on CM4 pin 111 (`VDAC_COMP`), NTSC 480i/60 Hz with output
   margins and mirroring tuned for the RV‑50. The video output can be switched off from the macro pad so it does not
   bleed into the monitor's other camera input; the button on the GPS module switches the car screen between the
