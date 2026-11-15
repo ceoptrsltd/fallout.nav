@@ -7,6 +7,7 @@
 import { h, icon, fmt, fmtBytes, isNum } from "../dom.js";
 import { api, appUrl, errText, goLogin, REMOTE } from "../api.js";
 import { loadMpegts } from "../vendor.js";
+import { quickActions } from "../quick-actions.js";
 import { SettingsForm, section } from "../form.js";
 import { store, on } from "../store.js";
 import { banner, confirmDialog, segmented, switchEl, toast } from "../ui.js";
@@ -833,9 +834,11 @@ export function mount(root) {
   const onVis = () => syncPlayers();
   document.addEventListener("visibilitychange", onVis);
 
+  const quick = quickActions(); // protect the recording, the car monitor, what the car screen shows
   root.append(
     h(".page-head", null, h("h1", null, "Camera"), hasRear ? tabSeg : null),
     warnBox,
+    quick.el,
     frontPane,
     hasRear ? rearPane : null,
   );
@@ -854,6 +857,7 @@ export function mount(root) {
 
   return () => {
     stopped = true;
+    quick.dispose();
     offT();
     offS();
     offC();

@@ -1,12 +1,13 @@
-// Dashboard: the alarm first (state, Arm / Disarm / Stop siren & lights, camera watch, problems), the latest alarm
-// events, then the van at a glance (position, camera, quick actions, system, level, power stations, radio). Live data from telemetry;
+// Dashboard: the alarm button first (it says the state, the camera watch, problems — and arms / disarms), the radio,
+// the air, the power stations, then the latest alarm events and the van at a glance (position, camera, system, level).
+// Quick actions live on the Camera page (quick-actions.js). Live data from telemetry;
 // api/alarm (camera watch, events) is polled slowly and fetched at once on a new event (telemetry alarm.seq) or state
 // change. Device unreachable: the last known data (this session's, or kept in localStorage — store.js keep) greyed out
 // with "Last seen …"; remotely the position may come from the server's journal (api/tracking/last).
 import { h, icon, clear, isNum } from "../dom.js";
 import { api, errText, REMOTE } from "../api.js";
-import { store, on, keep, kept, lastTelemetry } from "../store.js";
-import { toast, banner, segmented, confirmDialog } from "../ui.js";
+import { store, on, keep, kept, lastTelemetry, applySettings } from "../store.js";
+import { toast, banner } from "../ui.js";
 import { lastSeenText } from "../conn-fmt.js";
 import { alarmStateText, armLeft, kindInfo } from "../alarm-fmt.js";
 import { recLink } from "../rec-play.js";
@@ -16,18 +17,17 @@ import { METRICS as AIR_METRICS, fmtValue, levelOf } from "../air-fmt.js";
 import { sparkline } from "../air-chart.js";
 import { powerControls } from "../power-controls.js";
 import {
-  EVENTS_N, ACT_COOL_MS, pollDelay, alarmLive, alarmActions, actCooldown, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
+  EVENTS_N, ACT_COOL_MS, pollDelay, alarmLive, alarmActions, actCooldown, alarmWord, bannerWord, armedFor, armProgress, alarmChips,
   recentEvents, recentKey, eventExtras, eventCamera, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
   nextVolume, VOL_STEP, powerInfo,
-  newerAlarm, serverPos, videoAction, SCREEN_MODES, screenNowText, quickConfirm, protectedText,
+  newerAlarm, serverPos,
 } from "../dash-fmt.js";
 
 const nowS = () => Date.now() / 1000;
 const EXPECT_MS = 2500; // after an action, its answer beats telemetry packets already on the way
 const EXTRAS_MS = 4000; // snapshot and kept recording are attached to an event a moment after it
 const SERVER_POS_MS = 60000; // offline, remote: the server's last point of the van, at most this often
-const NOTE_MS = 6000; // a quick action's note next to its button
 
 /** Set text / class only when they change (telemetry comes 2…10 times a second). */
 function put(el, text) {
@@ -80,26 +80,23 @@ export function mount(root) {
     return alarmLive(t, st, store.telemetryAt, stAt);
   }
 
-  // ───── alarm card ─────
-  const heroBanner = h(".db-banner", { hidden: true, role: "alert" }); // like the car screen: IMPACT / TILTED / …
-  const heroIc = h("span.al-ic");
-  const heroWord = h(".al-word.db-word", null, "—");
-  const heroSub = h(".db-sub");
-  const heroLive = h(".db-live");
-  const btns = h(".btnrow.db-btns");
-  const armBar = h(".progress.db-armbar", { hidden: true }, h("i"));
-  const heroHint = h(".hint.db-hint");
-  const chips = h(".db-chips");
+  // ───── alarm card: one big button that says the state and does the next step ─────
+  // [icon] ARMED                          [🔓 Disarm]
+  //        Armed for 13 min · Camera watching · Hazard lights ready
+  // Triggered: the word is what happened (IMPACT …); with the siren on, Stop is the big button and Disarm sits beside it.
+  const abIc = h("span.db-ab-ic");
+  const abWord = h("span.db-ab-word", null, "—");
+  const abSub = h("span.db-ab-sub");
+  const abInfo = h("span.db-ab-info");
+  const abAct = h("span.db-ab-act");
+  const abFill = h("span.db-ab-fill", { "aria-hidden": "true" }); // arming: the countdown fills the plate
+  const mainBtn = h("button.btn.al-big.db-ab", { type: "button", onclick: () => mainWhat && act(mainWhat) },
+    abFill, abIc, h("span.db-ab-txt", null, abWord, abSub, abInfo), abAct);
+  let mainWhat = null;
+  const extraBtns = h(".db-ab-more");
   const hero = h(".card.db-hero", null,
     h(".card-head", null, h("h2", null, "Alarm"), h("a.db-more", { href: "#/alarm" }, "Settings & log ›")),
-    heroBanner,
-    h(".db-hero-top", null,
-      heroIc,
-      h(".db-hero-txt", null, heroWord, heroSub, heroLive),
-      btns),
-    armBar,
-    heroHint,
-    chips);
+    h(".db-ab-row", null, mainBtn, extraBtns));
 
   async function act(what) {
     if (busy) return;
@@ -130,107 +127,106 @@ export function mount(root) {
     coolTimer = setTimeout(() => { if (!stopped) renderHero(); }, ACT_COOL_MS + 20);
   }
 
+  function setIcon(el, name, size) {
+    if (el.dataset.ic === name) return;
+    clear(el).append(icon(name, size));
+    el.dataset.ic = name;
+  }
+
   function renderHero() {
     const l = live();
     if (!l) {
-      cls(heroWord, "al-word db-word");
-      put(heroWord, "—");
-      put(heroSub, stErr || (store.online ? "Loading…" : store.online === null ? "Connecting…" : "No connection to the device"));
-      cls(hero, "card db-hero");
-      clear(btns);
+      cls(mainBtn, "btn al-big db-ab");
+      setIcon(abIc, "lock", 34);
+      put(abWord, "—");
+      put(abSub, stErr || (store.online ? "Loading…" : store.online === null ? "Connecting…" : "No connection to the device"));
+      put(abInfo, "");
+      abInfo.hidden = true;
+      clear(abAct);
+      abAct.dataset.sig = "";
+      mainWhat = null;
+      mainBtn.disabled = true;
+      abFill.style.width = "0";
+      clear(extraBtns);
       btnSig = "";
-      armBar.hidden = true;
-      heroBanner.hidden = true;
-      put(heroHint, "");
       return;
     }
-    const s = alarmStateText(l.state);
-    const k = s.kind || "off";
     // no telemetry, and api/alarm failed or was not asked yet (a kept copy): the last known state
     const stale = !store.online && (!!stErr || !stLive);
-    cls(hero, `card db-hero s-${l.state}${stale ? " stale" : ""}`);
-    cls(heroWord, `al-word db-word ${k}${l.state === "triggered" ? " blink" : ""}`);
-    put(heroWord, alarmWord(l.state));
-    const icName = l.state === "off" ? "unlock" : l.state === "triggered" ? "alarm" : "lock";
-    if (heroIc.dataset.ic !== icName) {
-      clear(heroIc).append(icon(icName, 40));
-      heroIc.dataset.ic = icName;
-    }
-    cls(heroIc, "al-ic " + k);
-
-    // sub line: countdown / armed for / the event that triggered it
     const now = nowS();
     const left = l.state === "arming" ? armLeft(l.armIn, l.at, Date.now()) : null;
-    let sub = "";
+
+    // the word: the state; triggered — what happened (IMPACT, TILTED …)
     let last = null;
-    if (l.state === "arming") sub = `${left ?? "…"} s until armed`;
-    else if (l.state === "triggered") {
+    if (l.state === "triggered") {
       const ev = st && Array.isArray(st.events) && st.events[0];
       const lt = store.online && store.telemetry && store.telemetry.alarm && store.telemetry.alarm.last;
       last = lt || ev || null;
-      sub = last ? `${last.title || kindInfo(last.kind).label} · ${eventAgo(last.ts, now)}` : "Something happened";
-    } else if (l.state === "armed") sub = (st && armedFor(st.armed_at, now)) || "Watching the van";
-    else if (l.state === "off") sub = "Not watching the van";
+    }
+    put(abWord, l.state === "triggered" && !stale ? bannerWord(last && last.kind) : alarmWord(l.state));
+    setIcon(abIc, l.state === "off" ? "unlock" : l.state === "triggered" ? "alarm" : "lock", 34);
+
+    // the line under it: countdown / armed for / what happened and when; siren and lights sounding now
+    let sub = "";
+    if (l.state === "arming") sub = `${left ?? "…"} s until armed`;
+    else if (l.state === "triggered") sub = last ? `${last.title || kindInfo(last.kind).label} · ${eventAgo(last.ts, now)}` : "Something happened";
+    else if (l.state === "armed") sub = (st && armedFor(st.armed_at, now)) || "Watching the van";
+    else if (l.state === "off") {
+      const d = alarmCfg() ? alarmCfg().arm_delay_s : null;
+      sub = "Not watching the van" + (isNum(d) ? (d ? ` · arms ${d} s after the tap` : " · arms at once") : "");
+    }
+    const sounding = [l.siren ? "Siren sounding" : "", l.hazard ? "Hazard lights flashing" : ""].filter(Boolean);
+    if (sounding.length) sub += " · " + sounding.join(" · ");
     if (stale) sub = "No connection · last known state" + (l.at > 0 ? ", " + eventAgo(l.at / 1000, now) : "");
-    put(heroSub, sub);
-    cls(heroSub, "db-sub" + (l.state === "arming" ? " amber mono" : ""));
-    heroBanner.hidden = l.state !== "triggered" || stale;
-    put(heroBanner, bannerWord(last && last.kind));
+    put(abSub, sub);
 
-    // siren / hazard sounding now
-    const liveSig = `${l.siren}|${l.hazard}`;
-    if (heroLive.dataset.sig !== liveSig) {
-      heroLive.dataset.sig = liveSig;
-      clear(heroLive);
-      if (l.siren) heroLive.append(h("span.al-siren", null, icon("vol", 16), "Siren sounding"));
-      if (l.hazard) heroLive.append(h("span.al-siren.al-hz", null, icon("hazard", 16), "Hazard lights flashing"));
-      heroLive.hidden = !l.siren && !l.hazard;
+    // the statuses that matter: camera watch, hazard lights, problems (shock sensor, notifications)
+    const chips = stale ? [] : alarmChips(st, { sensorOk: l.sensorOk, hazardActive: l.hazard }).filter((c) => c.key !== "hazard" || c.kind !== "warn");
+    const csig = JSON.stringify(chips);
+    if (csig !== chipSig) {
+      chipSig = csig;
+      clear(abInfo);
+      chips.forEach((c, i) => abInfo.append(i ? " · " : "", h(`span${c.kind ? "." + kindCls(c.kind) : ""}`, { title: c.title || "" }, c.text)));
+      abInfo.hidden = !chips.length;
     }
+    const bad = chips.some((c) => c.kind === "bad");
 
-    armBar.hidden = l.state !== "arming" || stale; // an old countdown would run on
-    if (l.state === "arming" && !stale) {
-      const total = (alarmCfg() && alarmCfg().arm_delay_s) || l.armIn || 1;
-      armBar.firstChild.style.width = armProgress(left ?? total, total) * 100 + "%";
-    }
+    const k = l.state === "armed" ? "armed" : l.state;
+    cls(mainBtn, `btn al-big db-ab s-${k}${stale ? " stale" : ""}${bad ? " problem" : ""}`);
+    abFill.style.width = l.state === "arming" && !stale
+      ? armProgress(left ?? ((alarmCfg() && alarmCfg().arm_delay_s) || l.armIn || 1), (alarmCfg() && alarmCfg().arm_delay_s) || l.armIn || 1) * 100 + "%"
+      : "0";
 
-    // buttons: rebuilt only when the set changes (not with the countdown) — a button must not vanish under the finger
+    // the actions: the first one is the big button itself, the rest sit beside it (Disarm while the siren sounds)
     const acts = alarmActions({ state: l.state, siren: l.siren, hazard: l.hazard, hazardEnabled: hzOn() });
     const sig = acts.map((a) => a.what + ":" + a.label).join("|") + "|" + busy;
-    // right after an answer the new buttons are inert (dimmed) for a moment: Disarm takes Arm's place
     const nowMs = Date.now();
     const cool = !busy && actCooldown(doneAt, nowMs) > 0;
-    const inert = cool || store.offline; // the server answers for the device: nothing to arm or disarm there
-    // while an action is in flight the (disabled) buttons stay as they are until its answer
+    const inert = cool || store.offline || stale; // the server answers for the device: nothing to arm or disarm there
+    // while an action is in flight the buttons stay as they are until its answer — nothing changes under the finger
     if (sig !== btnSig && !(busy && btnSig.endsWith("|" + busy))) {
       btnSig = sig;
-      // the set changed again during the cool-down (telemetry caught up): it counts from this swap
-      if (cool) {
+      if (cool) { // the set changed again during the cool-down (telemetry caught up): it counts from this swap
         doneAt = nowMs;
         coolSoon();
       }
-      clear(btns);
-      for (const a of acts) {
-        btns.append(h(`button.btn.al-big.${a.cls}`, { type: "button", disabled: !!busy || inert, title: a.title, onclick: () => act(a.what) },
+      const [first, ...rest] = acts;
+      mainWhat = first ? first.what : null;
+      mainBtn.title = first ? first.title : "";
+      clear(abAct);
+      if (first) abAct.append(busy === first.what ? h("span.spin") : icon(first.icon), h("span", null, first.label));
+      cls(abAct, "db-ab-act" + (first ? " a-" + first.what : ""));
+      clear(extraBtns);
+      for (const a of rest) {
+        extraBtns.append(h(`button.btn.al-big.${a.cls}`, { type: "button", title: a.title, onclick: () => act(a.what) },
           busy === a.what ? h("span.spin") : icon(a.icon), a.label));
       }
+      extraBtns.hidden = !rest.length;
     }
     // the cool-down ends: the same buttons come alive (not rebuilt under the finger)
-    if (!busy) for (const b of btns.children) if (b.disabled !== inert) b.disabled = inert;
-    put(heroHint, l.state === "off" ? armHint(alarmCfg() ? alarmCfg().arm_delay_s : null) : "");
-    heroHint.hidden = l.state !== "off";
-
-    // chips: camera watch, hazard lights, problems
-    const list = alarmChips(st, { sensorOk: l.sensorOk, hazardActive: l.hazard });
-    const csig = JSON.stringify(list);
-    if (csig !== chipSig) {
-      chipSig = csig;
-      clear(chips);
-      for (const c of list) {
-        chips.append(h(`span.badge.db-chip${c.kind ? "." + c.kind : ""}${c.key === "hazard" && c.kind === "warn" ? ".blink" : ""}`,
-          { title: c.title || "" }, icon(c.icon), c.text));
-      }
-      chips.hidden = !list.length;
-    }
+    const dis = !!busy || inert;
+    if (mainBtn.disabled !== (dis || !mainWhat)) mainBtn.disabled = dis || !mainWhat;
+    for (const b of extraBtns.children) if (b.disabled !== dis) b.disabled = dis;
   }
 
   // ───── latest events ─────
@@ -485,17 +481,26 @@ export function mount(root) {
     }
   }
 
-  // radio: the top links to the Radio page, the buttons control it right here
+  // radio: the head links to the Radio page; the station with its star, the buttons work right here.
+  // Shuffle and Favorites are the radio's mode (settings.radio.mode, like the keypad's mode key): shuffle — the next
+  // station at random; favorites — through the favorites; neither — in order.
   const eq = h(".eq.sm", { "aria-hidden": "true" }, h("i"), h("i"), h("i"), h("i"), h("i"));
   const rTitle = h("span.db-station");
   const rLine = h(".db-ts.db-track");
   const spk = h("span.db-spk");
   const vol = h("span.db-vol.mono");
   let rBusy = false;
+  let favBusy = false;
+  let modeExpect = null; // {mode, until}: the mode just set, until settings over WS show it
   const rBtn = (ic, label, fn) => h("button.btn.db-rbtn", { type: "button", title: label, "aria-label": label, onclick: fn }, icon(ic));
   const prevBtn = rBtn("prev", "Previous station", () => radio("/api/radio/step", { delta: -1 }));
   const nextBtn = rBtn("next", "Next station", () => radio("/api/radio/step", { delta: 1 }));
   const playBtn = rBtn("play", "Play", () => radio(radioInfo(store.telemetry && store.telemetry.radio).active ? "/api/radio/stop" : "/api/radio/resume", {}));
+  const shufBtn = rBtn("shuffle", "Shuffle", () => setRadioMode(radioMode() === "random" ? "order" : "random"));
+  const favModeBtn = rBtn("favlist", "Play the favorites", () => playFavorites());
+  shufBtn.classList.add("db-rmode");
+  favModeBtn.classList.add("db-rmode");
+  const starBtn = h("button.db-star", { type: "button", onclick: () => toggleFavorite() }, icon("starO"));
   // volume −/+ (5 %, like the keypad knob): each tap is sent at once; quick taps step from the value just sent, not
   // from telemetry that hasn't caught up yet
   let volPending = null;
@@ -520,12 +525,14 @@ export function mount(root) {
       if (!stopped) renderRadio(false);
     }
   }
-  const radioTile = h(".db-tile.db-radio.wide", null,
+  const radioTile = h(".db-tile.db-radio", null,
     h("a.db-rtop", { href: "#/radio" },
-      h(".db-tl", null, icon("radio"), h("span", null, "Radio"), spk, h("span.db-go", null, "›")),
-      h(".db-np", null, eq, rTitle),
-      rLine),
-    h(".db-rctl", null, prevBtn, playBtn, nextBtn, h("span.grow"), h(".db-volgrp", null, volDn, vol, volUp)));
+      h(".db-tl", null, icon("radio"), h("span", null, "Radio"), spk, h("span.db-go", null, "›"))),
+    h(".db-rnow", null,
+      h(".db-rnow-txt", null, h(".db-np", null, eq, rTitle), rLine),
+      starBtn),
+    h(".db-rctl", null, prevBtn, playBtn, nextBtn, h("span.db-rsep"), shufBtn, favModeBtn, h("span.grow"),
+      h(".db-volgrp", null, volDn, vol, volUp)));
 
   async function radio(url, body) {
     if (rBusy) return;
@@ -541,150 +548,68 @@ export function mount(root) {
     }
   }
 
-  // ───── quick actions: protect the recording, the car monitor on / off, what the car screen shows ─────
-  const qBusy = { protect: false, video: false, screen: false };
-  const qDone = { protect: null, video: null }; // the answer's Date.now(): a double tap must not repeat it (actCooldown)
-  let qTimer = null;
-  let noteTimer = null;
-  let vidOn = null; // api/display/output: true / false / null — not known
-  let vidErr = null;
-  let vidMissing = false; // an older device without the endpoint: the row is hidden
-  let modeExpect = null; // {mode, until}: the mode just set, until settings over WS show it
-  const protBtn = h("button.btn.db-qbtn", { type: "button", title: "Keep the current recording (both cameras) from being overwritten", onclick: () => protect() },
-    icon("lock"), h("span", null, "Protect recording"));
-  const protNote = h("span.db-qnote.green", { hidden: true });
-  const vidState = h("b.db-qstate", null, "—");
-  const vidBtn = h("button.btn.db-qbtn", { type: "button", onclick: () => toggleVideo() }, icon("screen"), h("span", null, "On / off"));
-  const vidRow = h(".db-qrow", null, h("span.db-qlbl", null, "Car monitor", vidState), vidBtn);
-  const modeSeg = segmented({ name: "db-scrmode", options: SCREEN_MODES, value: forceMode(), onchange: (v) => setMode(v) });
-  modeSeg.classList.add("db-qseg");
-  const modeNow = h("span.db-qnow");
-  const quickTile = h(".db-tile.wide.db-quick", null,
-    h(".db-tl", null, icon("keys"), h("span", null, "Quick actions")),
-    h(".db-qrow", null, protBtn, protNote),
-    vidRow,
-    h(".db-qrow", null, h("span.db-qlbl", null, "Car screen", modeNow), modeSeg));
-
-  function forceMode() {
-    const s = (store.settings && store.settings.display && store.settings.display.force_mode) || "auto";
+  function radioMode() {
+    const s = (store.settings && store.settings.radio && store.settings.radio.mode)
+      || (store.telemetry && store.telemetry.radio && store.telemetry.radio.mode) || "order";
     if (modeExpect && (modeExpect.mode === s || Date.now() > modeExpect.until)) modeExpect = null;
     return modeExpect ? modeExpect.mode : s;
   }
-  const qCool = (k) => actCooldown(qDone[k], Date.now()) > 0;
-  function qFinish(k) {
-    qBusy[k] = false;
-    if (k in qDone) qDone[k] = Date.now();
+  async function setRadioMode(mode) {
+    modeExpect = { mode, until: Date.now() + 4 * EXPECT_MS };
+    renderRadio(false);
+    try {
+      applySettings(await api.patch("/api/settings", { radio: { mode } }));
+      return true;
+    } catch (e) {
+      modeExpect = null;
+      toast("error", "Radio: " + errText(e));
+      return false;
+    } finally {
+      if (!stopped) renderRadio(false);
+    }
+  }
+  // Favorites on: through the favorites from now on; the station playing is not one of them — the first favorite
+  // starts at once. Off again: in order.
+  async function playFavorites() {
+    if (radioMode() === "favorites") { setRadioMode("order"); return; }
+    let full;
+    try { full = await api.get("/api/radio/state"); } catch (e) { toast("error", "Radio: " + errText(e)); return; }
     if (stopped) return;
-    clearTimeout(qTimer);
-    qTimer = setTimeout(() => { if (!stopped) renderQuick(); }, ACT_COOL_MS + 20);
-    renderQuick();
+    if (!full || !Array.isArray(full.favorites) || !full.favorites.length) {
+      toast("warn", "No favorites yet — tap the star next to a station to add it");
+      return;
+    }
+    if (!(await setRadioMode("favorites")) || stopped) return;
+    const r = store.telemetry && store.telemetry.radio;
+    if (!r || !r.favorite || !radioInfo(r).active) radio("/api/radio/step", { delta: 1 });
   }
-  const movingNow = () => {
-    const t = store.online && store.telemetry;
-    return !!t && motionInfo(t.gps, t.heading).moving;
-  };
-
-  async function protect() {
-    if (qBusy.protect || qCool("protect")) return;
-    qBusy.protect = true;
-    renderQuick();
+  // the star: the station playing into / out of the favorites (the API wants the whole station: the state has it)
+  async function toggleFavorite() {
+    if (favBusy) return;
+    favBusy = true;
+    starBtn.disabled = true;
     try {
-      const r = await api.post("/api/recordings/protect-current");
-      if (stopped) return;
-      // the device also tells it over WS (toasts); the note stays next to the button for a moment
-      put(protNote, protectedText(r));
-      protNote.hidden = false;
-      clearTimeout(noteTimer);
-      noteTimer = setTimeout(() => { protNote.hidden = true; }, NOTE_MS);
+      const full = await api.get("/api/radio/state");
+      const s = full && full.station;
+      if (!s) return;
+      const fav = (full.favorites || []).some((f) => (f.uuid && f.uuid === s.uuid) || f.url === s.url);
+      await api.post(fav ? "/api/radio/favorites/remove" : "/api/radio/favorites/add", { station: s });
+      if (!stopped) toast("ok", fav ? `Removed “${s.name}” from favorites` : `“${s.name}” added to favorites`);
     } catch (e) {
-      toast("error", "Protect recording: " + errText(e));
+      toast("error", "Favorites: " + errText(e));
     } finally {
-      qFinish("protect");
+      favBusy = false;
+      starBtn.disabled = false;
     }
   }
 
-  async function toggleVideo() {
-    if (qBusy.video || qCool("video")) return;
-    const a = videoAction(vidOn);
-    const ask = quickConfirm("video", { to: a.to });
-    if (ask && !(await confirmDialog(ask))) return;
-    if (stopped || qBusy.video) return;
-    qBusy.video = true;
-    renderQuick();
-    try {
-      const r = await api.post("/api/display/output", a.to === null ? {} : { on: a.to });
-      if (stopped) return;
-      if (r && typeof r.on === "boolean") vidOn = r.on;
-      vidErr = null;
-    } catch (e) {
-      toast("error", "Car monitor: " + errText(e));
-    } finally {
-      qFinish("video");
-    }
-  }
-
-  async function setMode(v) {
-    const before = forceMode();
-    if (v === before) return;
-    const ask = quickConfirm("screen", { mode: v, moving: movingNow() });
-    if (ask && !(await confirmDialog(ask))) { modeSeg.set(forceMode()); return; }
-    if (stopped) return;
-    qBusy.screen = true;
-    renderQuick();
-    try {
-      await api.post("/api/display/force", { mode: v });
-      if (stopped) return;
-      modeExpect = { mode: v, until: Date.now() + 4 * EXPECT_MS }; // settings come over WS (later through the tunnel)
-    } catch (e) {
-      toast("error", "Car screen: " + errText(e));
-    } finally {
-      qFinish("screen");
-    }
-  }
-
-  async function loadVideo() {
-    try {
-      const r = await api.get("/api/display/output");
-      if (stopped) return;
-      vidOn = r && typeof r.on === "boolean" ? r.on : null;
-      vidErr = null;
-      vidMissing = false;
-    } catch (e) {
-      if (stopped) return;
-      if (e.status === 404) vidMissing = true;
-      else vidErr = errText(e);
-    }
-    renderQuick();
-  }
-
-  /** The spinner in place of the button's icon while its request runs. */
-  function busyIcon(btn, busy, ic) {
-    const spinning = !!btn.querySelector(".spin");
-    if (busy !== spinning) btn.firstChild.replaceWith(busy ? h("span.spin") : icon(ic));
-  }
-
-  function renderQuick() {
-    const off = store.offline; // the server answered for the device: nothing to switch
-    const offTitle = "The device is offline";
-    busyIcon(protBtn, qBusy.protect, "lock");
-    protBtn.disabled = off || qBusy.protect || qCool("protect");
-    vidRow.hidden = vidMissing;
-    const a = videoAction(vidOn);
-    put(vidState, a.state);
-    cls(vidState, "db-qstate " + kindCls(a.kind));
-    put(vidBtn.lastChild, a.label);
-    vidBtn.title = off ? offTitle : vidErr ? "Car monitor: " + vidErr : a.title;
-    busyIcon(vidBtn, qBusy.video, "screen");
-    vidBtn.disabled = off || qBusy.video || qCool("video");
-    if (!qBusy.screen) modeSeg.set(forceMode());
-    modeSeg.classList.toggle("busy", off || qBusy.screen);
-    const t = store.online && store.telemetry;
-    put(modeNow, t ? screenNowText(t.display) : "");
-  }
-
-  const tiles = h(".db-tiles", null, posTile, camTile, quickTile, sysTile, lvTile, pwTile, airTile, radioTile);
+  const tiles = h(".db-tiles", null, posTile, camTile, sysTile, lvTile);
   const install = installEntry("button.db-install", "Install app"); // hides itself in the installed app
-  const van = h(".db-van", null, seenEl, errBox, tiles, h(".db-foot", null, install));
+  // two columns on a wide screen: alarm, radio, air, power on the left; events and the van's tiles on the right.
+  // A phone has one column in the same order (the columns dissolve: .db-col display: contents).
+  const grid = h(".db-grid", null,
+    h(".db-col", null, hero, radioTile, airTile, pwTile),
+    h(".db-col", null, evCard, tiles, h(".db-foot", null, install)));
 
   /** Offline: since when the shown values are (live this session, or kept from an earlier one). */
   function renderSeen() {
@@ -707,7 +632,7 @@ export function mount(root) {
   function renderVan() {
     const lt = lastTelemetry();
     const t = lt && lt.t;
-    van.classList.toggle("stale", !store.online);
+    grid.classList.toggle("stale", !store.online);
     renderSeen();
     if (!t) return;
     const g = t.gps || {}, cam = t.camera || {}, sys = t.system || {};
@@ -817,6 +742,25 @@ export function mount(root) {
       prevBtn.disabled = nextBtn.disabled = !r;
     }
     volDn.disabled = volUp.disabled = !r || ri.volume === null;
+
+    // the star of the station playing; the mode buttons lit as the mode is
+    const fav = !!(r && r.favorite);
+    if (starBtn.dataset.on !== String(fav)) {
+      starBtn.dataset.on = String(fav);
+      clear(starBtn).append(icon(fav ? "star" : "starO"));
+      starBtn.classList.toggle("on", fav);
+      starBtn.setAttribute("aria-pressed", String(fav));
+    }
+    starBtn.hidden = !(r && r.station);
+    starBtn.title = fav ? "Remove the station from favorites" : "Add the station to favorites";
+    const mode = radioMode();
+    shufBtn.classList.toggle("on", mode === "random");
+    shufBtn.setAttribute("aria-pressed", String(mode === "random"));
+    shufBtn.title = mode === "random" ? "Shuffle on: the next station is a random one — tap for in order" : "Shuffle off: stations in order — tap for random";
+    favModeBtn.classList.toggle("on", mode === "favorites");
+    favModeBtn.setAttribute("aria-pressed", String(mode === "favorites"));
+    favModeBtn.title = mode === "favorites" ? "Playing the favorites — tap to go back to all stations in order" : "Play the favorites";
+    shufBtn.disabled = favModeBtn.disabled = !r;
   }
 
   // ───── data ─────
@@ -870,15 +814,15 @@ export function mount(root) {
   // ───── layout ─────
   root.append(
     h(".page-head", null, h("h1", null, "Dashboard")),
-    h(".db-grid", null, hero, evCard, van),
+    seenEl,
+    errBox,
+    grid,
   );
 
   renderHero();
   renderEvents();
   renderVan();
-  renderQuick();
   fetchNow();
-  loadVideo();
 
   const offTel = on("telemetry", () => {
     renderVan();
@@ -899,27 +843,16 @@ export function mount(root) {
     if (fresh) fetchNow();
   });
   // the device dropped off or came back: ask now (offline the poll gets faster and tells why)
-  let wasOnline = store.online;
   const offConn = on("conn", (o) => {
     renderVan();
     renderHero();
     renderEvents();
-    renderQuick();
     fetchNow();
-    if (o && !wasOnline) loadVideo(); // the monitor may have been switched by a key meanwhile
     if (!o && REMOTE && Date.now() - srvAt > SERVER_POS_MS) loadServerPos();
-    wasOnline = o;
   });
-  const offSet = on("settings", () => { btnSig = ""; renderHero(); renderVan(); renderQuick(); });
-  // the car monitor switched elsewhere (a key, another phone): fnav-core tells it over WS
-  const offEv = on("event", (m) => {
-    if (m.event === "video_output" && typeof m.on === "boolean") {
-      vidOn = m.on;
-      renderQuick();
-    }
-  });
+  const offSet = on("settings", () => { btnSig = ""; renderHero(); renderVan(); });
   // countdown, "armed for", "x min ago" and "Last seen" between packets
-  const tick = setInterval(() => { renderHero(); renderWhens(); renderSeen(); renderQuick(); }, 1000);
+  const tick = setInterval(() => { renderHero(); renderWhens(); renderSeen(); }, 1000);
   const onVis = () => { if (!document.hidden) fetchNow(); };
   document.addEventListener("visibilitychange", onVis);
 
@@ -928,8 +861,6 @@ export function mount(root) {
     clearTimeout(pollTimer);
     clearTimeout(extrasTimer);
     clearTimeout(coolTimer);
-    clearTimeout(qTimer);
-    clearTimeout(noteTimer);
     clearTimeout(volPendingT);
     clearInterval(tick);
     clearTimeout(airTimer);
@@ -937,7 +868,6 @@ export function mount(root) {
     offTel();
     offConn();
     offSet();
-    offEv();
     install.dispose();
   };
 }

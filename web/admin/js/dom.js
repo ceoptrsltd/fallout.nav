@@ -91,6 +91,11 @@ const ICONS = {
   alarm: "M4 18h16v3H4v-3zm2-1v-5a6 6 0 0 1 12 0v5H6zm3-4.5h1.5a1.5 1.5 0 0 1 1.5-1.5V9.5a3 3 0 0 0-3 3zM11 1h2v3h-2V1zM3.5 4.9l1.4-1.4L7 5.6 5.6 7 3.5 4.9zm17 0L18.4 7 17 5.6l2.1-2.1 1.4 1.4z",
   // spirit level: bar with a window and the bubble in it
   bolt: "M13 2 4 14h6l-1 8 9-12h-6l1-8z",
+  // radio: shuffle (crossing arrows), the star (filled / outline), a list with a star — play the favorites
+  shuffle: "M10.6 9.2 5.4 4 4 5.4l5.2 5.2 1.4-1.4zM14.5 4l2 2L4 18.6 5.4 20 18 7.5l2 2V4h-5.5zm.3 9.4-1.4 1.4 3.1 3.1-2 2.1H20v-5.5l-2 2-3.2-3.1z",
+  star: "M12 17.3 18.2 21l-1.7-7L22 9.2l-7.2-.6L12 2 9.2 8.6 2 9.2 7.5 14l-1.7 7z",
+  starO: "M22 9.2l-7.2-.6L12 2 9.2 8.6 2 9.2 7.5 14l-1.7 7 6.2-3.7 6.2 3.7-1.7-7L22 9.2zm-10 6.2-3.8 2.3 1-4.3-3.3-2.9 4.4-.4L12 6.1l1.7 4 4.4.4-3.3 2.9 1 4.3-3.8-2.3z",
+  favlist: "M3 6h12v2H3V6zm0 4h12v2H3v-2zm0 4h8v2H3v-2zm14.5-1 1.2 2.6 2.8.3-2.1 1.9.6 2.8-2.5-1.4-2.5 1.4.6-2.8-2.1-1.9 2.8-.3 1.2-2.6z",
   level: "M3 8h18a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2zm5 2v4h8v-4H8zm4 .6a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8z",
   // hazard lights: triangle ring with a small triangle inside
   hazard: "M12 2 1 21h22L12 2zm0 4.5L19.4 19H4.6L12 6.5zm0 4-3.5 6h7l-3.5-6z",

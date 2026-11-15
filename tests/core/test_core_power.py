@@ -297,13 +297,83 @@ async def test_alarm_flashes_the_light_and_puts_it_back(fast, monkeypatch):
         await asyncio.sleep(0.05)
         await svc.stop_light()  # охрану сняли
         assert _commands(links["main"], pw.FOSSIBOT)[-1] == off
-        n = len(links["main"].sent)
+        n = len(_commands(links["main"], pw.FOSSIBOT))
         await asyncio.sleep(0.1)
-        assert len(links["main"].sent) == n  # больше не мигает
+        assert len(_commands(links["main"], pw.FOSSIBOT)) == n  # больше не мигает
         s2 = PowerSettings(light_on_alarm=False)
         svc.get_settings = lambda: s2
         svc.flash_light(5)
         assert svc._light_task is None or svc._light_task.done()
+    finally:
+        await svc.stop()
+
+
+class LightLink(RecLink):
+    """Fossibot, у которой свет следует командам; lose_next — связь рвётся на следующей команде света (она не дошла)."""
+
+    def __init__(self, proto, mac, cb) -> None:
+        super().__init__(proto, mac, cb)
+        self.light = False
+        self.lose_next = False
+        self.cb = cb
+
+    async def write(self, uuid, data, response=False) -> None:
+        self.sent.append((uuid, bytes(data), response))
+        if data == pw.FOSSIBOT.request:
+            body = bytearray(pw.fake_fossibot(80.0))
+            body[6 + 2 * 41:8 + 2 * 41] = ((1 << fossibot.OUTPUT_BITS["light"]) if self.light else 0).to_bytes(2, "big")
+            c = daly.crc16(bytes(body[:-2]))
+            body[-2:] = bytes([c >> 8, c & 0xFF])
+            asyncio.get_running_loop().call_later(0.01, self.cb, pw.FOSSIBOT.reply_uuid, bytes(body))
+            return
+        if self.lose_next:
+            self.lose_next = False
+            self.fake.connected = False
+            if self.on_lost:
+                self.on_lost()
+            raise BleError("Not connected")
+        self.light = data == fossibot.output_request("light", True)
+
+
+async def test_the_light_goes_out_after_the_alarm_even_if_the_link_dropped(fast, monkeypatch):
+    """Последнее «включить» дошло, а связь пропала — свет не должен гореть до утра: после переподключения гасим
+    и проверяем чтением. Новое событие, пока гасим, — снова мигаем."""
+    monkeypatch.setattr(pw, "LIGHT_BLINK_S", 0.02)
+    monkeypatch.setattr(pw, "LIGHT_WAIT_S", 0.02)
+    monkeypatch.setattr(pw, "LIGHT_CHECK_S", 0.01)
+    monkeypatch.setattr(pw, "READ_TIMEOUT_S", 0.3)
+    s = PowerSettings(second_mac="")
+    svc = pw.PowerService(lambda: s)
+    link: list[LightLink] = []
+
+    def make(mac, cb):
+        link.append(LightLink(pw.FOSSIBOT, mac, cb))
+        return link[-1]
+    svc.main.link_factory = make
+    await svc.start()
+    try:
+        await _until(lambda: svc.main.fresh() is not None)
+        svc.flash_light(0.15)
+        await _until(lambda: link[-1].light)  # горит
+        await asyncio.sleep(0.15)  # мигание вот-вот кончится: следующая команда (погасить) не дойдёт
+        link[-1].lose_next = True
+        await _until(lambda: svc._light_task is None, timeout=5)
+        assert link[-1].light is False and svc.main.reading.outputs["light"] is False
+        assert len(link) >= 2 or link[0].connected  # переподключились
+
+        # событие, пока свет гасят, — мигание продолжается, потом всё равно гаснет
+        svc.flash_light(0.05)
+        await asyncio.sleep(0.07)
+        svc.flash_light(0.1)
+        await _until(lambda: svc._light_task is None, timeout=5)
+        assert link[-1].light is False
+
+        # был включён до тревоги — включён и останется
+        await svc.control("main", __import__("fnav.models", fromlist=["PowerControl"]).PowerControl(output="light", on=True))
+        await _until(lambda: svc.main.reading.outputs["light"] is True)
+        svc.flash_light(0.1)
+        await _until(lambda: svc._light_task is None, timeout=5)
+        assert link[-1].light is True
     finally:
         await svc.stop()
 

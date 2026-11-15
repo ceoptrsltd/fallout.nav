@@ -1064,6 +1064,24 @@ class FakeRadio:
         self.started = 0.0
         self.error: str | None = None
         self.recent: list[dict] = [STATIONS["jazz"][0], STATIONS["rock"][2], STATIONS["lofi"][1]]
+        self.favorites: list[dict] = [STATIONS["jazz"][0], STATIONS["lofi"][1]]
+
+    def is_favorite(self, st: dict | None) -> bool:
+        return bool(st) and any(f.get("uuid") == st.get("uuid") for f in self.favorites)
+
+    def step(self, delta: int) -> None:
+        """Like fnav/core/radio.py step: favorites mode — through the favorites, random — any station, else the genre."""
+        mode = extra_get("radio", "mode", "order")
+        lst = list(self.favorites) if mode == "favorites" and self.favorites else []
+        if mode == "random":
+            pool = [x for v in STATIONS.values() for x in v if not x["url"].endswith("/broken")]
+            self.play(random.choice(pool), None)
+            return
+        if not lst:
+            lst = STATIONS.get(self.genre or "jazz") or STATIONS["jazz"]
+        idx = next((i for i, x in enumerate(lst) if self.station and x.get("uuid") == self.station.get("uuid")), -1)
+        nxt = lst[(idx + delta) % len(lst)] if idx >= 0 else (lst[0] if delta > 0 else lst[-1])
+        self.play(nxt, self.genre)
 
     def volume(self) -> int:
         return int(extra_get("radio", "volume", 60))
@@ -1097,7 +1115,7 @@ class FakeRadio:
         state = self.state()
         return {"state": state, "station": self.station, "genre": self.genre, "track": self.track(),
                 "volume": self.volume(), "output": bt.output(), "error": self.error if state == "error" else None,
-                "recent": self.recent}
+                "recent": self.recent, "favorites": self.favorites}
 
     def compact(self) -> dict:
         out = bt.output()
@@ -1105,7 +1123,8 @@ class FakeRadio:
         return {"state": self.state(), "station": self.station["name"] if self.station else None,
                 "track": self.track(), "genre": GENRE_LABEL.get(self.genre or "") or first_tag,
                 "volume": self.volume(), "output": out["name"] if out else None,
-                "output_connected": bool(out and out["connected"])}
+                "output_connected": bool(out and out["connected"]),
+                "mode": extra_get("radio", "mode", "order"), "favorite": self.is_favorite(self.station)}
 
 
 class FakeBt:
@@ -1260,6 +1279,28 @@ async def radio_resume():
     if not radio.station:
         return err(409, "No station has been played yet")
     radio.play(radio.station, radio.genre)
+    return radio.full()
+
+
+@app.post("/api/radio/step")
+async def radio_step(request: Request):
+    b = await request.json()
+    radio.step(-1 if int(b.get("delta", 1)) < 0 else 1)
+    return radio.full()
+
+
+@app.post("/api/radio/favorites/add")
+async def radio_fav_add(request: Request):
+    st = (await request.json()).get("station") or {}
+    if not radio.is_favorite(st):
+        radio.favorites.append(st)
+    return radio.full()
+
+
+@app.post("/api/radio/favorites/remove")
+async def radio_fav_remove(request: Request):
+    st = (await request.json()).get("station") or {}
+    radio.favorites = [f for f in radio.favorites if f.get("uuid") != st.get("uuid")]
     return radio.full()
 
 

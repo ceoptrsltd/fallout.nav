@@ -969,11 +969,12 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 @media (prefers-reduced-motion: reduce) { .modal, .tab-dot.triggered { animation: none; } }
 
 /* ───── dashboard ───── */
-/* phone: alarm → events → van; wide: alarm and the van on the left, events on the right */
-.db-grid { display: grid; gap: 14px; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); grid-template-areas: "hero events" "van events"; grid-template-rows: auto 1fr; align-items: start; }
-.db-hero { grid-area: hero; }
-.db-events { grid-area: events; }
-.db-van { grid-area: van; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* wide: two columns (alarm, radio, air, power | events, the van's tiles); a phone: one column in that order.
+   One gap between all widgets, across and down, inside the tile grid too. */
+.db-page { --db-gap: 22px; }
+.db-grid { display: grid; gap: var(--db-gap); grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); align-items: start; }
+.db-col { display: flex; flex-direction: column; gap: var(--db-gap); min-width: 0; }
+.db-page > .db-seen, .db-page > div > .banner { margin-bottom: 12px; }
 .db-more { font-family: var(--f-label); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; text-decoration: none; white-space: nowrap; padding: 6px 0; }
 .db-more:hover { text-decoration: underline; }
 /* alarm card: the state colours its frame */
@@ -1052,8 +1053,8 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .db-snapbig { width: 100%; display: block; background: #000; }
 .db-snapwhen { margin-top: 8px; font-size: 12.5px; }
 /* the van: tiles */
-.db-van .banner { font-size: 13px; }
-.db-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.db-page .banner { font-size: 13px; }
+.db-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--db-gap); }
 .db-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 11px 13px 12px; color: var(--text); text-decoration: none; transition: opacity .3s; -webkit-tap-highlight-color: transparent; }
 .db-tile.wide { grid-column: 1 / -1; }
 /* The three stations fit any tile width without wrapping: every size inside is tied to the tile's width (cqw), so
@@ -1087,6 +1088,66 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .db-pw-bolt[hidden] { display: none; }
 .db-pw-bolt svg { width: clamp(13px, 4.2cqw, 20px); height: clamp(13px, 4.2cqw, 20px); }
 @media (prefers-reduced-motion: no-preference) { .db-pw-bolt { animation: db-pulse 1.2s ease-in-out infinite; } }
+
+/* ───── alarm: the one big button — the state on it, the next step on its right ───── */
+.db-ab-row { display: flex; gap: 10px; align-items: stretch; }
+.db-ab-more { display: flex; flex: none; }
+.db-ab-more[hidden] { display: none; }
+.db-ab-more .btn.al-big { min-height: 100%; padding: 0 16px; }
+.btn.al-big.db-ab { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px 14px;
+  min-height: 92px; padding: 12px 16px 12px 18px; text-align: left; color: var(--text); font-family: var(--sans); font-size: 14px; letter-spacing: 0; --cut: 10px; overflow: hidden; }
+.btn.al-big.db-ab::after { --cut: 8.6px; }
+.db-ab-fill { position: absolute; z-index: -1; left: 2px; top: 2px; bottom: 2px; width: 0; background: rgba(255, 182, 46, .16); transition: width 1s linear; pointer-events: none; }
+.db-ab-ic { color: var(--dim); line-height: 0; }
+.db-ab-txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.db-ab-word { font-family: var(--f-stencil); font-size: 34px; line-height: 1; letter-spacing: .05em; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-ab-sub { font-size: 14px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-ab-info { font-size: 12.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-ab-info[hidden] { display: none; }
+.db-ab-info .green { color: #8fd9a2; }
+.db-ab-info .amber { color: var(--amber); }
+.db-ab-info .red { color: #ff8a7c; }
+/* the next step: an amber plate (Arm, Stop) or a red-edged one (Disarm) */
+.db-ab-act { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; white-space: nowrap; font-family: var(--f-label); font-size: 14px; letter-spacing: .05em; text-transform: uppercase;
+  color: #1a1100; background: linear-gradient(180deg, #ffc84f, var(--amber)); --cut: 6px;
+  clip-path: polygon(var(--cut) 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, var(--cut) 100%, 0 calc(100% - var(--cut)), 0 var(--cut)); }
+.db-ab-act:empty { display: none; }
+.db-ab-act svg { width: 18px; height: 18px; }
+.db-ab-act.a-disarm { color: #ffb3aa; background: #3a1714; box-shadow: inset 0 0 0 1.5px #9b3b31; }
+.btn.al-big.db-ab.s-off { --bframe: #6b6e62; }
+.btn.al-big.db-ab.s-armed { --bframe: linear-gradient(180deg, #7dffa3, #2f9b50 50%, #1d5a31); --bface: linear-gradient(180deg, #12261a, #0c160f); }
+.btn.al-big.db-ab.s-armed .db-ab-word, .btn.al-big.db-ab.s-armed .db-ab-ic { color: var(--green); }
+.btn.al-big.db-ab.s-armed .db-ab-ic { filter: drop-shadow(0 0 8px rgba(93, 255, 138, .35)); }
+.btn.al-big.db-ab.s-arming { --bframe: linear-gradient(180deg, #ffd47a, #b9801a 50%, #6b4a10); --bface: linear-gradient(180deg, #241c0a, #15110a); }
+.btn.al-big.db-ab.s-arming .db-ab-word, .btn.al-big.db-ab.s-arming .db-ab-ic { color: var(--amber); }
+.btn.al-big.db-ab.s-arming .db-ab-sub { font-family: var(--f-num); font-size: 16px; color: var(--amber); }
+.btn.al-big.db-ab.s-triggered { --bframe: linear-gradient(180deg, #ff8a7c, #c0352a 50%, #6d1f18); --bface: linear-gradient(180deg, #34120e, #1c0b09); }
+.btn.al-big.db-ab.s-triggered .db-ab-word, .btn.al-big.db-ab.s-triggered .db-ab-ic { color: #ff6a5a; }
+.btn.al-big.db-ab.s-triggered .db-ab-sub { color: #ffb3aa; }
+@media (prefers-reduced-motion: no-preference) { .btn.al-big.db-ab.s-triggered:not(.stale) .db-ab-word { animation: blink 1s steps(2, jump-none) infinite; } }
+.btn.al-big.db-ab.stale .db-ab-word, .btn.al-big.db-ab.stale .db-ab-ic { opacity: .45; }
+.btn.al-big.db-ab:disabled { opacity: 1; cursor: default; }
+.btn.al-big.db-ab:disabled .db-ab-act { opacity: .5; }
+@media (max-width: 600px) {
+  .btn.al-big.db-ab { min-height: 84px; gap: 3px 10px; padding: 10px 12px 10px 14px; }
+  .db-ab-word { font-size: 26px; }
+  .db-ab-sub { font-size: 13px; }
+  .db-ab-ic svg { width: 28px !important; height: 28px !important; }
+  .db-ab-act { padding: 9px 11px; font-size: 12.5px; }
+  .db-ab-more .btn.al-big { padding: 0 11px; font-size: 13px; }
+}
+
+/* ───── radio tile: the station with its star, the mode buttons ───── */
+.db-rnow { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.db-rnow-txt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.db-star { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; margin-right: -6px; padding: 0; border: 0; background: none; color: var(--faint); cursor: pointer; }
+.db-star[hidden] { display: none; }
+.db-star svg { width: 26px; height: 26px; }
+.db-star:hover:not(:disabled) { color: var(--amber); }
+.db-star.on { color: var(--amber); filter: drop-shadow(0 0 6px rgba(255, 182, 46, .4)); }
+.db-star:disabled { opacity: .5; }
+.db-rsep { width: 1px; align-self: stretch; margin: 6px 4px; background: var(--line2); }
+.db-rbtn.db-rmode.on { color: var(--amber); border-color: var(--amber-d); background: #2a1f07; }
 
 /* ───── air quality: Dashboard tile ───── */
 .db-air { container-type: inline-size; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px clamp(6px, 2cqw, 16px); margin-top: 4px; }
@@ -1165,7 +1226,7 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 @keyframes db-pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: no-preference) { .db-blink { animation: db-pulse 1s steps(1, end) infinite; } }
 a.db-tile:hover, a.db-tile:active { --face: linear-gradient(180deg, #1d2219, #151912 45%); }
-.db-van.stale .db-tile { opacity: .5; }
+.db-grid.stale .db-tile { opacity: .5; }
 .db-tl { display: flex; align-items: center; gap: 6px; color: var(--faint); font-family: var(--f-label); font-size: 10px; text-transform: uppercase; letter-spacing: .12em; margin-bottom: 2px; }
 .db-tl svg { width: 14px; height: 14px; flex: none; }
 .db-tl > span:first-of-type { flex: 1; }
@@ -1206,13 +1267,13 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
 .db-install svg { width: 18px; height: 18px; color: var(--amber); }
 .db-install:hover, .db-install:active { color: var(--amber); }
 @media (max-width: 900px) {
-  .db-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "hero" "events" "van"; grid-template-rows: none; }
+  .db-page { --db-gap: 16px; }
+  .db-grid { grid-template-columns: minmax(0, 1fr); }
+  .db-col { display: contents; }
 }
 @media (max-width: 600px) {
+  .db-page { --db-gap: 14px; }
   .db-page .card { padding: 12px 13px; }
-  .db-btns { flex: 1 1 100%; }
-  .db-btns .btn.al-big { min-height: 52px; }
-  .db-tiles { gap: 8px; }
   .db-tile { padding: 10px 11px 11px; }
   .db-tv { font-size: 21px; }
   .db-station { font-size: 16px; }
@@ -1395,7 +1456,7 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
 .db-qbtn { min-height: 40px; gap: 7px; }
 .db-qseg label { font-family: var(--f-label); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; padding: 6px 14px; }
 .db-qseg.busy { opacity: .6; pointer-events: none; }
-.db-van.stale .db-tile.db-quick { opacity: 1; } /* controls: they still work while the telemetry is away */
+.card.db-quick { margin-bottom: 16px; }
 .db-seen { display: flex; align-items: center; gap: 8px; padding: 2px 2px 0; color: var(--amber); font-family: var(--f-num); font-size: 15px; letter-spacing: .02em; }
 .db-events.stale .db-evlist { opacity: .55; }
 @media (max-width: 600px) {

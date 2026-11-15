@@ -99,6 +99,8 @@ LinkFactory = Callable[[str, Callable[[str, bytes], None]], Any]
 AFTER_COMMAND_S = 1.0  # после команды прочитать через столько (станция успевает переключить)
 LIGHT_WAIT_S = 0.5  # тревога, а станция не подключена — как часто смотреть, не подключилась ли
 LIGHT_BLINK_S = 1.0  # свет при тревоге: столько горит, столько не горит
+LIGHT_RESTORE_S = 180.0  # тревога кончилась: столько добиваемся, чтобы свет стал как до неё (связь могла пропасть)
+LIGHT_CHECK_S = 0.1
 
 
 SLOW_TIMEOUT_S = 15.0
@@ -588,7 +590,9 @@ class PowerService:
         except KeyError as e:
             raise PowerError(422, "Unknown output") from e
         if slot == "main" and cmd.output == "light":
-            await self._stop_light_task()  # рука хозяина важнее мигания
+            self._light_until = 0.0  # рука хозяина важнее мигания: и возвращать «как было» не нужно — решает он
+            await cancel_tasks(self._light_task)
+            self._light_task = None
         log.warning("power: %s %s - %s (%s)", slot, r.mac, what, source)
         await r.command(frame)
         return self.status()
@@ -632,41 +636,81 @@ class PowerService:
         self._light_task = asyncio.get_running_loop().create_task(self._blink(was_on), name="power-light")
 
     async def _blink(self, was_on: bool) -> None:
-        """Только регистр света (fossibot.output_request("light", …)); другие выходы станции не трогаем."""
-        on = not was_on
-        fast = False
+        """Только регистр света (fossibot.output_request("light", …)); другие выходы станции не трогаем.
+        Мигание кончилось — свет как до тревоги (_restore_light); новое событие в это время — мигаем снова."""
         try:
-            while time.monotonic() < self._light_until:
-                if not self.main.connected:
-                    fast = False
-                    self.main.release(0)  # без паузы между попытками
-                    await asyncio.sleep(LIGHT_WAIT_S)
-                    continue
-                if not fast:  # команды каждую секунду — на быстром интервале связи (музыка сейчас не важна)
-                    fast = True
-                    with contextlib.suppress(Exception):
-                        await self._tune()
-                try:
-                    await self.main.command(fossibot.output_request("light", on), read=False)
-                    on = not on
-                except (PowerError, BleError) as e:
-                    log.info("power: light flash: %s", e)
-                await asyncio.sleep(LIGHT_BLINK_S)
-        finally:
+            while True:
+                await self._blink_until(was_on)
+                if await self._restore_light(was_on):
+                    break
+        except asyncio.CancelledError:  # служба останавливается / хозяин сам переключил свет: одна попытка
             with contextlib.suppress(Exception):
                 if self.main.connected:
-                    await self.main.command(fossibot.output_request("light", was_on))
-            self._light_task = None
+                    await self.main.command(fossibot.output_request("light", was_on), read=False)
+            raise
+        finally:
+            if self._light_task is asyncio.current_task():
+                self._light_task = None
             with contextlib.suppress(Exception):
                 await self._tune()  # обратно на медленный интервал
 
+    async def _blink_until(self, was_on: bool) -> None:
+        on = not was_on
+        fast = False
+        while time.monotonic() < self._light_until:
+            if not self.main.connected:
+                fast = False
+                self.main.release(0)  # без паузы между попытками
+                await asyncio.sleep(LIGHT_WAIT_S)
+                continue
+            if not fast:  # команды каждую секунду — на быстром интервале связи (музыка сейчас не важна)
+                fast = True
+                with contextlib.suppress(Exception):
+                    await self._tune()
+            try:
+                await self.main.command(fossibot.output_request("light", on), read=False)
+                on = not on
+            except (PowerError, BleError) as e:
+                log.info("power: light flash: %s", e)
+            await asyncio.sleep(LIGHT_BLINK_S)
+
+    async def _restore_light(self, was_on: bool) -> bool:
+        """Свет — как был до тревоги, и станция это подтвердила свежим чтением. Связь могла пропасть на последнем
+        «включить», запись — не пройти: тогда свет горел бы до утра. Повторяем не дольше LIGHT_RESTORE_S.
+        → False: пришло новое событие тревоги — снова мигать; True — готово (или не вышло — в журнал)."""
+        deadline = time.monotonic() + LIGHT_RESTORE_S
+        while time.monotonic() < deadline:
+            if time.monotonic() < self._light_until:
+                return False
+            if not self.main.connected:
+                self.main.release(0)  # без паузы между попытками
+                await asyncio.sleep(LIGHT_WAIT_S)
+                continue
+            sent = self.main.mono()
+            try:
+                await self.main.command(fossibot.output_request("light", was_on))  # read: прочитать сразу после
+            except (PowerError, BleError) as e:
+                log.info("power: light restore: %s", e)
+                await asyncio.sleep(LIGHT_WAIT_S)
+                continue
+            t = 0.0
+            while t < 2 * READ_TIMEOUT_S and (self.main.read_at is None or self.main.read_at <= sent):
+                await asyncio.sleep(LIGHT_CHECK_S)
+                t += LIGHT_CHECK_S
+            r = self.main.reading if self.main.read_at is not None and self.main.read_at > sent else None
+            if r is not None and bool(getattr(r, "outputs", {}).get("light")) == was_on:
+                log.info("power: light back %s after the alarm", "on" if was_on else "off")
+                return True
+        log.warning("power: could not put the station light back %s after the alarm", "on" if was_on else "off")
+        return True
+
     async def _stop_light_task(self) -> None:
+        """Перестать мигать; свет вернёт как был сама задача (_restore_light) — ждём её недолго, дальше она в фоне."""
         if self._light_task is not None and not self._light_task.done():
-            self._light_until = 0.0  # _blink сам вернёт свет, как был
+            self._light_until = 0.0
             with contextlib.suppress(Exception):
-                async with asyncio.timeout(LIGHT_BLINK_S + READ_TIMEOUT_S):
+                async with asyncio.timeout(LIGHT_BLINK_S + 2 * READ_TIMEOUT_S):
                     await asyncio.shield(self._light_task)
-        self._light_task = None
 
     async def stop_light(self) -> None:
         """Охрану сняли / заглушили — перестать мигать."""
