@@ -8,7 +8,7 @@ import { errText } from "../api.js";
 import { toast, banner } from "../ui.js";
 import {
   TUNINGS, tuningById, noteHz, centsOff, nearestNote, noteLabel, nearestString, stringNumber, tuneLevel, tuneHint,
-  fmtCents, needleDeg, detectPitch, decimate2, rms, PitchTracker, smooth, clampA4, A4_DEFAULT, A4_MIN, A4_MAX,
+  fmtCents, needleDeg, detectPitch, decimate2, rms, PitchTracker, NeedleSpring, clampA4, A4_DEFAULT, A4_MIN, A4_MAX,
   IN_TUNE_CENTS, CLOSE_CENTS, NEEDLE_CENTS,
 } from "../tuner-fmt.js";
 
@@ -73,7 +73,8 @@ export function mount(root) {
   let target = 0; // the string tuned now
   const tuned = new Set(); // strings that were in tune this visit
   let inTuneSince = null;
-  let needle = null; // cents shown by the needle (smoothed)
+  const spring = new NeedleSpring(); // the needle's cents, on a damped spring
+  let lastFrame = null;
   const tracker = new PitchTracker();
 
   // audio
@@ -84,7 +85,7 @@ export function mount(root) {
   let analyser = null;
   let raw = null;
   let raf = 0;
-  let lastAnalyse = 0;
+  let timer = 0;
   let level = 0;
   let listening = false;
   let starting = false;
@@ -201,8 +202,8 @@ export function mount(root) {
       raw = new Float32Array(analyser.fftSize);
       listening = true;
       tracker.reset();
-      needle = null;
       try { wake = navigator.wakeLock ? await navigator.wakeLock.request("screen") : null; } catch { wake = null; } // the screen stays on
+      timer = setInterval(tick, ANALYSE_MS);
       loop();
     } catch (e) {
       stopTracks();
@@ -224,6 +225,8 @@ export function mount(root) {
   function stopMic() {
     cancelAnimationFrame(raf);
     raf = 0;
+    clearInterval(timer);
+    timer = 0;
     for (const n of nodes) { try { n.disconnect(); } catch { /* already */ } }
     nodes = [];
     analyser = null;
@@ -232,7 +235,8 @@ export function mount(root) {
     reading = { hz: null, live: false, held: false };
     level = 0;
     tracker.reset();
-    needle = null;
+    spring.reset(0);
+    lastFrame = null;
     inTuneSince = null;
     if (wake) { wake.release().catch(() => {}); wake = null; }
     if (!stopped) render();
@@ -251,13 +255,17 @@ export function mount(root) {
     return tracker.feed(p ? p.hz : null, now);
   }
 
+  // the sound is read on its own clock; the needle is drawn every frame (and by the reading itself when the
+  // browser holds the frames back)
   let reading = { hz: null, live: false, held: false };
+  function tick() {
+    if (!listening) return;
+    const now = performance.now();
+    reading = analyse(now);
+    if (lastFrame === null || now - lastFrame > 120) render(now);
+  }
   function loop(now = performance.now()) {
     if (!listening) return;
-    if (now - lastAnalyse >= ANALYSE_MS) {
-      lastAnalyse = now;
-      reading = analyse(now);
-    }
     render(now);
     raf = requestAnimationFrame(loop);
   }
@@ -306,8 +314,14 @@ export function mount(root) {
     if (pick !== null) target = pick;
     const tMidi = tuning.notes[target];
     const tHz = noteHz(tMidi, a4);
-    const cents = hz !== null ? centsOff(hz, tHz) : null;
-    needle = hz !== null ? smooth(needle, cents) : null;
+    const raw = hz !== null ? centsOff(hz, tHz) : null;
+    // the needle swings to the reading; the string died away — back to the middle, slower
+    const dt = lastFrame === null ? 0 : (now - lastFrame) / 1000;
+    lastFrame = now;
+    spring.omega = hz !== null ? 7.5 : 4;
+    const pos = spring.step(hz !== null ? Math.max(-1.2 * NEEDLE_CENTS, Math.min(1.2 * NEEDLE_CENTS, raw)) : 0, dt);
+    // the numbers and colours follow the needle (no flicker); a string far out — the reading itself
+    const cents = hz === null ? null : Math.abs(raw) <= NEEDLE_CENTS ? pos : raw;
     const lvl = tuneLevel(cents);
     const live = listening && reading.live;
 
@@ -317,7 +331,7 @@ export function mount(root) {
       else if (now - inTuneSince >= TUNED_MS) tuned.add(target);
     } else if (!reading.held || lvl !== "good") inTuneSince = null;
 
-    g.setNeedle(needleDeg(needle, SPAN), (hz === null ? "idle" : lvl) + (reading.held && !reading.live ? " held" : ""));
+    g.setNeedle(needleDeg(pos, SPAN), (hz === null ? "idle" : lvl) + (reading.held && !reading.live ? " held" : ""));
     const n = nearestNote(hz, a4);
     put(noteEl, n ? n.name : listening ? "…" : "—");
     put(octEl, n ? String(n.octave) : "");

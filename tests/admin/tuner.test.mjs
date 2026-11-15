@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   TUNINGS, tuningById, noteHz, centsOff, nearestNote, noteLabel, nearestString, stringNumber, tuneLevel, tuneHint,
-  fmtCents, needleDeg, detectPitch, decimate2, PitchTracker, smooth, clampA4, median,
+  fmtCents, needleDeg, detectPitch, decimate2, PitchTracker, NeedleSpring, trimmedMean, clampA4, median,
 } from "../../web/admin/js/tuner-fmt.js";
 
 /** A plucked string: the fundamental and its harmonics (the 2nd often louder than the 1st), decaying, with noise. */
@@ -120,10 +120,32 @@ test("small helpers: median, smoothing, A4 bounds", () => {
   assert.equal(median([3, 1, 2]), 2);
   assert.equal(median([4, 1, 2, 3]), 2.5);
   assert.equal(median([]), null);
-  assert.equal(smooth(null, 10), 10);
-  assert.equal(smooth(0, 10, 0.5), 5);
-  assert.equal(smooth(4, null), 4);
+  assert.equal(trimmedMean([10, 1, 2, 3]), 2.5); // without 1 and 10
+  assert.equal(trimmedMean([4, 6]), 5);
+  assert.equal(trimmedMean([]), null);
   assert.equal(clampA4("442"), 442);
   assert.equal(clampA4(500), 450);
   assert.equal(clampA4("x"), 440);
+});
+
+test("needle: swings to a new value smoothly, without overshoot, the same at 30 and 60 frames a second", () => {
+  const run = (fps, secs) => {
+    const n = new NeedleSpring();
+    const path = [];
+    for (let i = 0; i < fps * secs; i++) path.push(n.step(40, 1 / fps));
+    return path;
+  };
+  const p60 = run(60, 1.2);
+  assert.ok(p60[0] < 1, "no jump on the first frame: " + p60[0]);
+  for (let i = 1; i < p60.length; i++) assert.ok(p60[i] >= p60[i - 1] - 1e-9 && p60[i] <= 40 + 1e-6, "monotonic, no overshoot");
+  const half = p60.findIndex((x) => x >= 20) / 60;
+  assert.ok(half > 0.12 && half < 0.3, "half way in " + half + " s");
+  assert.ok(p60[p60.length - 1] > 39, "settled within ~0.6 s");
+  const p30 = run(30, 1.2);
+  assert.ok(Math.abs(p30[14] - p60[29]) < 0.5, "frame-rate independent");
+  const n = new NeedleSpring();
+  n.step(40, 10); // a long stall moves it at most a quarter second's worth
+  assert.ok(n.x < 30);
+  n.reset(0);
+  assert.equal(n.step(null, 0.1), 0);
 });

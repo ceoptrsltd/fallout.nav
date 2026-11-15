@@ -179,7 +179,7 @@ export function median(xs) {
  * A reading that jumps more than a semitone away from the recent ones starts over (a new string was plucked).
  */
 export class PitchTracker {
-  constructor({ need = 3, keep = 5, holdMs = 1500 } = {}) {
+  constructor({ need = 3, keep = 7, holdMs = 1500 } = {}) {
     this.need = need;
     this.keep = keep;
     this.holdMs = holdMs;
@@ -199,7 +199,7 @@ export class PitchTracker {
       this.recent.push(hz);
       if (this.recent.length > this.keep) this.recent.shift();
       if (this.recent.length >= this.need || (this.hz && Math.abs(centsOff(hz, this.hz)) < 100)) {
-        this.hz = median(this.recent);
+        this.hz = trimmedMean(this.recent);
         this.lastAt = now;
         return { hz: this.hz, live: true, held: false };
       }
@@ -214,11 +214,47 @@ export class PitchTracker {
   }
 }
 
-/** The needle follows the cents with a little lag (a = 0…1, the share of the new value per frame). */
-export function smooth(prev, next, a = 0.35) {
-  if (!num(next)) return prev;
-  if (!num(prev)) return next;
-  return prev + (next - prev) * a;
+/**
+ * Mean of the readings without the highest and the lowest (from 4 on): steadier than the median, which jumps from
+ * one reading to another, and a single wild reading still does not count.
+ */
+export function trimmedMean(xs) {
+  if (!xs.length) return null;
+  const s = xs.slice().sort((a, b) => a - b);
+  const k = s.length >= 4 ? 1 : 0;
+  const mid = s.slice(k, s.length - k);
+  return mid.reduce((a, b) => a + b, 0) / mid.length;
+}
+
+/**
+ * The needle as on a meter: a critically damped spring — it swings to a new value without overshoot and settles in
+ * about 4.7 / omega seconds, the same at any frame rate. step(target, dt s) → the position.
+ * omega 7.5 — ~0.6 s to a new note; the page lets it fall back to the middle slower when the string has died away.
+ */
+export class NeedleSpring {
+  constructor(omega = 7.5) {
+    this.omega = omega;
+    this.x = 0;
+    this.v = 0;
+  }
+
+  reset(x = 0) {
+    this.x = x;
+    this.v = 0;
+  }
+
+  step(target, dt) {
+    if (!num(target)) return this.x;
+    let left = Math.max(0, Math.min(0.25, num(dt) ? dt : 0)); // a stall (a hidden tab) does not throw the needle
+    while (left > 0) {
+      const h = Math.min(left, 1 / 120); // small steps keep the integration stable
+      const a = this.omega * this.omega * (target - this.x) - 2 * this.omega * this.v;
+      this.v += a * h;
+      this.x += this.v * h;
+      left -= h;
+    }
+    return this.x;
+  }
 }
 
 /** The reference A4 from the input, kept within A4_MIN…A4_MAX; nonsense — the default. */
