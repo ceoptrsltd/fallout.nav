@@ -1070,9 +1070,9 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .db-pw-cells { display: inline-grid; grid-template-rows: repeat(3, auto); grid-auto-flow: column; gap: 0 8px;
   margin-left: 10px; align-self: center; font-family: var(--f-num); font-size: 11px; line-height: 1.2; color: var(--dim); }
 .db-pw-cells[hidden] { display: none; }
-.db-batt { position: relative; height: 9px; margin: 3px 6px 3px 0; border: 1px solid var(--metal); border-radius: 2px; }
-.db-batt::after { content: ""; position: absolute; right: -5px; top: 2px; width: 3px; height: 3px; background: var(--metal); }
-.db-batt i { display: block; height: 100%; width: 0; background: var(--ink); transition: width .6s; }
+.db-batt { position: relative; height: 18px; margin: 5px 7px 5px 0; padding: 2px; border: 1px solid var(--metal); border-radius: 3px; }
+.db-batt::after { content: ""; position: absolute; right: -5px; top: 4px; width: 3px; height: 8px; border-radius: 0 2px 2px 0; background: var(--metal); }
+.db-batt i { display: block; height: 100%; width: 0; border-radius: 1px; background: var(--ink); transition: width .6s; }
 .db-batt.green i { background: var(--green); }
 .db-batt.amber i { background: var(--amber); }
 .db-batt.red i { background: var(--red); }
