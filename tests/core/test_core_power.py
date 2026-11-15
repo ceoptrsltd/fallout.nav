@@ -384,3 +384,21 @@ async def test_reconnect_now_cuts_the_pause_between_failed_tries(fast, monkeypat
         await _until(lambda: svc.second.connected)
     finally:
         await svc.stop()
+
+
+async def test_after_a_connect_the_link_is_slowed_down_and_a_failure_of_that_is_not_fatal(fast):
+    calls = []
+
+    async def slow():
+        calls.append(1)
+        raise BleError("no sudo")
+
+    s = PowerSettings(main_mac="", second_mac="74:C1:4E:10:00:9B", third_mac="")
+    svc = pw.PowerService(lambda: s, after_connect=slow)
+    svc.second.link_factory = lambda mac, cb: ScriptLink(pw.DALY, 1, mac, cb)
+    await svc.start()
+    try:
+        await _until(lambda: svc.second.fresh() is not None)
+        assert calls == [1], "once per connect"
+    finally:
+        await svc.stop()

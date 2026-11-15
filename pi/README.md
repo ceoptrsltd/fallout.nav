@@ -13,7 +13,7 @@ pin 111 into a 5" B/W CRT), alarm, radio and web UI.
 | `boot/config.txt.fnav` | block placed between `# >>> fnav` / `# <<< fnav` in `/boot/firmware/config.txt` |
 | `boot/cmdline.txt.fnav` | extra kernel command line tokens (composite mode and margins, console blanking) |
 | `tools/gen-edid.py` | a 720x576@50 EDID for the alternative HDMI->AV converter setup (unused with composite) |
-| `systemd/` | `fnav-core`, `fnav-camera`, `fnav-camera-rear`, `fnav-watch`, `fnav-display`, `fnav-radio`, `fnav-games`, `fnav-tunnel`, `fnav-bt-reset`, `mediamtx` units; drop-ins (watchdog, journald, seatd, bluealsa, NM wait-online) |
+| `systemd/` | `fnav-core`, `fnav-camera`, `fnav-camera-rear`, `fnav-watch`, `fnav-display`, `fnav-radio`, `fnav-games`, `fnav-tunnel`, `fnav-bt-reset`, `fnav-ble-slow`, `mediamtx` units; drop-ins (watchdog, journald, seatd, bluealsa, NM wait-online) |
 | `mediamtx.yml` | MediaMTX config (`/etc/fnav/mediamtx.yml`) |
 | `sysctl/90-fnav.conf` | fast dirty-page writeback (video survives power loss) |
 | `sudoers/fnav`, `polkit/` | the only privileges the `fnav` user gets (polkit: NetworkManager, the system time zone) |
@@ -170,8 +170,8 @@ prints a reminder otherwise; `FNAV_WEB_COPY=no` skips it. `tools/remote.sh deplo
 ```bash
 sudo ./pi/install.sh --rollback-boot   # restore config.txt and cmdline.txt from the .fnav-orig backups, then reboot
 # Remove the services (data in /var/lib/fnav and the secrets are kept):
-sudo systemctl disable --now fnav-display fnav-games fnav-radio fnav-tunnel fnav-watch fnav-camera fnav-camera-rear fnav-bt-reset fnav-core mediamtx
-sudo rm /etc/systemd/system/{fnav-core,fnav-camera,fnav-camera-rear,fnav-watch,fnav-display,fnav-games,fnav-radio,fnav-tunnel,fnav-bt-reset,mediamtx}.service
+sudo systemctl disable --now fnav-display fnav-games fnav-radio fnav-tunnel fnav-watch fnav-camera fnav-camera-rear fnav-bt-reset fnav-ble-slow fnav-core mediamtx
+sudo rm /etc/systemd/system/{fnav-core,fnav-camera,fnav-camera-rear,fnav-watch,fnav-display,fnav-games,fnav-radio,fnav-tunnel,fnav-bt-reset,fnav-ble-slow,mediamtx}.service
 sudo rm /etc/systemd/system/{seatd.service.d,NetworkManager-wait-online.service.d}/fnav.conf
 sudo rm /etc/sudoers.d/fnav /etc/polkit-1/rules.d/50-fnav-{networkmanager,timedate}.rules /etc/udev/rules.d/90-fnav.rules \
         /etc/sysctl.d/90-fnav.conf /etc/chrony/conf.d/fnav.conf /etc/NetworkManager/conf.d/90-fnav-wifi.conf \

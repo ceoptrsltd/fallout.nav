@@ -1,0 +1,8 @@
+# fallout.nav: slow down the Bluetooth LE connections to the power stations so they leave the radio to the
+# speaker (pi/bin/fnav-ble-slow). Started by fnav-core after a station connects, never enabled.
+[Unit]
+Description=fallout.nav: slow Bluetooth LE connection intervals (power stations)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/fnav/app/pi/bin/fnav-ble-slow

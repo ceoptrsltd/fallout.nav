@@ -29,7 +29,7 @@ import dataclasses
 import logging
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -92,6 +92,20 @@ AFTER_COMMAND_S = 1.5  # после команды прочитать через
 LIGHT_BLINK_S = 1.0  # свет при тревоге: столько горит, столько не горит
 
 
+SLOW_TIMEOUT_S = 15.0
+
+
+async def slow_ble_links() -> None:
+    """Замедлить LE-подключения к станциям (root: pi/systemd/fnav-ble-slow.service, pi/bin/fnav-ble-slow): BlueZ
+    подключается с событием связи каждые 30–50 мс на станцию — три станции отнимали радио у колонки (музыка
+    заикалась и щёлкала, 2026-11-15). Опрос раз в 30 с — хватает события раз в 400–500 мс."""
+    from fnav.core.system import run
+
+    rc, _out, err = await run("sudo", "-n", "/usr/bin/systemctl", "start", "fnav-ble-slow", timeout=SLOW_TIMEOUT_S)
+    if rc != 0:
+        raise BleError((err or "").strip() or f"systemctl exit code {rc}")
+
+
 class PowerError(Exception):
     def __init__(self, status: int, detail: str) -> None:
         super().__init__(detail)
@@ -118,6 +132,8 @@ class StationReader:
         self.connect_lock = asyncio.Lock()  # PowerService ставит один на все станции
         self._io = asyncio.Lock()  # чтение и команда не перемежаются
         self._wake = asyncio.Event()  # после команды — прочитать сразу
+        # подключились — замедлить подключение (редкие события связи не мешают музыке на колонке, slow_ble_links)
+        self.after_connect: Callable[[], Awaitable[None]] | None = None
         self.released_until: float | None = None  # отпущена для приложения на телефоне — до этого mono()
         self._resume = asyncio.Event()  # отпускание кончилось раньше (кнопка «подключиться сейчас»)
 
@@ -245,6 +261,11 @@ class StationReader:
             self.link.on_lost = self._on_lost
         async with self.connect_lock:
             await self.link.connect(list(self.proto.subscribe), [self.proto.write_uuid])
+            if self.after_connect is not None:
+                try:
+                    await self.after_connect()
+                except Exception as e:  # noqa: BLE001 — станция читается и на быстром интервале
+                    log.warning("power: %s - slowing the connection down failed: %s", self.slot, e)
 
     async def _run(self) -> None:
         fails = 0
@@ -398,7 +419,8 @@ def fake_daly(voltage: float, soc: float = 55.0) -> bytes:
 
 class PowerService:
     def __init__(self, get_settings: Callable[[], PowerSettings], mock: bool = False,
-                 quiet: Callable[[], bool] = lambda: False, link_factory: LinkFactory | None = None) -> None:
+                 quiet: Callable[[], bool] = lambda: False, link_factory: LinkFactory | None = None,
+                 after_connect: Callable[[], Awaitable[None]] | None = None) -> None:
         self.get_settings = get_settings
         self.mock = mock
 
@@ -415,6 +437,7 @@ class PowerService:
         lock = asyncio.Lock()
         for r in (self.main, self.second, self.third):
             r.connect_lock = lock
+            r.after_connect = after_connect
         self._light_task: asyncio.Task | None = None
         self.running = False
         self._lock = asyncio.Lock()  # настройки меняются подряд — переподключения по очереди

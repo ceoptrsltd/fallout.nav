@@ -1,0 +1,21 @@
+#!/bin/bash
+# Slow down the Bluetooth LE connections to the power stations (docs/contracts/power.md "Радио").
+# BlueZ connects with the kernel default: a connection event every 30-50 ms per station. Three stations took a
+# good part of the one radio the onboard chip shares with the speaker (A2DP) and Wi-Fi - the music stuttered and
+# clicked. The stations are read once in 30 s, so an event every 400-500 ms is plenty.
+# Run as root by fnav-ble-slow.service, which fnav-core starts (sudo systemctl start fnav-ble-slow) after a
+# station connects. Applies to every LE connection where the Pi is the central; safe to run again.
+set -u
+MIN=320      # x 1.25 ms = 400 ms
+MAX=400      # x 1.25 ms = 500 ms
+TIMEOUT=600  # x 10 ms = 6 s without an answer - the link is lost
+handles="$(hcitool con | awk '/ LE / && /CENTRAL/ { for (i = 1; i < NF; i++) if ($i == "handle") print $(i + 1) }')"
+[ -n "$handles" ] || { echo "fnav-ble-slow: no LE connections"; exit 0; }
+for h in $handles; do
+    # hcitool waits for the "update complete" event, which arrives after the old interval ran out; the command
+    # itself is sent at once
+    timeout 8 hcitool lecup --handle "$h" --min "$MIN" --max "$MAX" --latency 0 --timeout "$TIMEOUT" >/dev/null 2>&1 &
+done
+wait
+echo "fnav-ble-slow: handles $(echo $handles | tr '\n' ' ')-> $((MIN * 5 / 4))-$((MAX * 5 / 4)) ms"
+exit 0
