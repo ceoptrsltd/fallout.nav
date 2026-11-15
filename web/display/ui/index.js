@@ -4,7 +4,7 @@
 import { drawAlarmBanner, updateAlarm } from "./alarm.js";
 import { drawClock } from "./clock.js";
 import { compassStyles, drawCompass } from "./compass.js";
-import { drawLevel } from "./level.js";
+import { drawLevel, levelVisible } from "./level.js";
 import { drawAlarmFlash, drawRadio } from "./radio.js";
 import { drawRearSignal, drawRearTag, rearView } from "./rear.js";
 import { SPEED_BOX, drawSpeed } from "./speed.js";
@@ -15,6 +15,8 @@ import { clearSprites, safeRect, setting } from "./theme.js";
 import { drawTrail } from "./trail.js";
 import { drawVehicle } from "./vehicle.js";
 import { drawWeather, drawWind } from "./weather.js";
+
+const PANEL_GAP = 8; // между широкой нижней плашкой и уровнем над ней (стоянка)
 
 export { compassStyles, drawRadio, drawStandby, drawTrail, drawVehicle, drawWind };
 export { LEVEL_BOX, drawLevelPanel } from "./level.js";
@@ -107,11 +109,16 @@ export function drawHud(ctx, state, { wind = true } = {}) {
   }
   drawWarnings(ctx, state, safe, yTop);
 
-  if (!drawLevel(ctx, state, safe)) drawSpeed(ctx, state, Math.round(safe.x), Math.round(safe.y + safe.h - SPEED_BOX.h));
+  // стоянка (показан уровень): нижняя плашка (радио / вспышка охраны / погода) — от левого края до плашки станций,
+  // уровень — над ней: прогнозу хватает места на значки и больше дней
+  const parked = levelVisible(ctx, state);
+  const panel = drawRadio(ctx, state, safe, 0, parked) || drawAlarmFlash(ctx, state, safe, 0, parked)
+    || drawWeather(ctx, state, safe, 0, parked);
+  if (!drawLevel(ctx, state, safe, parked && panel ? panel.h + PANEL_GAP : 0)) {
+    drawSpeed(ctx, state, Math.round(safe.x), Math.round(safe.y + safe.h - SPEED_BOX.h));
+  }
   drawPower(ctx, state, safe);
   drawIndicators(ctx, state, safe);
-  // радио выключено — вспышка охраны своей плашкой, иначе погода
-  if (!drawRadio(ctx, state, safe) && !drawAlarmFlash(ctx, state, safe)) drawWeather(ctx, state, safe);
   if (rear) drawRearSignal(ctx, state, safe); // нет картинки задней камеры — вместо стоп-кадра
   drawAlarmBanner(ctx, state, safe, [cr, clock, rec, tag]);
   ctx.restore();

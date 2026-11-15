@@ -11,6 +11,9 @@ const PAD = 12;
 const SEP_GAP = 9; // наименьший зазор от черты до текста
 const ICON = { w: 38, h: 34 };
 const DAY_ICON = { w: 26, h: 23 };
+const DAY_ICON_WIDE = { w: 34, h: 30 }; // широкая плашка (стоянка): значки крупнее
+const WIDE_DAYS = 4;
+const COL_PAD = 9; // поля колонки дня
 const DAYS_LBL = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
 // ── чистые помощники (tests/display/weather.test.mjs) ─────────────────────
@@ -213,11 +216,13 @@ function windArrow(ctx, x, y, a, len, lw = 2.4) {
 /**
  * Плашка погоды на месте плашки радио: слева — сейчас (значок, температура, ветер со стрелкой «куда дует»
  * относительно экрана), справа — завтра и послезавтра (день, значок, макс/мин). Возвращает прямоугольник или null.
+ * wide — на стоянке плашка идёт от левого края (уровень стоит над ней): прогноз — колонками по дням, всегда со
+ * значками, столько дней, сколько помещается (до WIDE_DAYS).
  */
-export function drawWeather(ctx, state, safe, liftPx = 0) {
+export function drawWeather(ctx, state, safe, liftPx = 0, wide = false) {
   if (!weatherVisible(state)) return null;
   const w = state.weather;
-  const r = radioRect(safe, rightColumnWidth(ctx, state), liftPx);
+  const r = radioRect(safe, rightColumnWidth(ctx, state), liftPx, wide);
   const { x, y, h } = r;
   const x1 = x + r.w - PAD;
   blit(ctx, plateSprite(r.w, h, { chamfer: 9 }), x, y);
@@ -226,10 +231,15 @@ export function drawWeather(ctx, state, safe, liftPx = 0) {
   // сейчас: значок + температура; «-12°» и шире — чуть мельче
   const tf = fontNum(42, 700);
   const ix = x + PAD - 2;
-  blit(ctx, iconSprite(weatherKind(w.code), w.is_day !== false, ICON.w, ICON.h), ix, y + 8);
-  const tx = ix + ICON.w + 4;
   const temp = fmtTemp(w.temp_c);
   const tfit = textWidth(ctx, tf, temp) <= textWidth(ctx, tf, "88°") + 4 ? tf : fontNum(34, 700);
+  // узкая плашка (в движении, рядом со спидометром и станциями): прогнозу нужно хотя бы «MON 29°» — если со значком
+  // «сейчас» не помещается, значок не рисуем (иначе температура наезжала на день недели)
+  const dayMin = Math.max(...DAYS_LBL.map((d) => textWidth(ctx, fontNum(25, 600), d))) + 8
+    + Math.max(0, ...(w.days || []).slice(0, 2).map((d) => textWidth(ctx, fontNum(25, 600), fmtTemp(d.t_max))));
+  const nowIcon = wide || x1 - (ix + ICON.w + 4 + textWidth(ctx, tfit, temp) + 2 * SEP_GAP + 2) >= dayMin;
+  if (nowIcon) blit(ctx, iconSprite(weatherKind(w.code), w.is_day !== false, ICON.w, ICON.h), ix, y + 8);
+  const tx = nowIcon ? ix + ICON.w + 4 : ix + 2;
   outlinedText(ctx, temp, tx, y + 27, tfit, { align: "left", lw: 5, fill: ink });
   let leftEnd = tx + textWidth(ctx, tfit, temp);
   // ветер: стрелка «куда дует» (как струйки на карте) + скорость
@@ -241,6 +251,11 @@ export function drawWeather(ctx, state, safe, liftPx = 0) {
     const wt = `${Math.round(w.wind_ms)} m/s`;
     outlinedText(ctx, wt, ix + 28, wy, wf, { align: "left", lw: 4, fill: ink });
     leftEnd = Math.max(leftEnd, ix + 28 + textWidth(ctx, wf, wt));
+  }
+
+  if (wide) {
+    drawDayColumns(ctx, w, leftEnd, x1, y, h, ink);
+    return r;
   }
 
   // завтра, послезавтра: «MON [значок] 14°/6°» — блок прижат к правому краю (не сдвигается от смены температуры
@@ -278,6 +293,37 @@ export function drawWeather(ctx, state, safe, liftPx = 0) {
     }
   });
   return r;
+}
+
+/**
+ * Широкая плашка (стоянка): дни колонками — сверху день недели и значок, снизу макс/мин. Колонок столько, сколько
+ * помещается между «сейчас» и правым краем (до WIDE_DAYS), между ними — тонкие черты; блок прижат к правому краю.
+ */
+function drawDayColumns(ctx, w, leftEnd, x1, y, h, ink) {
+  const lf = fontNum(23, 600);
+  const nf = fontNum(25, 600);
+  const all = (w.days || []).slice(0, WIDE_DAYS).map((d) => ({ d, hi: fmtTemp(d.t_max), lo: `/${fmtTemp(d.t_min)}` }));
+  if (!all.length) return;
+  const lblW = Math.max(...DAYS_LBL.map((d) => textWidth(ctx, lf, d)));
+  const tempW = Math.max(...all.map((t) => textWidth(ctx, nf, t.hi + t.lo)));
+  const colW = Math.ceil(Math.max(lblW + 6 + DAY_ICON_WIDE.w, tempW)) + 2 * COL_PAD;
+  const n = Math.max(1, Math.min(all.length, Math.floor((x1 + COL_PAD - leftEnd - SEP_GAP) / colW)));
+  const x0 = Math.round(x1 + COL_PAD - n * colW);
+  all.slice(0, n).forEach(({ d, hi, lo }, k) => {
+    const cx0 = x0 + k * colW;
+    ctx.fillStyle = C.metal; // черта слева от колонки (первая отделяет «сейчас»)
+    ctx.fillRect(cx0 - 1, y + 12, 2, h - 24);
+    const mid = cx0 + colW / 2;
+    const headW = lblW + 6 + DAY_ICON_WIDE.w;
+    const hx = Math.round(mid - headW / 2);
+    outlinedText(ctx, d.weekday, hx, y + 24, lf, { align: "left", lw: 4, fill: k === 0 ? C.accent : ink });
+    blit(ctx, iconSprite(weatherKind(d.code), true, DAY_ICON_WIDE.w, DAY_ICON_WIDE.h), hx + lblW + 6,
+      Math.round(y + 24 - DAY_ICON_WIDE.h / 2 - 1));
+    const tw = textWidth(ctx, nf, hi + lo);
+    const tx = Math.round(mid - tw / 2);
+    outlinedText(ctx, hi, tx, y + h - 22, nf, { align: "left", lw: 4, fill: ink });
+    outlinedText(ctx, lo, tx + textWidth(ctx, nf, hi), y + h - 22, nf, { align: "left", lw: 4, fill: C.inkDim });
+  });
 }
 
 // ── ветер на карте ────────────────────────────────────────────────────────

@@ -43,7 +43,7 @@ class Clock:
 def test_status_current_and_next_two_days() -> None:
     st = wmod.weather_status({"fetched_at": NOW - 60, "lat": 52.2, "lon": 21.0, "forecast": forecast()}, NOW)
     assert (st.temp_c, st.feels_c, st.code, st.is_day, st.wind_ms, st.wind_from_deg) == (12.6, 9.0, 3, True, 5.3, 174)
-    assert [(d.weekday, d.date, d.code, d.t_max, d.t_min, d.precip_prob) for d in st.days] == [
+    assert [(d.weekday, d.date, d.code, d.t_max, d.t_min, d.precip_prob) for d in st.days[:2]] == [
         ("MON", "2026-10-26", 3, 10.1, 7.9, 93), ("TUE", "2026-10-27", 2, 11.3, -5.2, 1)]
     assert st.stale is False and st.updated == NOW - 60
 
@@ -54,7 +54,7 @@ def test_status_offline_uses_the_hourly_forecast() -> None:
     st = wmod.weather_status(cache, later)
     assert st.temp_c == 15.0 and st.code == 61 and st.wind_from_deg == 90 and st.is_day is False
     assert st.stale is True
-    assert [d.weekday for d in st.days] == ["TUE", "WED"]  # the days move on with the clock
+    assert [d.weekday for d in st.days] == ["TUE", "WED", "THU", "FRI"]  # the days move on with the clock
     assert wmod.weather_status(cache, NOW + 8 * 86400) is None  # too old to show anything
 
 
@@ -107,4 +107,4 @@ async def test_mock_forecast_and_ws_hello(data_dir) -> None:
         await core.weather.tick()  # --mock: a made-up forecast, no network
         await login(c)
         w = (await c.get("/api/weather")).json()["weather"]
-        assert w["type"] == "weather" and len(w["days"]) == 2 and w["wind_ms"] is not None
+        assert w["type"] == "weather" and len(w["days"]) == 4 and w["wind_ms"] is not None

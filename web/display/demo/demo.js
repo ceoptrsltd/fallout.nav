@@ -8,7 +8,8 @@ import { demoRadioStatus } from "./radio.js";
 
 const DEMO_WEATHER = {
   type: "weather", temp_c: 24.4, feels_c: 23, code: 1, is_day: true, wind_ms: 5.5, gust_ms: 9, wind_from_deg: 250,
-  days: [{ weekday: "MON", code: 0, t_max: 29, t_min: 17 }, { weekday: "TUE", code: 2, t_max: 27, t_min: 16 }], stale: false,
+  days: [{ weekday: "MON", code: 0, t_max: 29, t_min: 17 }, { weekday: "TUE", code: 2, t_max: 27, t_min: 16 },
+    { weekday: "WED", code: 61, t_max: 22, t_min: 14 }, { weekday: "THU", code: 3, t_max: 24, t_min: 13 }], stale: false,
 };
 
 // the demo has no /tiles proxy: Esri tiles directly (shared with remote access)

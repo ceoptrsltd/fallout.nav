@@ -48,9 +48,12 @@ export function radioVisible(state) {
   return !!r && VISIBLE.has(r.state) && setting(state, "display.radio_panel", true) !== false;
 }
 
-/** Прямоугольник плашки (логические px): между спидометром и плашкой станций, низ — по зоне безопасности. */
-export function radioRect(safe, indicatorsW, liftPx = 0) {
-  const x0 = Math.round(safe.x + SPEED_BOX.w + GAP);
+/**
+ * Прямоугольник плашки (логические px): между спидометром и плашкой станций, низ — по зоне безопасности.
+ * wide — на стоянке (показан уровень, ui/level.js): от левого края зоны безопасности, уровень стоит над плашкой.
+ */
+export function radioRect(safe, indicatorsW, liftPx = 0, wide = false) {
+  const x0 = Math.round(wide ? safe.x : safe.x + SPEED_BOX.w + GAP);
   const x1 = Math.round(safe.x + safe.w - indicatorsW - GAP);
   const y1 = Math.round(safe.y + safe.h - liftPx);
   return { x: x0, y: y1 - RADIO_H, w: Math.max(160, x1 - x0), h: RADIO_H };
@@ -485,10 +488,10 @@ function drawTuning(ctx, x, yc, now) {
 }
 
 /**
- * Плашка радио. safe — зона безопасности, liftPx — поднять над нижним краем (подпись Esri в демо/удалённо).
+ * Плашка радио. safe — зона безопасности, wide — на всю ширину до плашки станций (стоянка), liftPx — поднять над нижним краем (подпись Esri в демо/удалённо).
  * Возвращает занятый прямоугольник или null, если плашка не показана.
  */
-export function drawRadio(ctx, state, safe, liftPx = 0) {
+export function drawRadio(ctx, state, safe, liftPx = 0, wide = false) {
   const p = panelFor(ctx);
   if (!radioVisible(state)) {
     p.visible = false;
@@ -498,7 +501,7 @@ export function drawRadio(ctx, state, safe, liftPx = 0) {
   const now = state?.now ?? 0;
   update(p, radio, now);
 
-  const r = radioRect(safe, rightColumnWidth(ctx, state), liftPx);
+  const r = radioRect(safe, rightColumnWidth(ctx, state), liftPx, wide);
   const { x, y, w, h } = r;
   const appear = clamp01((now - p.appearT0) / APPEAR_S);
   ctx.save();
@@ -613,10 +616,10 @@ function drawTrackLine(ctx, p, now, tx0, tx1, yc, wipe, barX) {
  * Вспышка ALARM ON / ALARM OFF, когда плашки радио нет: своя плашка того же размера на месте радио (вместо погоды
  * на 2.5 с). Вызывать после drawRadio (вернул null). Возвращает прямоугольник или null.
  */
-export function drawAlarmFlash(ctx, state, safe, liftPx = 0) {
+export function drawAlarmFlash(ctx, state, safe, liftPx = 0, wide = false) {
   const f = alarmFlashFor(ctx, state?.now ?? 0);
   if (!f) return null;
-  const r = radioRect(safe, rightColumnWidth(ctx, state), liftPx);
+  const r = radioRect(safe, rightColumnWidth(ctx, state), liftPx, wide);
   drawFlashPlate(ctx, r, f, plateSprite(r.w, r.h, { chamfer: 9 }));
   return r;
 }

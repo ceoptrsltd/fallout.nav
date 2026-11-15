@@ -43,6 +43,7 @@ STALE_S = 3 * 3600.0
 MAX_AGE_S = 6 * 86400.0  # старше — прогноз уже не на что показывать
 TICK_S = 60.0
 DAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+FORECAST_DAYS = 4  # экран: на узкой плашке — два ближайших, на широкой (стоянка) — сколько поместится
 
 
 def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -104,7 +105,7 @@ def weather_status(cache: dict, now: float) -> WeatherStatus | None:
                                t_max=_num(_at(daily, "temperature_2m_max", k)),
                                t_min=_num(_at(daily, "temperature_2m_min", k)),
                                precip_prob=round(prob) if prob is not None else None))
-        if len(days) == 2:
+        if len(days) == FORECAST_DAYS:
             break
     return WeatherStatus(
         temp_c=temp, feels_c=_num(_at(src, "apparent_temperature", i)),

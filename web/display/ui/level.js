@@ -596,10 +596,10 @@ export function drawLevelPanel(ctx, x, y, level, now = 0, opts = {}) {
  * В HUD: виджет вместо спидометра, если пора (levelVisible). Левый нижний угол зоны безопасности, как у
  * спидометра. Возвращает прямоугольник или null (тогда рисуется спидометр).
  */
-export function drawLevel(ctx, state, safe) {
+export function drawLevel(ctx, state, safe, liftPx = 0) {
   if (!levelVisible(ctx, state)) return null;
   const x = Math.round(safe.x);
-  const y = Math.round(safe.y + safe.h - LEVEL_BOX_HUD.h);
+  const y = Math.round(safe.y + safe.h - LEVEL_BOX_HUD.h - liftPx); // liftPx — над широкой нижней плашкой
   return drawLevelPanel(ctx, x, y, state.telemetry.level, state?.now ?? 0, { compact: true });
 }
 
