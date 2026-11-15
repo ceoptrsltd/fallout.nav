@@ -1079,6 +1079,8 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .db-batt.red i { background: var(--red); }
 .db-charging::before { content: "⚡ "; }
 .db-balancing::before { content: "⇄ "; }
+.db-cells::before { content: " · "; } /* Daly: разница ячеек — в строке напряжения */
+.db-cells.red { color: var(--red); }
 /* power switches: slide-to-switch (slide-switch.js) */
 .pc { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); container-type: inline-size; }
 .pc-grp { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

@@ -393,12 +393,13 @@ export function mount(root) {
     const big = h("span.db-pw-big", null, "—");
     const unit = h("span.db-pw-unit");
     const bar = withBar ? h(".db-batt", null, h("i")) : null;
-    const sub = h(".db-ts");
-    const cells = h(".db-ts", { hidden: true });
+    const sub = h("span");
+    const cells = h("span", { hidden: true }); // Daly: «· Δ 60 mV» в той же строке, что и напряжение
+    const subLine = h(".db-ts.wrap", null, sub, cells);
     const bal = h(".db-ts", { hidden: true });
     const note = h(".db-ts");
     const volts = h("span.db-pw-cells", { hidden: true, title: "cell voltages, V" });
-    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit, volts), bar, sub, cells, bal, note), big, unit, bar, sub, cells, bal, note, volts };
+    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit, volts), bar, subLine, bal, note), big, unit, bar, sub, cells, bal, note, volts };
   };
   const pwMain = pwCol("Fossibot", true);
   const pwSecond = pwCol("Powerbank", false);
@@ -426,7 +427,7 @@ export function mount(root) {
       c.note.hidden = !x.note;
       put(c.cells, x.cells || "");
       c.cells.hidden = !x.cells;
-      cls(c.cells, "db-ts" + (x.cellsBad ? " red db-blink" : ""));
+      cls(c.cells, "db-cells" + (x.cellsBad ? " red db-blink" : ""));
       put(c.bal, x.balance || "");
       c.bal.hidden = !x.balance;
       cls(c.bal, "db-ts" + (x.balancing ? " green db-balancing" : ""));

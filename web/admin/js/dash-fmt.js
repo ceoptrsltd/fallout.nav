@@ -393,7 +393,7 @@ export function powerInfo(p) {
       sub: v !== null ? `${v.toFixed(1)} V` : on ? "" : "no data",
       note: on && x.charging ? "charging" : "", noteKind: "ok", charging: on && !!x.charging,
       // Daly: разница ячеек (опасная — красным и мигает)
-      cells: on && num(x.cell_delta_mv) ? `Δ ${Math.round(x.cell_delta_mv)} mV cells` : "", cellsBad: on && !!x.cell_delta_bad,
+      cells: on && num(x.cell_delta_mv) ? `Δ ${Math.round(x.cell_delta_mv)} mV` : "", cellsBad: on && !!x.cell_delta_bad,
       // Daly: балансировка ячеек — идёт или нет (у других станций строки нет)
       balance: on && typeof x.balancing === "boolean" ? (x.balancing ? "balancing" : "balancing off") : "",
       balancing: on && x.balancing === true,
