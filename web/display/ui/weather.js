@@ -13,7 +13,8 @@ const ICON = { w: 38, h: 34 };
 const DAY_ICON = { w: 26, h: 23 };
 const DAY_ICON_WIDE = { w: 34, h: 30 }; // широкая плашка (стоянка): значки крупнее
 const WIDE_DAYS = 4;
-const COL_PAD = 9; // поля колонки дня
+const COL_PAD = 6; // поля колонки дня
+const WIDE_FONTS = [25, 23, 21, 19]; // макс/мин в колонке дня, px: от крупного к самому мелкому
 const DAYS_LBL = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
 // ── чистые помощники (tests/display/weather.test.mjs) ─────────────────────
@@ -296,33 +297,45 @@ export function drawWeather(ctx, state, safe, liftPx = 0, wide = false) {
 }
 
 /**
- * Широкая плашка (стоянка): дни колонками — сверху день недели и значок, снизу макс/мин. Колонок столько, сколько
- * помещается между «сейчас» и правым краем (до WIDE_DAYS), между ними — тонкие черты; блок прижат к правому краю.
+ * Широкая плашка (стоянка): дни колонками — сверху день недели и значок, снизу макс/мин. Колонки делят всё место
+ * между «сейчас» и правым краем поровну (пустого места нет). Дней — как можно больше (до WIDE_DAYS): шрифт и значки
+ * уменьшаются по ступеням WIDE_FONTS, пока дни помещаются; не помещаются и самым мелким — на день меньше.
  */
 function drawDayColumns(ctx, w, leftEnd, x1, y, h, ink) {
-  const lf = fontNum(23, 600);
-  const nf = fontNum(25, 600);
   const all = (w.days || []).slice(0, WIDE_DAYS).map((d) => ({ d, hi: fmtTemp(d.t_max), lo: `/${fmtTemp(d.t_min)}` }));
   if (!all.length) return;
-  const lblW = Math.max(...DAYS_LBL.map((d) => textWidth(ctx, lf, d)));
-  const tempW = Math.max(...all.map((t) => textWidth(ctx, nf, t.hi + t.lo)));
-  const colW = Math.ceil(Math.max(lblW + 6 + DAY_ICON_WIDE.w, tempW)) + 2 * COL_PAD;
-  const n = Math.max(1, Math.min(all.length, Math.floor((x1 + COL_PAD - leftEnd - SEP_GAP) / colW)));
-  const x0 = Math.round(x1 + COL_PAD - n * colW);
-  all.slice(0, n).forEach(({ d, hi, lo }, k) => {
-    const cx0 = x0 + k * colW;
+  const xa = leftEnd + SEP_GAP;
+  const avail = x1 + COL_PAD - xa;
+  const layout = (n, px) => {
+    const lf = fontNum(px - 2, 600);
+    const nf = fontNum(px, 600);
+    const icon = { w: Math.round(DAY_ICON_WIDE.w * px / WIDE_FONTS[0]), h: Math.round(DAY_ICON_WIDE.h * px / WIDE_FONTS[0]) };
+    const lblW = Math.max(...DAYS_LBL.map((d) => textWidth(ctx, lf, d)));
+    const tempW = Math.max(...all.slice(0, n).map((t) => textWidth(ctx, nf, t.hi + t.lo)));
+    return { n, lf, nf, icon, lblW, need: Math.ceil(Math.max(lblW + 5 + icon.w, tempW)) + 2 * COL_PAD };
+  };
+  let L = layout(1, WIDE_FONTS[WIDE_FONTS.length - 1]);
+  pick: for (let n = all.length; n >= 1; n--) {
+    for (const px of WIDE_FONTS) {
+      const t = layout(n, px);
+      if (t.need * n <= avail) {
+        L = t;
+        break pick;
+      }
+    }
+  }
+  const colW = avail / L.n;
+  all.slice(0, L.n).forEach(({ d, hi, lo }, k) => {
+    const cx0 = Math.round(xa + k * colW);
     ctx.fillStyle = C.metal; // черта слева от колонки (первая отделяет «сейчас»)
     ctx.fillRect(cx0 - 1, y + 12, 2, h - 24);
-    const mid = cx0 + colW / 2;
-    const headW = lblW + 6 + DAY_ICON_WIDE.w;
-    const hx = Math.round(mid - headW / 2);
-    outlinedText(ctx, d.weekday, hx, y + 24, lf, { align: "left", lw: 4, fill: k === 0 ? C.accent : ink });
-    blit(ctx, iconSprite(weatherKind(d.code), true, DAY_ICON_WIDE.w, DAY_ICON_WIDE.h), hx + lblW + 6,
-      Math.round(y + 24 - DAY_ICON_WIDE.h / 2 - 1));
-    const tw = textWidth(ctx, nf, hi + lo);
-    const tx = Math.round(mid - tw / 2);
-    outlinedText(ctx, hi, tx, y + h - 22, nf, { align: "left", lw: 4, fill: ink });
-    outlinedText(ctx, lo, tx + textWidth(ctx, nf, hi), y + h - 22, nf, { align: "left", lw: 4, fill: C.inkDim });
+    const mid = xa + (k + 0.5) * colW;
+    const hx = Math.round(mid - (L.lblW + 5 + L.icon.w) / 2);
+    outlinedText(ctx, d.weekday, hx, y + 24, L.lf, { align: "left", lw: 4, fill: k === 0 ? C.accent : ink });
+    blit(ctx, iconSprite(weatherKind(d.code), true, L.icon.w, L.icon.h), hx + L.lblW + 5, Math.round(y + 24 - L.icon.h / 2 - 1));
+    const tx = Math.round(mid - textWidth(ctx, L.nf, hi + lo) / 2);
+    outlinedText(ctx, hi, tx, y + h - 22, L.nf, { align: "left", lw: 4, fill: ink });
+    outlinedText(ctx, lo, tx + textWidth(ctx, L.nf, hi), y + h - 22, L.nf, { align: "left", lw: 4, fill: C.inkDim });
   });
 }
 
