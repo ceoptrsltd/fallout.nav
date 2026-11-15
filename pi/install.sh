@@ -165,7 +165,7 @@ else
         python3-lgpio python3-gpiozero python3-gps
         gpsd gpsd-clients chrony ffmpeg i2c-tools
         cage seatd fonts-dejavu-core avahi-daemon rsync curl ca-certificates sudo network-manager
-        mpv bluez bluez-alsa-utils libasound2-plugin-bluez rfkill
+        mpv bluez iw bluez-alsa-utils libasound2-plugin-bluez rfkill
         retroarch libretro-core-info libretro-gambatte freedoom build-essential git
     )
     "${APT[@]}" install "${REQUIRED[@]}"
@@ -433,6 +433,7 @@ step "Enabling and starting services"
 systemctl daemon-reload
 systemctl enable avahi-daemon.service chrony.service seatd.service 2>/dev/null || warn "could not enable avahi/chrony/seatd"
 systemctl enable gpsd.socket gpsd.service 2>/dev/null || warn "could not enable gpsd"
+systemctl enable fnav-btcoex.service 2>/dev/null || warn "could not enable fnav-btcoex"
 systemctl enable mediamtx.service fnav-core.service fnav-camera.service fnav-camera-rear.service fnav-watch.service fnav-display.service fnav-radio.service
 # Remote access (optional): the unit only runs once tools/remote.sh setup has written /etc/fnav/remote.env.
 systemctl enable fnav-tunnel.service 2>/dev/null || warn "could not enable fnav-tunnel"

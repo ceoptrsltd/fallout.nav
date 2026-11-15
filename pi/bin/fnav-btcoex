@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Wi-Fi/Bluetooth coexistence of the onboard chip (CYW43455): read or set btc_params[51] of the Wi-Fi firmware.
+
+One radio serves Wi-Fi and Bluetooth. With the Wi-Fi firmware 7.45.265 on a 2.4 GHz network the default
+btc_params[51] = 0x190 starves Bluetooth LE exactly while a connection is being set up: most attempts end with
+"Connection Failed to be Established" (0x3e, BlueZ "le-connection-abort-by-local"); links that are already up are
+fine (raspberrypi/linux#7689, RPi-Distro/bluez-firmware#13). 0x1f0 - the default of the newer firmware 7.45.286 -
+fixes it. See docs/contracts/power.md "Радио".
+
+The value lives in the chip's RAM: it is back to the default after a reboot or a Wi-Fi driver reload, so
+fnav-btcoex.service sets it on every boot. Nothing on disk is touched (no firmware, CLM or NVRAM files).
+
+    fnav-btcoex                 print the current value
+    fnav-btcoex --set 0x1f0     set it (read back to check)
+
+Uses brcmfmac's vendor command through `iw` (OUI 0x001018, subcommand 1; GET_VAR 262, SET_VAR 263). Run as root.
+"""
+import argparse
+import struct
+import subprocess
+import sys
+
+INDEX = 51
+GET_VAR, SET_VAR = 262, 263
+
+
+def dcmd(interface: str, value: int | None = None) -> int | None:
+    payload = b"btc_params\0" + struct.pack("<I", INDEX)
+    writing = value is not None
+    if writing:
+        payload += struct.pack("<I", value)
+    header = struct.pack("<IIIII", SET_VAR if writing else GET_VAR, len(payload) if writing else 64, 20,
+                         int(writing), 0)
+    proc = subprocess.run(["iw", "dev", interface, "vendor", "recvbin", "0x001018", "0x1",
+                           *[f"0x{b:02x}" for b in header + payload]], capture_output=True, timeout=5, check=True)
+    if writing:
+        return None
+    out, offset = proc.stdout, 0
+    while offset + 4 <= len(out):  # netlink attributes: the data is attribute 2
+        length, kind = struct.unpack_from("<HH", out, offset)
+        if length < 4 or offset + length > len(out):
+            break
+        if kind & 0x3FFF == 2 and length >= 8:
+            return struct.unpack_from("<I", out, offset + 4)[0]
+        offset += (length + 3) & ~3
+    raise RuntimeError("no value in the driver's answer")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="read or set btc_params[51] of the onboard Wi-Fi firmware")
+    ap.add_argument("--interface", default="wlan0")
+    ap.add_argument("--set", type=lambda v: int(v, 0), dest="value")
+    args = ap.parse_args()
+    try:
+        before = dcmd(args.interface)
+        if args.value is None:
+            print(f"{before:#x}")
+            return 0
+        if before == args.value:
+            print(f"fnav-btcoex: btc_params[{INDEX}] is already {before:#x}")
+            return 0
+        dcmd(args.interface, args.value)
+        after = dcmd(args.interface)
+    except (subprocess.SubprocessError, OSError, RuntimeError) as e:
+        print(f"fnav-btcoex: {e}", file=sys.stderr)
+        return 1
+    if after != args.value:
+        print(f"fnav-btcoex: asked for {args.value:#x}, the chip says {after:#x}", file=sys.stderr)
+        return 1
+    print(f"fnav-btcoex: btc_params[{INDEX}] {before:#x} -> {after:#x}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

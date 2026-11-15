@@ -46,11 +46,14 @@ echo "==> System files (units, sudoers, ...)"
 bash "$APP/pi/bin/fnav-sync-system" --from "$APP" --changed-file "$changed"
 
 # Units added after the device was installed: install.sh enables them, a plain deploy has to do it once.
-for u in fnav-watch fnav-camera-rear; do
+for u in fnav-watch fnav-camera-rear fnav-btcoex; do
     if [ -f "/etc/systemd/system/$u.service" ] && ! systemctl is-enabled --quiet "$u" 2>/dev/null; then
         if systemctl enable "$u" >/dev/null 2>&1; then echo "  enabled $u"; else echo "  WARNING: could not enable $u" >&2; fi
     fi
 done
+
+# coexistence value lives in the chip's RAM: set it now as well (the unit runs at boot)
+systemctl start fnav-btcoex 2>/dev/null || echo "  WARNING: fnav-btcoex failed (see journalctl -u fnav-btcoex)" >&2
 
 echo "==> Python dependencies"
 bash "$APP/pi/bin/fnav-pip-sync"

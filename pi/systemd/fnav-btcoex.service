@@ -1,0 +1,20 @@
+# fallout.nav: Wi-Fi/Bluetooth coexistence of the onboard chip (pi/bin/fnav-btcoex, docs/contracts/power.md
+# "Радио"). The Wi-Fi firmware's default starves Bluetooth LE while a connection is being set up on a 2.4 GHz
+# network; the value lives in the chip's RAM, so it is set on every boot.
+[Unit]
+Description=fallout.nav: Wi-Fi/Bluetooth coexistence (btc_params[51] = 0x1f0)
+After=sys-subsystem-net-devices-wlan0.device
+Wants=sys-subsystem-net-devices-wlan0.device
+Before=fnav-core.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/fnav/app/pi/bin/fnav-btcoex --set 0x1f0
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# the driver may still be starting right after wlan0 appears
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
