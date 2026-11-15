@@ -1548,3 +1548,7 @@ a.db-tile:hover .db-go, .db-rtop:hover .db-go { color: var(--amber); }
   .tn-auto { min-height: 40px; }
   .tn-mic { min-width: 112px; }
 }
+
+/* tuner: diagnostics recording (temporary) */
+.tn-diag { margin-top: 10px; flex-wrap: wrap; }
+.tn-recinfo { font-size: 12px; flex: 1 1 160px; }

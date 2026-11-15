@@ -4,7 +4,7 @@
 // The microphone needs a secure page (https: the remote admin or the installed app); on the device's plain http
 // address the browser has no microphone — then only the reference tones work.
 import { h, icon, clear } from "../dom.js";
-import { errText } from "../api.js";
+import { errText, appUrl } from "../api.js";
 import { toast, banner } from "../ui.js";
 import {
   TUNINGS, tuningById, noteHz, centsOff, nearestNote, noteLabel, nearestString, stringNumber, tuneLevel, tuneHint,
@@ -91,6 +91,10 @@ export function mount(root) {
   let starting = false;
   let wake = null;
   let stopped = false;
+  let srcNode = null;
+  let lastP = null; // the raw reading of the last tick
+  let rec = null; // a diagnostics recording in progress
+  let sending = "";
 
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch { /* private mode */ } };
 
@@ -146,12 +150,16 @@ export function mount(root) {
     a4Val,
     h("button.btn.sm.icon", { type: "button", "aria-label": "Raise A4", onclick: () => setA4(prefs.a4 + 1) }, icon("plus")));
 
+  // diagnostics (temporary): the raw microphone and what the tuner showed go to the device, to calibrate by a real guitar
+  const recBtn = h("button.btn.tn-rec", { type: "button", onclick: () => (rec ? stopRec() : startRec()) });
+  const recInfo = h("span.tn-recinfo.muted");
   const msg = h("div");
   const card = h(".card.tn-card", null,
     h(".tn-bar", null, h("label.tn-tun", null, h("span.tn-lbl", null, "Tuning"), tunSel), a4Box),
     display,
     h(".tn-strrow", null, strBox, autoBtn),
-    h(".tn-ctl", null, micBtn, meter, toneBtn));
+    h(".tn-ctl", null, micBtn, meter, toneBtn),
+    h(".tn-ctl.tn-diag", null, recBtn, recInfo));
   const help = h(".card.tn-help", null,
     h("h2", null, "How to tune"),
     h("ul", null,
@@ -199,6 +207,7 @@ export function mount(root) {
       hp.connect(lp);
       lp.connect(analyser);
       nodes = [src, hp, lp, analyser];
+      srcNode = src;
       raw = new Float32Array(analyser.fftSize);
       listening = true;
       tracker.reset();
@@ -223,6 +232,8 @@ export function mount(root) {
   }
 
   function stopMic() {
+    if (rec) stopRec();
+    srcNode = null;
     cancelAnimationFrame(raf);
     raf = 0;
     clearInterval(timer);
@@ -252,6 +263,7 @@ export function mount(root) {
       sr /= 2;
     }
     const p = detectPitch(buf, sr);
+    lastP = p;
     return tracker.feed(p ? p.hz : null, now);
   }
 
@@ -262,12 +274,99 @@ export function mount(root) {
     if (!listening) return;
     const now = performance.now();
     reading = analyse(now);
+    if (rec) {
+      rec.log.push([Math.round(now - rec.t0), +ac.currentTime.toFixed(4), lastP ? +lastP.hz.toFixed(3) : 0,
+        lastP ? +lastP.clarity.toFixed(3) : 0, +level.toFixed(4), reading.hz ? +reading.hz.toFixed(3) : 0,
+        reading.live ? 1 : 0, reading.held ? 1 : 0, target, +spring.x.toFixed(2)]);
+    }
     if (lastFrame === null || now - lastFrame > 120) render(now);
   }
   function loop(now = performance.now()) {
     if (!listening) return;
     render(now);
     raf = requestAnimationFrame(loop);
+  }
+
+  // ───── diagnostics recording ─────
+  async function startRec() {
+    if (rec || sending) return;
+    if (!listening) await startMic();
+    if (!listening || !srcNode) return;
+    const proc = ac.createScriptProcessor(4096, 1, 1); // the raw microphone, before the filters
+    const mute = ac.createGain();
+    mute.gain.value = 0;
+    const r = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), sr: ac.sampleRate, chunks: [], n: 0,
+      log: [], t0: performance.now(), at0: null, proc, mute, src: srcNode };
+    proc.onaudioprocess = (e) => {
+      if (rec !== r) return;
+      if (r.at0 === null) r.at0 = e.playbackTime;
+      const f = e.inputBuffer.getChannelData(0);
+      const o = new Int16Array(f.length);
+      for (let i = 0; i < f.length; i++) o[i] = Math.max(-32768, Math.min(32767, Math.round(f[i] * 32767)));
+      r.chunks.push(o);
+      r.n += o.length;
+      if (r.n > r.sr * 180) stopRec(); // three minutes at most
+    };
+    srcNode.connect(proc);
+    proc.connect(mute);
+    mute.connect(ac.destination);
+    rec = r;
+    render();
+  }
+
+  function stopRec() {
+    const r = rec;
+    if (!r) return;
+    rec = null;
+    r.proc.onaudioprocess = null;
+    for (const n of [r.proc, r.mute]) { try { n.disconnect(); } catch { /* already */ } }
+    try { r.src.disconnect(r.proc); } catch { /* already */ }
+    sendRec(r);
+  }
+
+  async function post(path, body, type) {
+    let last = null;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const resp = await fetch(appUrl(path), { method: "POST", credentials: "same-origin", headers: { "Content-Type": type }, body });
+        if (resp.ok) return;
+        last = new Error("HTTP " + resp.status);
+      } catch (e) { last = e; }
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
+    throw last;
+  }
+
+  async function sendRec(r) {
+    const all = new Int16Array(r.n);
+    let o = 0;
+    for (const c of r.chunks) { all.set(c, o); o += c.length; }
+    r.chunks = [];
+    const secs = Math.round(r.n / r.sr);
+    const STEP = 400000; // samples a request (0.8 MB)
+    const fft = raw ? raw.length : null;
+    let track = {};
+    try { track = stream ? stream.getAudioTracks()[0].getSettings() : {}; } catch { /* no settings */ }
+    sending = "Sending 0%";
+    if (!stopped) render();
+    try {
+      for (let i = 0; i < all.length; i += STEP) {
+        await post(`/api/tuner/diag/${r.id}/audio`, all.slice(i, Math.min(all.length, i + STEP)).buffer, "application/octet-stream");
+        sending = `Sending ${Math.round((100 * Math.min(all.length, i + STEP)) / all.length)}%`;
+        if (!stopped) render();
+      }
+      await post(`/api/tuner/diag/${r.id}/log`, JSON.stringify({ id: r.id, sampleRate: r.sr, samples: r.n, at0: r.at0, ua: navigator.userAgent,
+        track, tuning: tuning.id, a4: prefs.a4, pick, analyseMs: ANALYSE_MS, fftSize: fft,
+        cols: ["ms", "acTime", "rawHz", "clarity", "level", "hz", "live", "held", "target", "needle"], log: r.log }), "application/json");
+      sending = "";
+      recInfo.dataset.done = `Sent: ${secs} s (${r.id})`;
+      toast("ok", `Recording sent: ${secs} s`);
+    } catch (e) {
+      sending = "";
+      recInfo.dataset.done = "Not sent: " + errText(e);
+      toast("error", "Recording not sent: " + errText(e));
+    }
+    if (!stopped) render();
   }
 
   function playTone(midi) {
@@ -361,6 +460,15 @@ export function mount(root) {
       micBtn.disabled = !secure || starting;
       micBtn.title = secure ? (listening ? "Stop listening (the microphone is released)" : "Listen to the guitar") : "Needs a secure (https) page";
     }
+    const recSig = `${!!rec}|${sending}|${secure}`;
+    if (recBtn.dataset.sig !== recSig) {
+      recBtn.dataset.sig = recSig;
+      clear(recBtn).append(h("span", null, rec ? "Stop and send" : "Record for diagnostics"));
+      recBtn.disabled = !secure || !!sending;
+      recBtn.classList.toggle("danger", !!rec);
+    }
+    put(recInfo, rec ? `Recording ${Math.floor((now - rec.t0) / 1000)} s — play the strings, then tap Stop and send`
+      : sending || recInfo.dataset.done || "Records the microphone and sends it to the device");
     meter.firstChild.style.width = `${Math.round(level * 100)}%`;
     meter.hidden = !listening;
   }

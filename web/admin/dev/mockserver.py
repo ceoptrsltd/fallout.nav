@@ -2369,6 +2369,22 @@ async def level_reset():
     return level.status()
 
 
+@app.post("/api/tuner/diag/{rec_id}/{part}")
+async def tuner_diag(rec_id: str, part: str, request: Request):
+    """Tuner diagnostics recording (as on the device): files in .tmp_cam/tuner_diag/."""
+    import re
+    from pathlib import Path
+    ext = {"audio": "pcm", "log": "json"}.get(part)
+    if not ext or not re.fullmatch(r"[a-z0-9]{6,24}", rec_id):
+        return err(404, "Not found")
+    d = Path(__file__).resolve().parents[3] / ".tmp_cam" / "tuner_diag"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{rec_id}.{ext}"
+    with open(f, "ab" if part == "audio" else "wb") as fh:
+        fh.write(await request.body())
+    return {"ok": True, "size": f.stat().st_size}
+
+
 @app.post("/api/_mock/level")
 async def mock_level(request: Request):
     """{"sensor": false} — no sensor; {"rocking": true} — calibration answers 409."""

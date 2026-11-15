@@ -194,6 +194,7 @@ def create_app(opts: CoreOptions | None = None) -> FastAPI:
     _register_games(app, core)
     _register_alarm(app, core)
     _register_level(app, core)
+    _register_tuner_diag(app)
     _register_static(app)
     return app
 
@@ -1126,6 +1127,47 @@ def _register_level(app: FastAPI, core: Core) -> None:
     @app.delete("/api/level/calibration")
     async def level_reset():
         return (await core.level.reset()).model_dump(mode="json")
+
+
+# ───────────────────────── тюнер: диагностическая запись (временно) ─────────────────────────
+
+TUNER_DIAG_CHUNK = 2 * 1024 * 1024
+TUNER_DIAG_TOTAL = 200 * 1024 * 1024
+
+
+def _register_tuner_diag(app: FastAPI) -> None:
+    """Запись микрофона со страницы Tuner (сырой PCM s16le кусками + журнал показаний) — для калибровки
+    алгоритма по настоящей гитаре. Файлы: <data>/tuner_diag/<id>.pcm, <id>.json. Только владелец (POST)."""
+    import re
+
+    def target(rec_id: str, ext: str):
+        if not re.fullmatch(r"[a-z0-9]{6,24}", rec_id):
+            return None
+        d = paths.data_dir() / "tuner_diag"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{rec_id}.{ext}"
+
+    def write(path, data: bytes, mode: str) -> int:
+        used = sum(f.stat().st_size for f in path.parent.iterdir() if f.is_file())
+        if used + len(data) > TUNER_DIAG_TOTAL:
+            return -1
+        with open(path, mode) as f:
+            f.write(data)
+        return path.stat().st_size
+
+    @app.post("/api/tuner/diag/{rec_id}/{part}")
+    async def tuner_diag(rec_id: str, part: str, request: Request):
+        ext = {"audio": "pcm", "log": "json"}.get(part)
+        path = target(rec_id, ext) if ext else None
+        if path is None:
+            return _err(404, "Not found")
+        data = await request.body()
+        if len(data) > TUNER_DIAG_CHUNK:
+            return _err(413, "Chunk too large")
+        size = await asyncio.to_thread(write, path, data, "ab" if part == "audio" else "wb")
+        if size < 0:
+            return _err(507, "No room for diagnostics recordings")
+        return {"ok": True, "size": size}
 
 
 # ───────────────────────── статика ─────────────────────────
