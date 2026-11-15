@@ -103,7 +103,9 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
             reexec) systemctl daemon-reexec || true ;;
             journald) systemctl restart systemd-journald 2>/dev/null || true ;;
             # new radio settings: the speaker and the stations drop and reconnect by themselves
-            bluetooth) systemctl restart bluetooth 2>/dev/null || true ;;
+            # (the kernel keeps per-device connection parameters from before; only reloading the chip forgets them)
+            bluetooth) systemctl restart bluetooth 2>/dev/null || true
+                       systemctl start fnav-bt-reset 2>/dev/null || true ;;
         esac
     done
 fi
