@@ -390,17 +390,17 @@ async def test_reconnect_now_cuts_the_pause_between_failed_tries(fast, monkeypat
 async def test_after_a_connect_the_link_is_slowed_down_and_a_failure_of_that_is_not_fatal(fast):
     calls = []
 
-    async def slow():
-        calls.append(1)
+    async def slow(fast):
+        calls.append(fast)
         raise BleError("no sudo")
 
     s = PowerSettings(main_mac="", second_mac="74:C1:4E:10:00:9B", third_mac="")
-    svc = pw.PowerService(lambda: s, after_connect=slow)
+    svc = pw.PowerService(lambda: s, tune=slow)
     svc.second.link_factory = lambda mac, cb: ScriptLink(pw.DALY, 1, mac, cb)
     await svc.start()
     try:
         await _until(lambda: svc.second.fresh() is not None)
-        assert calls == [1], "once per connect"
+        assert calls == [False], "once per connect, slow"
     finally:
         await svc.stop()
 
@@ -437,5 +437,54 @@ async def test_while_music_plays_the_stations_are_read_rarely_and_retried_rarely
         await _until(lambda: svc.second.error is not None)
         await asyncio.sleep(0.3)  # CONNECT_RETRY_S 0.01 дал бы десятки попыток
         assert ScriptLink.tries == 1, "no bursts while the music plays"
+    finally:
+        await svc.stop()
+
+
+async def test_alarm_on_keeps_the_main_station_ready_and_the_light_gets_a_fast_link(fast, monkeypatch):
+    from fnav.core.power import PowerError
+    from fnav.models import PowerRelease
+
+    monkeypatch.setattr(pw, "LIGHT_BLINK_S", 0.03)
+    monkeypatch.setattr(pw, "LIGHT_WAIT_S", 0.02)
+    monkeypatch.setattr(pw, "RELEASE_CHECK_S", 0.05)
+    monkeypatch.setattr(pw, "AFTER_COMMAND_S", 0.01)
+    armed = [False]
+    tuned = []
+
+    async def tune(fast_):
+        tuned.append(fast_)
+
+    s = PowerSettings(second_mac="", third_mac="")
+    svc = pw.PowerService(lambda: s, tune=tune, busy=lambda: True, guard=lambda: armed[0])
+    links = []
+
+    def make(mac, cb):
+        links.append(RecLink(pw.FOSSIBOT, mac, cb))
+        return links[-1]
+    svc.main.link_factory = make
+    await svc.start()
+    try:
+        await _until(lambda: svc.main.fresh() is not None)
+        assert svc.main.busy(), "music: retries are rare"
+        svc.release("main", PowerRelease(minutes=10))
+        await _until(lambda: not svc.main.connected)
+        armed[0] = True  # охрану включили: станция возвращается сама, отпустить её нельзя
+        await _until(lambda: svc.main.connected)
+        assert not svc.main.busy(), "alarm on: no music pauses between tries"
+        with pytest.raises(PowerError) as e:
+            svc.release("main", PowerRelease())
+        assert e.value.status == 409
+
+        # тревога в момент, когда связи нет: мигание дожидается подключения
+        await links[-1].disconnect()
+        tuned.clear()
+        svc.flash_light(0.4)
+        await _until(lambda: svc._light_task is None, timeout=5)
+        cmds = _commands(links[-1], pw.FOSSIBOT)
+        light_on, light_off = fossibot.output_request("light", True), fossibot.output_request("light", False)
+        assert len(cmds) >= 3 and set(cmds) <= {light_on, light_off}, "only the light register is written"
+        assert cmds[-1] == light_off, "put back as it was"
+        assert True in tuned and tuned[-1] is False, "fast while flashing, slow again after"
     finally:
         await svc.stop()

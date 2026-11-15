@@ -1,0 +1,8 @@
+# fallout.nav: fast Bluetooth LE connection intervals while the alarm flashes the Fossibot's light
+# (pi/bin/fnav-ble-slow fast). Started by fnav-core, never enabled; fnav-ble-slow.service puts them back.
+[Unit]
+Description=fallout.nav: fast Bluetooth LE connection intervals (alarm light)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/fnav/app/pi/bin/fnav-ble-slow fast

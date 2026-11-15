@@ -66,6 +66,7 @@ BURST_TRIES = 20
 BURST_PAUSE_S = 30.0
 AWAY_BACKOFF_S = (30.0, 60.0, 120.0, 300.0)
 QUIET_POLL_S = 2.0
+RELEASE_CHECK_S = 5.0
 MUSIC_RETRY_S = 30.0  # пока играет музыка — неудачное подключение повторять не чаще (серии попыток слышны)
 # Подключаемся строго по одной станции: чип Pi устанавливает одно LE-подключение за раз, а одновременные попытки
 # мешают друг другу (2026-11-15: три станции сразу после перезапуска — по 30 «abort-by-local» у каждой, ни одной удачи).
@@ -93,19 +94,22 @@ LEAD = Protocol("lead", (leadbatt.STATUS_UUID,), leadbatt.STATUS_UUID, leadbatt.
 
 LinkFactory = Callable[[str, Callable[[str, bytes], None]], Any]
 AFTER_COMMAND_S = 1.0  # после команды прочитать через столько (станция успевает переключить)
+LIGHT_WAIT_S = 0.5  # тревога, а станция не подключена — как часто смотреть, не подключилась ли
 LIGHT_BLINK_S = 1.0  # свет при тревоге: столько горит, столько не горит
 
 
 SLOW_TIMEOUT_S = 15.0
 
 
-async def slow_ble_links() -> None:
+async def slow_ble_links(fast: bool = False) -> None:
     """Замедлить LE-подключения к станциям (root: pi/systemd/fnav-ble-slow.service, pi/bin/fnav-ble-slow): BlueZ
     подключается с событием связи каждые 30–50 мс на станцию — три станции отнимали радио у колонки (музыка
-    заикалась и щёлкала, 2026-11-15). Опрос раз в минуты — хватает события раз в 400–500 мс (реже — слайдеры на Dashboard отвечали бы вяло)."""
+    заикалась и щёлкала, 2026-11-15). Опрос раз в минуты — хватает события раз в 400–500 мс (реже — слайдеры на Dashboard отвечали бы вяло). fast — обратно на 30–50 мс
+    (fnav-ble-fast.service): пока охрана мигает светом Fossibot, каждая команда должна дойти вовремя."""
     from fnav.core.system import run
 
-    rc, _out, err = await run("sudo", "-n", "/usr/bin/systemctl", "start", "fnav-ble-slow", timeout=SLOW_TIMEOUT_S)
+    unit = "fnav-ble-fast" if fast else "fnav-ble-slow"
+    rc, _out, err = await run("sudo", "-n", "/usr/bin/systemctl", "start", unit, timeout=SLOW_TIMEOUT_S)
     if rc != 0:
         raise BleError((err or "").strip() or f"systemctl exit code {rc}")
 
@@ -125,6 +129,7 @@ class StationReader:
         self.proto = proto
         self.quiet = quiet
         self.busy = busy  # на колонке играет музыка — подключаться реже (MUSIC_RETRY_S)
+        self.hold: Callable[[], bool] = lambda: False  # охрана включена — станцию не отпускать (свет при тревоге)
         self.link_factory = link_factory
         self.mono = mono
         self.mac = ""
@@ -149,7 +154,7 @@ class StationReader:
 
     def released_s(self) -> int | None:
         """Отпущена — сколько секунд ещё; нет — None."""
-        if self.released_until is None:
+        if self.released_until is None or self.hold():
             return None
         left = self.released_until - self.mono()
         return math.ceil(left) if left > 0 else None
@@ -186,7 +191,7 @@ class StationReader:
         self.error = None
         while (left := self.released_s()) is not None:
             try:
-                async with asyncio.timeout(left):
+                async with asyncio.timeout(min(left, RELEASE_CHECK_S)):  # охрана включилась — вернуться раньше
                     await self._resume.wait()
             except TimeoutError:
                 pass
@@ -239,13 +244,14 @@ class StationReader:
         async with self._io:
             return await self._read_once()
 
-    async def command(self, frame: bytes) -> None:
-        """Записать готовый кадр команды (собран протоколом) и прочитать новое состояние вскоре."""
+    async def command(self, frame: bytes, read: bool = True) -> None:
+        """Записать готовый кадр команды (собран протоколом) и (read) прочитать новое состояние вскоре."""
         if not self.connected:
             raise PowerError(409, "The station is not connected")
         async with self._io:
             await self.link.write(self.proto.write_uuid, frame, self.proto.write_response)
-        self._wake.set()
+        if read:
+            self._wake.set()
 
     async def _read_once(self) -> Any:
         loop = asyncio.get_running_loop()
@@ -432,8 +438,8 @@ def fake_daly(voltage: float, soc: float = 55.0) -> bytes:
 class PowerService:
     def __init__(self, get_settings: Callable[[], PowerSettings], mock: bool = False,
                  quiet: Callable[[], bool] = lambda: False, link_factory: LinkFactory | None = None,
-                 after_connect: Callable[[], Awaitable[None]] | None = None,
-                 busy: Callable[[], bool] = lambda: False) -> None:
+                 tune: Callable[[bool], Awaitable[None]] | None = None,
+                 busy: Callable[[], bool] = lambda: False, guard: Callable[[], bool] = lambda: False) -> None:
         self.get_settings = get_settings
         self.mock = mock
 
@@ -450,8 +456,11 @@ class PowerService:
         lock = asyncio.Lock()
         for r in (self.main, self.second, self.third):
             r.connect_lock = lock
-            r.after_connect = after_connect
-            r.busy = busy
+            r.after_connect = self._tune if tune is not None else None
+            r.busy = lambda: busy() and not guard()  # охрана включена — подключаться без пауз ради музыки
+        self.tune = tune  # tune(fast): интервал связи станций — быстрый (мигает свет) или медленный (slow_ble_links)
+        self.guard = guard  # охрана включена: главную станцию держим наготове (свет при тревоге)
+        self.main.hold = guard
         self._light_task: asyncio.Task | None = None
         self.running = False
         self._lock = asyncio.Lock()  # настройки меняются подряд — переподключения по очереди
@@ -504,6 +513,8 @@ class PowerService:
         r = self._reader(slot)
         if not r.mac:
             raise PowerError(409, "The station has no address")
+        if slot == "main" and self.guard() and body.minutes != 0:
+            raise PowerError(409, "The alarm is on: the station stays connected to flash its light")
         minutes = self.get_settings().release_min if body.minutes is None else body.minutes
         if minutes and slot == "main":
             self._light_until = 0.0  # мигание при тревоге без станции не нужно
@@ -511,9 +522,15 @@ class PowerService:
         log.info("power: %s %s - %s", slot, r.mac, f"release for {minutes} min" if minutes else "reconnect now")
         return self.status()
 
+    async def _tune(self) -> None:
+        """Интервал связи станций: быстрый, пока мигает свет, иначе медленный (после каждого подключения тоже)."""
+        if self.tune is not None:
+            await self.tune(self._light_task is not None and not self._light_task.done())
+
     def flash_light(self, seconds: float) -> None:
-        """Охрана сработала: мигать светом Fossibot seconds секунд (новое событие продлевает), потом — как было."""
-        if not self.get_settings().light_on_alarm or not self.main.connected:
+        """Охрана сработала: мигать светом Fossibot seconds секунд (новое событие продлевает), потом — как было.
+        Станция в этот момент не подключена — подключаемся без пауз и мигаем остаток времени."""
+        if not self.get_settings().light_on_alarm or not self.main.mac:
             return
         until = time.monotonic() + seconds
         if self._light_task is not None and not self._light_task.done():
@@ -525,18 +542,33 @@ class PowerService:
         self._light_task = asyncio.get_running_loop().create_task(self._blink(was_on), name="power-light")
 
     async def _blink(self, was_on: bool) -> None:
+        """Только регистр света (fossibot.output_request("light", …)); другие выходы станции не трогаем."""
         on = not was_on
+        fast = False
         try:
-            while time.monotonic() < self._light_until and self.main.connected:
-                await self.main.command(fossibot.output_request("light", on))
-                on = not on
+            while time.monotonic() < self._light_until:
+                if not self.main.connected:
+                    fast = False
+                    self.main.release(0)  # без паузы между попытками
+                    await asyncio.sleep(LIGHT_WAIT_S)
+                    continue
+                if not fast:  # команды каждую секунду — на быстром интервале связи (музыка сейчас не важна)
+                    fast = True
+                    with contextlib.suppress(Exception):
+                        await self._tune()
+                try:
+                    await self.main.command(fossibot.output_request("light", on), read=False)
+                    on = not on
+                except (PowerError, BleError) as e:
+                    log.info("power: light flash: %s", e)
                 await asyncio.sleep(LIGHT_BLINK_S)
-        except Exception as e:  # noqa: BLE001 — станция отключилась и т.п.
-            log.info("power: light flash stopped: %s", e)
         finally:
             with contextlib.suppress(Exception):
                 if self.main.connected:
                     await self.main.command(fossibot.output_request("light", was_on))
+            self._light_task = None
+            with contextlib.suppress(Exception):
+                await self._tune()  # обратно на медленный интервал
 
     async def _stop_light_task(self) -> None:
         if self._light_task is not None and not self._light_task.done():
