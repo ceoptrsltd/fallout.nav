@@ -29,6 +29,9 @@ fallout.nav turns a Raspberry Pi Compute Module 4 behind the dashboard of a 2001
   cameras) → hazard lights, siren, protected recordings and a **push notification** with a snapshot.
 - **Self‑tuning sensors** — GPS at 10 Hz, a compass that calibrates itself against the GPS course while you drive,
   a gyro for the heading through turns and for spotting reverse gear (the rear camera comes up on its own).
+- **Power stations on the screen** — a Fossibot power station, a Daly‑BMS powerbank and the leisure lead battery
+  (through a small ESP32‑C6 module of our own) over Bluetooth LE: charge, voltage, the cell spread, and slide
+  switches for their outputs and charging in the web UI.
 - **A level for the campsite**, **internet radio** on a Bluetooth speaker with a macro‑pad "car radio", and a
   **games menu** for when you're parked.
 - **A web control room** for the phone or laptop, in the van or from anywhere through your own server: live
@@ -58,6 +61,14 @@ fallout.nav turns a Raspberry Pi Compute Module 4 behind the dashboard of a 2001
   relay switch across the hazard button, hardware PWM on GPIO19), a siren on the Bluetooth speaker, protected
   recordings of both cameras, and a **Web Push** to Android / iPhone with a snapshot from 5 s before the event.
 - **Level** — parked, the car screen shows pitch, roll and how many centimetres to raise each wheel.
+- **Power stations over Bluetooth LE** — a plate in the bottom‑right corner of the car screen: the Fossibot F3600 Pro's
+  charge large, then the powerbank (Daly BMS, 6S) and the 12 V lead battery as percentage + voltage, animated while
+  charging, the powerbank's cell spread (blinking above 100 mV), and a short lightning crackle around the plate. The
+  lead battery is measured by [**FNAV‑LEAD**](firmware/lead-battery/), an Arduino sketch for a XIAO ESP32‑C6 that
+  also switches the charger through an RC relay when 12 V is present. The web Dashboard has slide‑to‑switch
+  controls for the Fossibot's AC / DC / USB / light, the BMS's charge / discharge MOSFETs and the charger (auto /
+  on / off); the Fossibot's light blinks when the alarm goes off. One station at a time on the shared radio, read
+  every 30 s.
 - **Web UI** (phone or laptop, installable as an app) — dashboard, alarm, live video from both cameras (WebRTC, or
   an on‑demand H.264 stream with the rear camera's sound), recordings with alarm events on the timeline,
   navigation/compass/level/GPS/radio/controls/system settings, and a **1:1 physical‑size preview** of the car screen.
@@ -124,6 +135,8 @@ stories behind the hard parts.
 | RC relay switch across the hazard button | S → pin 35 (GPIO19, PWM1), + → 4 (5 V), − → 39 (GND) |
 | 6‑key USB macro pad with a knob (1189:8890), gamepad | programmed as F13–F21 + Enter; keys in `settings.keypad` |
 | Bluetooth speaker | on‑board Bluetooth, A2DP through bluez‑alsa |
+| Fossibot F3600 Pro, a Daly‑BMS 6S powerbank | read and switched over Bluetooth LE (`docs/contracts/power.md`) |
+| Seeed XIAO ESP32‑C6 + RC relay, two 100k/20k dividers | the lead battery's monitor and charger switch, [`firmware/lead-battery`](firmware/lead-battery/) |
 | WAECO Mobitronic RV‑50 monitor | composite input, B/W CRT |
 | DC‑DC 12 → 5 V, 3 A | one shared ground for the Pi and the monitor |
 
@@ -243,6 +256,7 @@ The design notes are written in Russian (the code, UI and this README are in Eng
 | [`api.md`](docs/contracts/api.md) · [`display.md`](docs/contracts/display.md) · [`camera.md`](docs/contracts/camera.md) | REST/WebSocket API, the car screen, cameras and recordings |
 | [`alarm.md`](docs/contracts/alarm.md) · [`vision.md`](docs/contracts/vision.md) · [`level.md`](docs/contracts/level.md) | the alarm, camera watch, the level |
 | [`radio.md`](docs/contracts/radio.md) · [`remote.md`](docs/contracts/remote.md) · [`demo.md`](docs/contracts/demo.md) | radio and Bluetooth, remote access, the browser demo |
+| [`power.md`](docs/contracts/power.md) · [`firmware/lead-battery`](firmware/lead-battery/) (English) | power stations over Bluetooth LE, the lead‑battery module |
 | [`docs/device-report.md`](docs/device-report.md) · [`pi/README.md`](pi/README.md) | hardware bring‑up notes, the Pi installer |
 
 ## How it was built

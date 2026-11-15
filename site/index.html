@@ -225,7 +225,7 @@
   <div class="wrap">
     <div class="sec-head reveal">
       <p class="kicker"><i>01</i> What it does</p>
-      <h2>One small box, <em>nine jobs</em></h2>
+      <h2>One small box, <em>ten jobs</em></h2>
       <p>A Raspberry Pi Compute Module 4 behind the dashboard of a camper van records the road ahead and behind, knows where it is and which way it points, guards the van while you're away, and draws all of it on a tube older than most smartphones.</p>
     </div>
     <div class="cards">
@@ -282,6 +282,12 @@
         <h3>Composite, straight to the tube</h3>
         <p>No HDMI converter. One wire soldered to pin 111 (VDAC_COMP) of the CM4 goes into the monitor's DIN socket. NTSC 480i/60, with margins and mirroring tuned to the RV‑50, and a pixel or two of drift every few minutes so nothing burns in.</p>
         <ul><li>pin 111</li><li>NTSC 480i</li><li>mirror_x</li><li>KMS margins</li></ul>
+      </article>
+      <article class="card plate reveal" data-n="10">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="7" width="17" height="11" rx="2"/><path d="M19.5 10.5h2v4h-2"/><path d="m11.5 9-3 4h4l-3 4"/></svg></div>
+        <h3>Power stations on the tube</h3>
+        <p>A Fossibot power station, a Daly‑BMS powerbank and the leisure lead battery, read over Bluetooth LE one at a time: charge, voltage, the cell spread, a crackle of lightning around the plate. The lead battery gets its own little ESP32‑C6 module that switches the charger on when 12 V arrives. In the web app, slide switches for outputs and charging; the station's light flashes with the alarm.</p>
+        <ul><li>BLE · BlueZ</li><li>Modbus frames</li><li>XIAO ESP32‑C6</li><li><a href="https://github.com/ceoptrsltd/fallout.nav/tree/master/firmware/lead-battery">firmware</a></li></ul>
       </article>
     </div>
   </div>
@@ -395,6 +401,7 @@
           <tr><th>Hazard lights</th><td><b>RC relay switch</b>Wired across the van's hazard button, driven by 50 Hz servo pulses from the Pi's hardware PWM</td></tr>
           <tr><th>Controls</th><td><b>6‑key USB macro pad with a knob, gamepad</b>Radio, map/camera, front/rear, protect; the knob is the volume. A PS4‑style pad for the games</td></tr>
           <tr><th>Sound</th><td><b>Any Bluetooth speaker</b>The CM4's own Bluetooth, A2DP through bluez‑alsa: the radio and the alarm siren</td></tr>
+          <tr><th>Power stations</th><td><b>Fossibot F3600 Pro · Daly‑BMS powerbank · 12 V lead battery</b>Read and switched over Bluetooth LE; the lead battery through a Seeed XIAO ESP32‑C6 with two 100k/20k dividers and an RC relay for the charger (<a href="https://github.com/ceoptrsltd/fallout.nav/tree/master/firmware/lead-battery">firmware</a>)</td></tr>
           <tr><th>Display</th><td><b>WAECO Mobitronic RV‑50 (2001)</b>5″ black‑and‑white CRT reversing monitor, two camera inputs on DIN plugs</td></tr>
           <tr><th>Power</th><td><b>DC‑DC 12 → 5 V, 3 A</b>One shared ground for the Pi and the monitor</td></tr>
           <tr><th>Software</th><td><b>Python · FastAPI · Picamera2 · PyAV · MediaMTX · NCNN</b>cage + Chromium kiosk, gpsd + chrony, mpv + bluez‑alsa, RetroArch, vanilla JS on Canvas</td></tr>

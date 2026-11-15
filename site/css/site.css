@@ -301,6 +301,7 @@ section { position: relative; }
 
 /* ───────────────────────── features ───────────────────────── */
 .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.cards > .card:last-child:nth-child(3n+1) { grid-column: 1 / -1; } /* a lone last card spans the row */
 .card { padding: 26px 24px 24px; transition: transform 0.35s, border-color 0.35s, box-shadow 0.35s; overflow: hidden; }
 .card:hover { transform: translateY(-4px); border-color: #4a4128; box-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 180, 58, 0.08); }
 .card .ico { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 12px; margin-bottom: 18px; color: var(--amber); background: rgba(255, 180, 58, 0.08); border: 1px solid rgba(255, 180, 58, 0.22); }
@@ -478,6 +479,7 @@ footer ul { list-style: none; margin: 0; padding: 0; }
   .hero-monitor { max-width: 860px; margin-inline: auto; width: 100%; }
   .console-grid { grid-template-columns: 1fr; }
   .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cards > .card:last-child:nth-child(3n+1) { grid-column: auto; }
   .van-grid, .agents-grid, .hw-grid { grid-template-columns: 1fr; }
   footer .wrap { grid-template-columns: 1fr 1fr; }
   footer .wrap > :first-child { grid-column: 1 / -1; }
