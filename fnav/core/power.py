@@ -457,7 +457,9 @@ class PowerService:
         for r in (self.main, self.second, self.third):
             r.connect_lock = lock
             r.after_connect = self._tune if tune is not None else None
-            r.busy = lambda: busy() and not guard()  # охрана включена — подключаться без пауз ради музыки
+            # музыка играет — подключаться реже; но мигает свет (тревога) — без пауз: музыка может играть и при
+            # включённой охране, поэтому паузы снимает только сама тревога
+            r.busy = lambda: busy() and not self._flashing()
         self.tune = tune  # tune(fast): интервал связи станций — быстрый (мигает свет) или медленный (slow_ble_links)
         self.guard = guard  # охрана включена: главную станцию держим наготове (свет при тревоге)
         self.main.hold = guard
@@ -522,10 +524,13 @@ class PowerService:
         log.info("power: %s %s - %s", slot, r.mac, f"release for {minutes} min" if minutes else "reconnect now")
         return self.status()
 
+    def _flashing(self) -> bool:
+        return self._light_task is not None and not self._light_task.done()
+
     async def _tune(self) -> None:
         """Интервал связи станций: быстрый, пока мигает свет, иначе медленный (после каждого подключения тоже)."""
         if self.tune is not None:
-            await self.tune(self._light_task is not None and not self._light_task.done())
+            await self.tune(self._flashing())
 
     def flash_light(self, seconds: float) -> None:
         """Охрана сработала: мигать светом Fossibot seconds секунд (новое событие продлевает), потом — как было.

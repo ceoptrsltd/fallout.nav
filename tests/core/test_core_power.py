@@ -471,7 +471,7 @@ async def test_alarm_on_keeps_the_main_station_ready_and_the_light_gets_a_fast_l
         await _until(lambda: not svc.main.connected)
         armed[0] = True  # охрану включили: станция возвращается сама, отпустить её нельзя
         await _until(lambda: svc.main.connected)
-        assert not svc.main.busy(), "alarm on: no music pauses between tries"
+        assert svc.main.busy(), "alarm on but quiet: the music still comes first"
         with pytest.raises(PowerError) as e:
             svc.release("main", PowerRelease())
         assert e.value.status == 409
@@ -480,6 +480,7 @@ async def test_alarm_on_keeps_the_main_station_ready_and_the_light_gets_a_fast_l
         await links[-1].disconnect()
         tuned.clear()
         svc.flash_light(0.4)
+        assert not svc.main.busy(), "the alarm went off: no music pauses between tries"
         await _until(lambda: svc._light_task is None, timeout=5)
         cmds = _commands(links[-1], pw.FOSSIBOT)
         light_on, light_off = fossibot.output_request("light", True), fossibot.output_request("light", False)
