@@ -86,8 +86,8 @@ export function mount(root) {
           save({ mac: v });
         } }, "Save")),
       h(".hint", { style: { marginLeft: 0, marginTop: "6px" } }, "Qingping Air Monitor Lite. It broadcasts its readings over Bluetooth: nothing is connected, "
-        + "its own phone app keeps working. The device listens for a few seconds every minute (every three while music plays), "
-        + "so a new reading arrives every minute or two."));
+        + "its own phone app keeps working. The device listens for a few seconds every minute (every three minutes while "
+        + "music plays), so that is how often a new reading arrives."));
   }
   const settings = h(".card", null, h("h2", null, "Sensor"), setBox);
 

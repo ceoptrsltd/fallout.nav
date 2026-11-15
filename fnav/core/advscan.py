@@ -2,8 +2,10 @@
 Victron SmartSolar (fnav/core/victron.py) и датчик воздуха Qingping (fnav/core/air.py). docs/contracts/power.md
 «Вещание», docs/contracts/air.md.
 
-Слушаем окнами: WINDOW_S секунд раз в PERIOD_S, а пока играет музыка — раз в PERIOD_MUSIC_S (радио у чипа одно на
-Wi-Fi, колонку и станции; поиск идёт «редким» окном 30 из 200 мс — pi/bluetooth/main.conf). Пока на экране задний
+Слушаем окнами раз в PERIOD_S, а пока играет музыка — раз в PERIOD_MUSIC_S (радио у чипа одно на Wi-Fi, колонку и
+станции; поиск идёт «редким» окном 30 из 200 мс — pi/bluetooth/main.conf). Окно закрывается, как только услышаны
+все устройства (Victron — за 1–2 с), но не раньше WINDOW_MIN_S и не позже WINDOW_S: пакет Qingping при «редком»
+поиске ловится в среднем раз в 15 с. Пока на экране задний
 вид (quiet) — не слушаем. Окно берёт общий замок подключений станций (fnav/core/power.py): поиск и установление
 связи друг другу мешают.
 
@@ -23,7 +25,9 @@ from fnav.core.util import cancel_tasks
 
 log = logging.getLogger("fnav.core.advscan")
 
-WINDOW_S = 15.0
+WINDOW_S = 30.0  # самое долгое окно: кого-то так и не услышали
+WINDOW_MIN_S = 2.0
+WINDOW_POLL_S = 0.5
 PERIOD_S = 60.0
 PERIOD_MUSIC_S = 180.0
 QUIET_POLL_S = 2.0
@@ -50,6 +54,7 @@ class AdvScanner:
         self.adapter = adapter
         self.watched: dict[str, AdvCallback] = {}  # путь устройства в BlueZ → подписчик
         self.error: str | None = None
+        self._heard: set[str] = set()  # кого услышали в текущем окне
         self.bus: Any = None
         self._task: asyncio.Task | None = None
 
@@ -92,7 +97,7 @@ class AdvScanner:
                 if str(e) != self.error:
                     log.info("advscan: %s", e)
                 self.error = str(e) or type(e).__name__
-            await asyncio.sleep(max(1.0, self.period_s() - WINDOW_S))
+            await asyncio.sleep(self.period_s())
 
     # ── BlueZ ──
     async def _open(self) -> None:
@@ -106,6 +111,10 @@ class AdvScanner:
         await self.bus.call(Message(destination="org.freedesktop.DBus", path="/org/freedesktop/DBus",
                                     interface="org.freedesktop.DBus", member="AddMatch", signature="s",
                                     body=[f"type='signal',sender='{BLUEZ}',path_namespace='{self.adapter}'"]))
+        # устройство, которого BlueZ ещё не знал, приходит сигналом InterfacesAdded от корня (путь — в теле)
+        await self.bus.call(Message(destination="org.freedesktop.DBus", path="/org/freedesktop/DBus",
+                                    interface="org.freedesktop.DBus", member="AddMatch", signature="s",
+                                    body=[f"type='signal',sender='{BLUEZ}',member='InterfacesAdded'"]))
 
     async def _adapter(self, member: str, signature: str = "", body: list | None = None) -> None:
         from dbus_fast import Message, MessageType  # type: ignore[import-not-found]
@@ -118,18 +127,21 @@ class AdvScanner:
 
     def _on_message(self, msg: Any) -> bool:
         try:
-            cb = self.watched.get(msg.path or "")
-            if cb is None or not msg.body:
+            if not msg.body:
                 return False
             if msg.member == "PropertiesChanged" and msg.body[0] == DEVICE_IF:
-                props = msg.body[1]
-            elif msg.member == "InterfacesAdded":
-                props = msg.body[1].get(DEVICE_IF, {})
+                path, props = msg.path or "", msg.body[1]
+            elif msg.member == "InterfacesAdded" and len(msg.body) >= 2:
+                path, props = msg.body[0], msg.body[1].get(DEVICE_IF, {})
             else:
+                return False
+            cb = self.watched.get(path)
+            if cb is None:
                 return False
             mfr = {int(k): bytes(_plain(v)) for k, v in (_plain(props.get("ManufacturerData")) or {}).items()}
             svc = {str(k).lower(): bytes(_plain(v)) for k, v in (_plain(props.get("ServiceData")) or {}).items()}
             if mfr or svc:
+                self._heard.add(path)
                 cb(mfr, svc)
         except Exception:
             log.exception("advscan signal")
@@ -142,9 +154,13 @@ class AdvScanner:
         with contextlib.suppress(RuntimeError):
             await self._adapter("SetDiscoveryFilter", "a{sv}",
                                 [{"Transport": Variant("s", "le"), "DuplicateData": Variant("b", True)}])
+        self._heard = set()
         await self._adapter("StartDiscovery")
         try:
-            await asyncio.sleep(WINDOW_S)
+            t = 0.0
+            while t < WINDOW_S and not (t >= WINDOW_MIN_S and self._heard >= set(self.watched)):
+                await asyncio.sleep(WINDOW_POLL_S)
+                t += WINDOW_POLL_S
         finally:
             with contextlib.suppress(Exception):
                 await self._adapter("StopDiscovery")
