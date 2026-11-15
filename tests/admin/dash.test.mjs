@@ -290,6 +290,9 @@ test("power tile: main charge with a gauge, the others in volts, dashes without 
   assert.deepEqual([p.second.balance, p.second.balancing], ["balancing", true]);
   assert.deepEqual(p.second.cellVolts, ["3.487", "3.436"]);
   assert.deepEqual(p.third.cellVolts, []);
+  const r = powerInfo({ main: { soc_pct: 80 }, second: { released_s: 600 }, third: {} });
+  assert.deepEqual([r.second.big, r.second.sub, r.second.note], ["—", "released for the app", "back in 10 min"]);
+  assert.equal(r.main.big, "80");
   assert.equal(powerInfo({ second: { soc_pct: 50, balancing: false } }).second.balance, "balancing off");
   assert.equal(p.third.balance, "", "no balancing line where the station has none");
   assert.deepEqual([p.third.big, p.third.sub], ["—", "no data"]);

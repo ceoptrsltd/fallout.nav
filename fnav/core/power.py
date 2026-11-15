@@ -1,4 +1,4 @@
-"""Электростанции по Bluetooth LE — только чтение (docs/contracts/power.md).
+"""Электростанции по Bluetooth LE (docs/contracts/power.md).
 
 Главная — Fossibot (fnav/core/fossibot.py): заряд, % — на экране крупно. Вторая — Daly BMS (fnav/core/daly.py):
 напряжение — верхняя строка. Третья — пока заглушка (нижняя строка «--.-V»).
@@ -14,6 +14,11 @@
 срабатывании охраны (flash_light, power.light_on_alarm). Каждый протокол сам собирает единственно допустимые кадры
 (fossibot.output_request, daly.mosfet_request, leadbatt.mode_request) — другое записать нельзя. Сами по себе (при
 запуске, переподключении, по таймеру) ничего не пишем. После команды — внеочередное чтение (видно новое состояние).
+
+Станция держит одно подключение: пока мы подключены, её приложение на телефоне её не видит. release(slot, минуты) —
+отключиться и не подключаться столько времени (кнопка на странице Bluetooth); 0 — подключиться сейчас (кнопка
+«Reconnect now» и на Dashboard вместо серых слайдеров: прерывает и отпускание, и паузу между неудачными попытками).
+Отпускание живёт до перезапуска fnav-core.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from fnav.core.ble import BleError, BleLink
 from fnav.core.util import cancel_tasks
 from fnav.models import (
     PowerControl,
+    PowerRelease,
     PowerSettings,
     PowerSlot,
     PowerStationStatus,
@@ -112,10 +118,61 @@ class StationReader:
         self.connect_lock = asyncio.Lock()  # PowerService ставит один на все станции
         self._io = asyncio.Lock()  # чтение и команда не перемежаются
         self._wake = asyncio.Event()  # после команды — прочитать сразу
+        self.released_until: float | None = None  # отпущена для приложения на телефоне — до этого mono()
+        self._resume = asyncio.Event()  # отпускание кончилось раньше (кнопка «подключиться сейчас»)
 
     @property
     def connected(self) -> bool:
         return bool(self.link is not None and self.link.connected)
+
+    def released_s(self) -> int | None:
+        """Отпущена — сколько секунд ещё; нет — None."""
+        if self.released_until is None:
+            return None
+        left = self.released_until - self.mono()
+        return math.ceil(left) if left > 0 else None
+
+    def release(self, seconds: float) -> None:
+        """Отключиться и не подключаться seconds секунд (0 — подключиться сейчас: и после отпускания, и вместо
+        паузы между неудачными попытками)."""
+        if seconds > 0:
+            self.released_until = self.mono() + seconds
+            self._resume.clear()
+            self._wake.set()  # опрос просыпается и отключается
+        else:
+            self.released_until = None
+            self._resume.set()
+
+    async def _nap(self, seconds: float) -> bool:
+        """Пауза между попытками; True — её прервали кнопкой «подключиться сейчас» (release(0))."""
+        try:
+            async with asyncio.timeout(seconds):
+                await self._resume.wait()
+        except TimeoutError:
+            return False
+        self._resume.clear()
+        return True
+
+    async def _wait_released(self) -> None:
+        """Отпущена: отключиться и ждать, пока время не выйдет или не попросят подключиться."""
+        if self.connected:
+            log.info("power: %s %s released for %d s (the phone app can connect now)", self.slot, self.mac,
+                     self.released_s() or 0)
+            async with self._io:
+                with contextlib.suppress(Exception):
+                    await self.link.disconnect()
+        self.error = None
+        while (left := self.released_s()) is not None:
+            try:
+                async with asyncio.timeout(left):
+                    await self._resume.wait()
+            except TimeoutError:
+                pass
+            if self._resume.is_set():
+                break
+        self.released_until = None
+        self._resume.clear()
+        log.info("power: %s %s release over, connecting again", self.slot, self.mac)
 
     def fresh(self) -> Any:
         """Показания не старше STALE_S или None."""
@@ -128,6 +185,7 @@ class StationReader:
             return
         await self.stop()
         self.mac, self.reading, self.read_at, self.error = mac, None, None, None
+        self.released_until = None
         if mac:
             self._task = asyncio.get_running_loop().create_task(self._run(), name=f"power-{self.slot}")
 
@@ -192,6 +250,10 @@ class StationReader:
         fails = 0
         away = 0  # подряд «нет в эфире»
         while True:
+            if self.released_s() is not None:
+                await self._wait_released()
+                fails = away = 0
+                continue
             if self.quiet():
                 await asyncio.sleep(QUIET_POLL_S)
                 continue
@@ -214,14 +276,16 @@ class StationReader:
                 if delay > CONNECT_RETRY_S:
                     log.info("power: %s %s not connected after %d tries (%s), next try in %.0f s", self.slot,
                              self.mac, fails, self.error, delay)
-                await asyncio.sleep(delay)
+                if await self._nap(delay):  # «подключиться сейчас» — без паузы, счёт заново
+                    fails = away = 0
                 continue
             log.info("power: %s %s (%s) connected after %d failed tries", self.slot, self.mac, self.proto.kind,
                      fails)
             fails = away = 0
             self.error = None
             read_fails = 0
-            while self.connected:
+            while self.connected and self.released_s() is None:
+                self._wake.clear()  # до чтения: команда или «отпустить» во время чтения не теряются
                 try:
                     self.reading = await self.read_once()
                     self.read_at = self.mono()
@@ -236,18 +300,21 @@ class StationReader:
                         with contextlib.suppress(Exception):
                             await self.link.disconnect()
                         break
-                self._wake.clear()
                 try:
                     async with asyncio.timeout(POLL_S):
                         await self._wake.wait()
                 except TimeoutError:
                     continue
+                if self.released_s() is not None:
+                    break  # отпустили — наверху цикла отключимся
                 await asyncio.sleep(AFTER_COMMAND_S)  # после команды — новое состояние
-            if not self.connected:
+            if not self.connected and self.released_s() is None:
                 log.info("power: %s %s disconnected", self.slot, self.mac)
 
     # ── наружу ──
     def slot_view(self) -> PowerSlot:
+        if (rel := self.released_s()) is not None:
+            return PowerSlot(released_s=rel)  # данных нет, пока станция у приложения на телефоне
         r = self.fresh()
         if r is None:
             return PowerSlot()
@@ -274,7 +341,7 @@ class StationReader:
         age = None if self.read_at is None else round(self.mono() - self.read_at, 1)
         reading = dataclasses.asdict(self.reading) if self.reading is not None else None
         return PowerStationStatus(slot=self.slot, kind=self.proto.kind, mac=self.mac, connected=self.connected,
-                                  age_s=age, error=self.error, reading=reading)
+                                  age_s=age, error=self.error, reading=reading, released_s=self.released_s())
 
 
 class FakeLink:
@@ -393,6 +460,18 @@ class PowerService:
             await self._stop_light_task()  # рука хозяина важнее мигания
         log.warning("power: %s %s - %s (%s)", slot, r.mac, what, source)
         await r.command(frame)
+        return self.status()
+
+    def release(self, slot: str, body: PowerRelease) -> PowerStatus:
+        """Отпустить станцию для приложения на телефоне на body.minutes (нет — power.release_min); 0 — вернуть сейчас."""
+        r = self._reader(slot)
+        if not r.mac:
+            raise PowerError(409, "The station has no address")
+        minutes = self.get_settings().release_min if body.minutes is None else body.minutes
+        if minutes and slot == "main":
+            self._light_until = 0.0  # мигание при тревоге без станции не нужно
+        r.release(minutes * 60.0)
+        log.info("power: %s %s - %s", slot, r.mac, f"release for {minutes} min" if minutes else "reconnect now")
         return self.status()
 
     def flash_light(self, seconds: float) -> None:

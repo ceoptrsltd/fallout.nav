@@ -444,14 +444,16 @@ class VehicleSettings(_Model):
 
 
 class PowerSettings(_Model):
-    """Электростанции на экране (docs/contracts/power.md): по Bluetooth LE, только чтение. Пустой адрес — не
-    опрашивать (на экране прочерки)."""
+    """Электростанции на экране (docs/contracts/power.md): по Bluetooth LE. Пустой адрес — не опрашивать (на экране
+    прочерки)."""
 
     show_on_screen: bool = True  # плашка справа внизу (телеметрия идёт и без неё — для веб-интерфейса)
     main_mac: str = "70:AF:09:06:E9:1A"  # главная — Fossibot F3600 Pro («POWER-0201»): заряд, % крупно
     second_mac: str = "74:C1:4E:10:00:9B"  # вторая — Daly BMS («Tattu powerbank»)
     light_on_alarm: bool = True  # охрана сработала — мигать светом Fossibot (alarm.hazard.seconds)
     third_mac: str = "10:BD:A3:B2:48:5A"  # третья — свинцовый 12 V, модуль XIAO ESP32-C6 «FNAV-LEAD» (firmware/lead-battery)
+    # «Отпустить» станцию для её приложения на телефоне (станция держит одно подключение): на столько минут
+    release_min: int = Field(15, ge=1, le=240)
 
     @field_validator("main_mac", "second_mac", "third_mac")
     @classmethod
@@ -923,6 +925,7 @@ class PowerSlot(_Model):
     cell_delta_bad: bool = False  # разница больше CELL_DELTA_BAD_MV (fnav/core/power.py) — мигает
     balancing: bool | None = None  # Daly: идёт балансировка ячеек (рег. 52); у других станций — None
     cells_mv: list[int] | None = None  # Daly: напряжения ячеек, мВ (только веб-интерфейс, на экране нет)
+    released_s: int | None = None  # отпущена для приложения на телефоне: через столько секунд подключимся снова
 
 
 class PowerTelemetry(_Model):
@@ -941,6 +944,7 @@ class PowerStationStatus(_Model):
     age_s: float | None = None  # сколько секунд назад последнее показание
     error: str | None = None  # последняя ошибка подключения/чтения
     reading: dict | None = None  # fnav/core/fossibot.py FossibotReading / fnav/core/daly.py DalyReading
+    released_s: int | None = None  # отпущена для приложения на телефоне (POST …/release): осталось секунд
 
 
 class PowerControl(_Model):
@@ -949,6 +953,13 @@ class PowerControl(_Model):
     output: Literal["usb", "dc", "ac", "light", "charge", "discharge", "charger"]
     on: bool | None = None  # usb/dc/ac/light/charge/discharge
     mode: Literal["auto", "on", "off"] | None = None  # charger
+
+
+class PowerRelease(_Model):
+    """POST /api/power/{slot}/release: отпустить станцию на minutes минут (нет — settings.power.release_min);
+    0 — подключиться снова сейчас."""
+
+    minutes: int | None = Field(None, ge=0, le=240)
 
 
 class PowerStatus(_Model):

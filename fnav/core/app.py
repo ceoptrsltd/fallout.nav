@@ -42,7 +42,7 @@ from fnav.core.recordings import (
 from fnav.core.runtime import REMOTE_TELEMETRY_EVERY, Core, CoreOptions
 from fnav.core.system import SystemError_
 from fnav.core.tiles import TileError
-from fnav.models import PowerControl, RadioStation, Settings
+from fnav.models import PowerControl, PowerRelease, RadioStation, Settings
 
 log = logging.getLogger("fnav.core.app")
 
@@ -855,6 +855,11 @@ def _register_bluetooth(app: FastAPI, core: Core) -> None:
     async def power_control(slot: str, body: PowerControl):
         """Команда станции — только по слайдеру в веб-интерфейсе (docs/contracts/power.md «Управление»)."""
         return (await core.power.control(slot, body)).model_dump()
+
+    @app.post("/api/power/{slot}/release")
+    async def power_release(slot: str, body: PowerRelease):
+        """Отпустить станцию для её приложения на телефоне (docs/contracts/power.md «Отпустить»); minutes=0 — вернуть."""
+        return core.power.release(slot, body).model_dump()
 
     @app.post("/api/bluetooth/power")
     async def bt_power(body: PowerBody):

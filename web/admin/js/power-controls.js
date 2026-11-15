@@ -1,7 +1,8 @@
 // Power stations' switches on the Dashboard (docs/contracts/power.md «Управление»): slide-to-switch only.
 // Fossibot — AC / DC / USB / light; Daly powerbank — charge / discharge MOSFET; lead battery — charger auto / manual.
 // State comes from telemetry.power (outputs, charger_mode); after a slide the switch shows the wanted state until
-// telemetry agrees (the station is read 1.5 s after a command) or EXPECT_MS passes.
+// telemetry agrees (the station is read 1.5 s after a command) or EXPECT_MS passes. A station with no data (released
+// for its phone app or not connected) shows «Reconnect now» instead of its greyed-out switches.
 import { h } from "./dom.js";
 import { api, errText } from "./api.js";
 import { toast } from "./ui.js";
@@ -27,15 +28,42 @@ export function powerControls() {
     }
   };
 
+  // «Reconnect now»: POST …/release {minutes: 0} — ends a release or the pause between failed tries
+  const reconnect = (slot) => {
+    const b = h("button.btn.sm.pc-reconnect", { type: "button" }, "Reconnect now");
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      b.textContent = "Connecting…";
+      try { await api.post(`/api/power/${slot}/release`, { minutes: 0 }); }
+      catch (e) { toast("error", errText(e)); }
+      setTimeout(() => { b.disabled = false; b.textContent = "Reconnect now"; }, 15000);
+    });
+    return b;
+  };
+  const rc = new Map();
+  const state = (slot, row, power) => {
+    const btn = rc.get(slot);
+    const x = power?.[slot];
+    const away = !!power && !!x && (x.released_s > 0 || x.soc_pct == null && x.voltage_v == null);
+    row.hidden = away;
+    btn.hidden = !away;
+    const note = btn.previousElementSibling;
+    note.textContent = x?.released_s > 0 ? `Released for the phone app · back in ${x.released_s >= 60 ? `${Math.ceil(x.released_s / 60)} min` : `${x.released_s} s`}` : "Not connected";
+    note.hidden = !away;
+  };
+  const rows = {};
+
   const groups = GROUPS.map((g) => {
     const row = h(".pc-row");
+    rows[g.slot] = row;
+    rc.set(g.slot, reconnect(g.slot));
     for (const [out, label] of g.items) {
       const key = `${g.slot}:${out}`;
       const s = slideSwitch({ label, onslide: (on) => send(g.slot, { output: out, on }, key, on) });
       sw.set(key, s);
       row.append(s);
     }
-    return h(".pc-grp", null, h(".pc-title", null, g.title), row);
+    return h(".pc-grp", null, h(".pc-title", null, g.title), row, h("span.pc-away", { hidden: true }), rc.get(g.slot));
   });
 
   // lead battery: «Auto» (charger follows the 12 V input) and, when not auto, the charger by hand
@@ -46,7 +74,9 @@ export function powerControls() {
     return send("third", { output: "charger", mode }, "third:auto", on);
   } });
   const chgSw = slideSwitch({ label: "Charger", onslide: (on) => send("third", { output: "charger", mode: on ? "on" : "off" }, "third:charger", on) });
-  groups.push(h(".pc-grp", null, h(".pc-title", null, "Lead battery"), h(".pc-row", null, autoSw, chgSw)));
+  rows.third = h(".pc-row", null, autoSw, chgSw);
+  rc.set("third", reconnect("third"));
+  groups.push(h(".pc-grp", null, h(".pc-title", null, "Lead battery"), rows.third, h("span.pc-away", { hidden: true }), rc.get("third")));
 
   const el = h(".pc", null, ...groups);
 
@@ -68,6 +98,7 @@ export function powerControls() {
     const auto = shownState(leadMode === "auto", expect.get("third:auto"), now);
     autoSw.set({ on: auto, disabled: !known, unknown: !known });
     chgSw.set({ on: shownState(leadOn, expect.get("third:charger"), now), disabled: !known || auto, unknown: !known });
+    for (const slot of ["main", "second", "third"]) state(slot, rows[slot], power);
   };
   return el;
 }

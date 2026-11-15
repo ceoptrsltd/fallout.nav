@@ -1,5 +1,6 @@
 // Power stations card (Bluetooth page): BLE addresses and live readings (docs/contracts/power.md).
 // Main — Fossibot (charge, % large on screen), second — Daly BMS, third — lead battery via the FNAV-LEAD module.
+// A station holds one Bluetooth connection: «Release» lets it go for power.release_min so its own phone app can see it.
 import { h, clear } from "./dom.js";
 import { api, errText } from "./api.js";
 import { store, on, applySettings } from "./store.js";
@@ -11,6 +12,12 @@ const SLOTS = [
   { slot: "third", key: "third_mac", title: "Third — lead battery (FNAV-LEAD)", hint: "XIAO ESP32-C6 module: charge (by voltage), voltage, charger — right column" },
 ];
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
+
+/** «12 min» / «45 s» — how long a released station stays released. */
+export function releaseLeft(s) {
+  if (!Number.isFinite(s) || s <= 0) return "";
+  return s >= 60 ? `${Math.ceil(s / 60)} min` : `${Math.ceil(s)} s`;
+}
 
 const n1 = (v) => (Number.isFinite(v) ? (Math.round(v * 10) / 10).toString() : "—");
 const mins = (m) => (Number.isFinite(m) && m > 0 ? `${Math.floor(m / 60)} h ${m % 60} min` : "—");
@@ -53,6 +60,11 @@ export function powerCard() {
   const setBox = h(".bt-set");
   const inputs = {};
 
+  async function release(slot, minutes) {
+    try { st = await api.post(`/api/power/${slot}/release`, minutes === undefined ? {} : { minutes }); render(); }
+    catch (e) { toast("error", errText(e)); }
+  }
+
   async function save(key, value) {
     try { applySettings(await api.patch("/api/settings", { power: { [key]: value } })); toast("ok", "Saved"); load(); }
     catch (e) { toast("error", errText(e)); renderSettings(store.settings); }
@@ -65,8 +77,25 @@ export function powerCard() {
       h(".bt-set-row", null, switchEl({ checked: !!p.show_on_screen, label: "Show on the screen", onchange: (v) => save("show_on_screen", v) })),
       h(".bt-set-row", null, switchEl({ checked: p.light_on_alarm !== false, label: "Flash the Fossibot light when the alarm goes off", onchange: (v) => save("light_on_alarm", v) }),
         h(".hint", null, "For as long as the hazard lights flash (Alarm → hazard seconds); then the light is put back as it was")),
+      releaseRow(p),
     );
     for (const { key } of SLOTS) if (inputs[key] && document.activeElement !== inputs[key]) inputs[key].value = p[key] || "";
+  }
+
+  // how long «Release» lets a station go (power.release_min)
+  const relInp = h("input", { type: "number", min: 1, max: 240, step: 1, inputmode: "numeric", style: { width: "70px" },
+    "aria-label": "Release for, minutes" });
+  relInp.addEventListener("change", () => {
+    const v = Number(relInp.value);
+    if (!Number.isInteger(v) || v < 1 || v > 240) { toast("error", "1 to 240 minutes"); renderSettings(store.settings); return; }
+    save("release_min", v);
+  });
+  function releaseRow(p) {
+    if (document.activeElement !== relInp) relInp.value = p.release_min ?? 15;
+    return h(".bt-set-row", null,
+      h("label", { style: { display: "flex", gap: "8px", alignItems: "center" } }, "Release a station for its phone app for", relInp, "min"),
+      h(".hint", { style: { marginLeft: 0, marginBottom: "16px" } }, "A station takes one Bluetooth connection: while the device holds it, the station's own app cannot see it. "
+        + "«Release» below disconnects for this long, then the device connects again by itself."));
   }
 
   function stationBlock(def, s) {
@@ -77,26 +106,34 @@ export function powerCard() {
       if (v && !MAC_RE.test(v)) { toast("error", "Bluetooth address looks like AA:BB:CC:DD:EE:FF"); return; }
       save(def.key, v);
     };
+    const relMin = store.settings?.power?.release_min ?? 15;
+    const released = !!(s?.mac && s.released_s);
     let state;
-    if (!s || !s.mac) state = h("span.dim", null, "not set — shown as dashes");
+    if (released) state = h("span.amber", null, `released for the phone app · back in ${releaseLeft(s.released_s)}`);
+    else if (!s || !s.mac) state = h("span.dim", null, "not set — shown as dashes");
     else if (s.connected && s.age_s != null) state = h("span.green", null, `connected · read ${Math.round(s.age_s)} s ago`);
     else if (s.connected) state = h("span.amber", null, "connected, waiting for data");
     else state = h("span.amber", null, "connecting…" + (s.error ? ` (${s.error})` : ""));
+    // a station takes one connection: let it go for a while so its own phone app can see it
+    const relBtn = !s?.mac ? null : released
+      ? h("button.btn.sm", { type: "button", onclick: () => release(def.slot, 0) }, "Reconnect now")
+      : h("button.btn.sm", { type: "button", title: "Disconnect so the station's own phone app can connect",
+        onclick: () => release(def.slot) }, `Release for ${relMin} min`);
     const kv = h(".kv", { style: { marginTop: "8px" } });
-    for (const [k, v] of readingRows(s?.kind, s?.reading)) kv.append(h("span.k", null, k), h("span.v", null, v));
+    for (const [k, v] of released ? [] : readingRows(s?.kind, s?.reading)) kv.append(h("span.k", null, k), h("span.v", null, v));
     return h(".pw-st", { style: { marginBottom: "14px" } },
       h("h3", { style: { margin: "0 0 4px" } }, def.title),
       h(".hint", null, def.hint),
       h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "6px" } },
-        inp, h("button.btn.sm", { type: "button", onclick: apply }, "Save"), state),
+        inp, h("button.btn.sm", { type: "button", onclick: apply }, "Save")),
+      h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "6px" } }, state, relBtn),
       kv);
   }
 
   function render() {
     clear(body);
     for (const def of SLOTS) body.append(stationBlock(def, st?.stations?.find((x) => x.slot === def.slot)));
-    body.append(h(".hint", null, "Read-only: nothing is ever written to the stations. "
-      + "The Daly BMS accepts one connection — while the device holds it, the Daly phone app cannot connect."));
+    body.append(h(".hint", null, "The device only writes what the Dashboard switches ask for (and the Fossibot light on alarm)."));
   }
 
   async function load() {

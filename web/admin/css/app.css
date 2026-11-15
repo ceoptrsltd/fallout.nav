@@ -1084,6 +1084,8 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 /* power switches: slide-to-switch (slide-switch.js) */
 .pc { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); container-type: inline-size; }
 .pc-grp { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pc-away { font-size: 12.5px; color: var(--amber); }
+.pc-reconnect { justify-self: start; align-self: flex-start; }
 .pc-title { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
 /* one grid for every group: 2 columns, 4 on a wide tile — the switches line up across groups and fill the width */
 .pc-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }

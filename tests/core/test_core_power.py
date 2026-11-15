@@ -327,3 +327,60 @@ def test_readings_carry_the_switch_states():
     from fnav.core import leadbatt
     assert leadbatt.parse(leadbatt.frame(12.6, 0, 0b1010)).mode == "off"
     assert leadbatt.parse(leadbatt.frame(12.6, 14, 0b0111)).mode == "on"
+
+
+async def test_a_station_released_for_its_phone_app_lets_go_and_comes_back(fast):
+    from fnav.core.power import PowerError
+    from fnav.models import PowerControl, PowerRelease
+
+    svc, links = await _service_with_links(fast)
+    try:
+        st = svc.release("second", PowerRelease())  # power.release_min, 15 мин
+        assert 14 * 60 < st.stations[1].released_s <= 15 * 60
+        await _until(lambda: not svc.second.connected)
+        assert svc.telemetry().second.released_s and svc.telemetry().second.voltage_v is None, "no data while released"
+        sent = len(links["second"].sent)
+        await asyncio.sleep(0.2)  # опрос (POLL_S 0.05) не подключается и не читает
+        assert not svc.second.connected and len(links["second"].sent) == sent
+        with pytest.raises(PowerError) as e:
+            await svc.control("second", PowerControl(output="charge", on=True))
+        assert e.value.status == 409
+        assert svc.main.connected and svc.third.connected, "the others stay"
+
+        svc.release("second", PowerRelease(minutes=0))  # «подключиться сейчас»
+        await _until(lambda: svc.second.connected and svc.telemetry().second.voltage_v is not None)
+        assert svc.status().stations[1].released_s is None
+
+        svc.second.release(0.5)  # время выходит само
+        await _until(lambda: not svc.second.connected)
+        await _until(lambda: svc.second.connected)
+        with pytest.raises(PowerError) as e:
+            svc.release("nope", PowerRelease())
+        assert e.value.status == 404
+    finally:
+        await svc.stop()
+
+
+async def test_reconnect_now_cuts_the_pause_between_failed_tries(fast, monkeypatch):
+    from fnav.models import PowerRelease
+
+    monkeypatch.setattr(pw, "AWAY_BACKOFF_S", (60.0,))
+    away = [True]
+
+    class Away(ScriptLink):
+        async def connect(self, subscribe, need) -> None:
+            if away[0]:
+                raise BleError("Device not found nearby")
+            self.fake.connected = True
+
+    s = PowerSettings(main_mac="", second_mac="74:C1:4E:10:00:9B", third_mac="")
+    svc = pw.PowerService(lambda: s)
+    svc.second.link_factory = lambda mac, cb: Away(pw.DALY, 1, mac, cb)
+    await svc.start()
+    try:
+        await _until(lambda: svc.second.error is not None)  # теперь — пауза 60 с
+        away[0] = False
+        svc.release("second", PowerRelease(minutes=0))
+        await _until(lambda: svc.second.connected)
+    finally:
+        await svc.stop()

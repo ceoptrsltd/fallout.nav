@@ -372,9 +372,18 @@ const socKind = (soc) => (!num(soc) ? "" : soc <= 20 ? "bad" : soc <= 40 ? "warn
  * noteKind, charging}; main also frac (0…1 | null) for its gauge. Second (Daly powerbank) and third (lead battery):
  * charge, % large, the voltage under it. null — no power data at all (older device).
  */
+/** A station released for its phone app (power.md «Отпустить»): no data, how long until we connect again. */
+function releasedCol(x) {
+  const s = x.released_s;
+  return { big: "—", unit: "", frac: null, kind: "", sub: "released for the app",
+    note: `back in ${s >= 60 ? `${Math.ceil(s / 60)} min` : `${Math.ceil(s)} s`}`, noteKind: "", charging: false,
+    cells: "", cellsBad: false, balance: "", balancing: false, cellVolts: [] };
+}
+
 export function powerInfo(p) {
   if (!p || typeof p !== "object") return null;
   const m = p.main || {};
+  const rel = (x) => x && num(x.released_s) && x.released_s > 0;
   const soc = num(m.soc_pct) ? m.soc_pct : null;
   const watts = num(m.input_w) || num(m.output_w);
   const main = {
@@ -401,7 +410,8 @@ export function powerInfo(p) {
       cellVolts: on && Array.isArray(x.cells_mv) ? x.cells_mv.filter(num).map((mv) => (mv / 1000).toFixed(3)) : [],
     };
   };
-  return { main, second: side(p.second), third: side(p.third) };
+  const pick = (x, f) => (rel(x) ? releasedCol(x) : f(x));
+  return { main: rel(m) ? releasedCol(m) : main, second: pick(p.second, side), third: pick(p.third, side) };
 }
 
 const RADIO_ACTIVE = new Set(["playing", "connecting", "waiting_output"]);

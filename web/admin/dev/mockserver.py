@@ -506,6 +506,9 @@ def build_telemetry() -> dict:
                                "outputs": dict(MOCK_POWER["second"])},
                     "third": {"soc_pct": 78.5, "voltage_v": 12.48, "charging": lead_on, "low": False,
                               "outputs": {"charger": lead_on}, "charger_mode": MOCK_POWER["mode"]}}
+    for slot in out["power"]:
+        if (rel := _released_s(slot)) is not None:
+            out["power"][slot] = {"released_s": rel}
     return out
 
 
@@ -1307,6 +1310,28 @@ async def power_control(slot: str, request: Request):
     return await power_status()
 
 
+MOCK_RELEASED: dict[str, float] = {}  # slot → time.time() when the release ends
+
+
+def _released_s(slot: str) -> int | None:
+    left = MOCK_RELEASED.get(slot, 0) - time.time()
+    return math.ceil(left) if left > 0 else None
+
+
+@app.post("/api/power/{slot}/release")
+async def power_release(slot: str, request: Request):
+    if slot not in ("main", "second", "third"):
+        return err(404, "No such station")
+    try:
+        b = await request.json()
+    except ValueError:
+        b = {}
+    minutes = b.get("minutes")
+    minutes = settings.power.release_min if minutes is None else minutes
+    MOCK_RELEASED[slot] = time.time() + minutes * 60 if minutes else 0
+    return await power_status()
+
+
 @app.get("/api/power")
 async def power_status():
     """Power stations (docs/contracts/power.md): a configured address «connects» and reads plausible values."""
@@ -1319,8 +1344,9 @@ async def power_status():
               "temps_c": [26, 25], "cell_min_mv": 3434, "cell_max_mv": 3494, "delta_mv": 60, "cycles": 0}
 
     def st(slot, kind, mac, reading):
-        return {"slot": slot, "kind": kind, "mac": mac, "connected": bool(mac), "age_s": 3.2 if mac else None,
-                "error": None, "reading": reading if mac else None}
+        rel = _released_s(slot) if mac else None
+        return {"slot": slot, "kind": kind, "mac": mac, "connected": bool(mac) and rel is None,
+                "age_s": 3.2 if mac else None, "error": None, "reading": reading if mac else None, "released_s": rel}
     return {"stations": [st("main", "fossibot", p.main_mac, main), st("second", "daly", p.second_mac, second),
                          st("third", "lead", p.third_mac, {"voltage_v": 12.48, "soc_pct": 78.5, "input_v": 0.0,
                                                            "input_on": False, "charging": False, "uptime_s": 3600})]}
