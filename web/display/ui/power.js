@@ -2,7 +2,7 @@
 // Данные — state.telemetry.power = {main, second, third: {soc_pct, voltage_v, charging, low, …}}; плашку выключает
 // настройка power.show_on_screen.
 // Слева крупно заряд главной станции, %; заряжается — процент мельче, под ним молния и мощность зарядки «412W»; справа две колонки — вторая (Powerbank) и третья (свинцовый аккумулятор):
-// сверху заряд, %, под ним напряжение; черта — посередине. Нет данных — прочерки; заряд ≤ 20 % (low) — мигает;
+// сверху заряд, %, под ним напряжение; черта — посередине. Третья заряжается от солнца — третьей строкой молния и ватты. Нет данных — прочерки; заряд ≤ 20 % (low) — мигает;
 // заряжается — анимация: у главной пульсирует молния под знаком %, в колонке между % и напряжением бегут сегменты
 // заряда (как на телефоне). У Powerbank мелко третьей строкой — разница ячеек «Δ60mV» (опасная — мигает).
 // Раз в несколько секунд по рамке плашки пробегает «треск» молнии (ui/lightning.js).
@@ -162,7 +162,16 @@ export function drawPower(ctx, state, safe) {
     const f = textWidth(ctx, CF(), t) > m.colW + 2 ? CF_3() : CF();
     outlinedText(ctx, t, cx, y + 23, f, { lw: 4, fill });
     outlinedText(ctx, voltText(slot), cx, y + 51, CV(), { lw: 4, fill: Number.isFinite(slot?.voltage_v) ? C.ink : C.inkDim });
-    if (slot?.charging) chargeBar(ctx, cx - m.colW / 2 + 2, y + 36, m.colW - 4, now);
+    // заряжается: известна мощность (свинцовый — от солнечного контроллера) — мигающая молния и ватты третьей
+    // строкой, как у главной; нет — бегущие сегменты между % и напряжением
+    const watts = slot?.charging && Number.isFinite(slot.input_w) && slot.input_w > 0;
+    if (watts) {
+      const wt = wattText(slot);
+      const ww = textWidth(ctx, CD(), wt);
+      const x0 = Math.round(cx - (ww + 11) / 2);
+      if (blinkOn(now, 1, 0.65)) bolt(ctx, x0 + 4, y + 69, 0.62);
+      outlinedText(ctx, wt, x0 + 11, y + 69, CD(), { align: "left", lw: 3, fill: C.ink });
+    } else if (slot?.charging) chargeBar(ctx, cx - m.colW / 2 + 2, y + 36, m.colW - 4, now);
     const d = deltaText(slot);
     if (d && !(slot.cell_delta_bad && !blinkOn(now, 2, 0.6))) {
       outlinedText(ctx, d, cx, y + 69, CD(), { lw: 3, fill: slot.cell_delta_bad ? C.ink : C.inkDim });

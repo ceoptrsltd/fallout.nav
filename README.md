@@ -29,8 +29,10 @@ fallout.nav turns a Raspberry Pi Compute Module 4 behind the dashboard of a 2001
   cameras) → hazard lights, siren, protected recordings and a **push notification** with a snapshot.
 - **Self‑tuning sensors** — GPS at 10 Hz, a compass that calibrates itself against the GPS course while you drive,
   a gyro for the heading through turns and for spotting reverse gear (the rear camera comes up on its own).
+- **Air quality** — a Qingping air monitor heard over Bluetooth LE: CO₂, temperature, humidity and dust on the
+  Dashboard, with 7‑day charts coloured by how far each value is from normal.
 - **Power stations on the screen** — a Fossibot power station, a Daly‑BMS powerbank and the leisure lead battery
-  (through a small ESP32‑C6 module of our own) over Bluetooth LE: charge, voltage, the cell spread, and slide
+  (heard from a Victron solar charger's broadcasts) over Bluetooth LE: charge, voltage, the cell spread, and slide
   switches for their outputs and charging in the web UI.
 - **A level for the campsite**, **internet radio** on a Bluetooth speaker with a macro‑pad "car radio", and a
   **games menu** for when you're parked.
@@ -258,7 +260,7 @@ The design notes are written in Russian (the code, UI and this README are in Eng
 | [`api.md`](docs/contracts/api.md) · [`display.md`](docs/contracts/display.md) · [`camera.md`](docs/contracts/camera.md) | REST/WebSocket API, the car screen, cameras and recordings |
 | [`alarm.md`](docs/contracts/alarm.md) · [`vision.md`](docs/contracts/vision.md) · [`level.md`](docs/contracts/level.md) | the alarm, camera watch, the level |
 | [`radio.md`](docs/contracts/radio.md) · [`remote.md`](docs/contracts/remote.md) · [`demo.md`](docs/contracts/demo.md) | radio and Bluetooth, remote access, the browser demo |
-| [`power.md`](docs/contracts/power.md) · [`firmware/lead-battery`](firmware/lead-battery/) (English) | power stations over Bluetooth LE, the lead‑battery module |
+| [`power.md`](docs/contracts/power.md) · [`air.md`](docs/contracts/air.md) · [`firmware/lead-battery`](firmware/lead-battery/) (English) | power stations and the air sensor over Bluetooth LE, the lead‑battery module (not in use now) |
 | [`docs/device-report.md`](docs/device-report.md) · [`pi/README.md`](pi/README.md) | hardware bring‑up notes, the Pi installer |
 
 ## How it was built

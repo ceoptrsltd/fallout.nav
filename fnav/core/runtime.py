@@ -17,6 +17,8 @@ import httpx
 from fnav import paths
 from fnav.camera.discover import replace_host, url_host
 from fnav.core import secretsfile as sf
+from fnav.core.advscan import AdvScanner, FakeAdvScanner
+from fnav.core.air import AirService
 from fnav.core.alarm import DETECTED, AlarmService
 from fnav.core.auth import AuthManager
 from fnav.core.autorear import AutoRear
@@ -185,7 +187,12 @@ class Core:
         # задний вид на экране: колонку не вызывать — вызов глушит Wi-Fi общего чипа, а с ним и заднюю камеру
         self.bt.radio_quiet = lambda: self.view_camera == "rear" and self.camera_rear.enabled
         # электростанции по BLE (docs/contracts/power.md): подключаются тоже не при заднем виде
+        # вещание BLE (Victron, датчик воздуха): слушаем окнами, реже — пока играет музыка (fnav/core/advscan.py)
+        self.advscan: AdvScanner = (mock_adv_scanner() if opts.mock else
+                                    AdvScanner(self.bt.radio_quiet, lambda: self.radio.phase == "playing"))
+        self.air = AirService(self.advscan, lambda: self.store.get().air, paths.data_dir() / "air_history.json")
         self.power = PowerService(lambda: self.store.get().power, mock=opts.mock, quiet=self.bt.radio_quiet,
+                                  scanner=self.advscan,
                                   tune=None if opts.mock else slow_ble_links,
                                   busy=lambda: self.radio.phase == "playing",
                                   guard=lambda: self.alarm.state != "off")
@@ -294,6 +301,12 @@ class Core:
             await self.radio.start(demo=MOCK_STATION if self.mock else None)
         except Exception:
             log.exception("radio/bluetooth start")
+        try:
+            await self.air.start()
+            if bg:
+                await self.advscan.start()
+        except Exception:
+            log.exception("air/advscan start")
         # охрана, отметки, fnav-watch, уровень, датчик — каждый сам по себе: сбой одного не оставит без остальных
         for name, start in (("alarm", self.alarm.start), ("marks", self.marks.start), ("vision", self.vision.start),
                             ("level", self.level.start), ("impact", self.impact.start), ("power", self.power.start)):
@@ -328,7 +341,7 @@ class Core:
         self._tasks.clear()
         for closer in (self.imu.stop, self.vision.stop, self.marks.stop, self.alarm.stop, self.level.stop, self.speedlimits.stop, self.weather.stop,
                        self.keypad.stop, self.games.close, self.radio.stop, self.bt.stop, self.tracking.stop,
-                       self.impact.stop, self.recgps.stop, self.power.stop,
+                       self.impact.stop, self.recgps.stop, self.power.stop, self.air.stop, self.advscan.stop,
                        self.hub.stop, self.camera.stop, self.camera_rear.stop, self.tiles.stop):
             try:
                 await closer()
@@ -360,6 +373,7 @@ class Core:
         except Exception:
             log.exception("alarm apply_settings")
         spawn(self.power.apply_settings(s.power), name="power-settings")
+        self.air.apply_settings(s.air)
 
     async def _save_radio_volume(self, volume: int) -> None:
         await self.store.patch({"radio": {"volume": volume}})
@@ -427,6 +441,7 @@ class Core:
             alarm=self.alarm.telemetry(),
             level=self.level.telemetry(),
             power=self.power.telemetry(),
+            air=self.air.telemetry(),
             errors=errors,
         )
 
@@ -844,3 +859,35 @@ class Core:
         segs = ", ".join(x for x in (seg, rear) if x)
         self.ws.toast(f"Recording protected: {segs}" if segs else "No current recording", "info" if segs else "warn")
         return res
+
+
+MOCK_VICTRON_KEY = "00112233445566778899aabbccddeeff"
+
+
+def mock_adv_scanner() -> FakeAdvScanner:
+    """--mock: Victron (батарея 12.4 В, днём заряжается) и датчик воздуха вещают настоящими кадрами."""
+    import math
+    import time
+
+    from fnav.core import air, victron
+    from fnav.models import AirSettings, PowerSettings
+
+    sc = FakeAdvScanner()
+    t0 = time.monotonic()
+
+    def vic() -> tuple[dict[int, bytes], dict[str, bytes]]:
+        t = time.monotonic() - t0
+        sun = max(0.0, math.sin(t / 120))
+        raw = victron.encrypt_frame(MOCK_VICTRON_KEY, int(t) & 0xFFFF, 3 if sun > 0.1 else 0, 12.4 + 1.6 * sun,
+                                    3.5 * sun if sun > 0.1 else 0.0, 120, round(48 * sun) if sun > 0.1 else 0)
+        return {victron.COMPANY_ID: raw}, {}
+
+    def qp() -> tuple[dict[int, bytes], dict[str, bytes]]:
+        t = time.monotonic() - t0
+        data = air.frame(21.5 + 2 * math.sin(t / 300), 42 + 6 * math.sin(t / 500), 6 + round(4 * abs(math.sin(t / 200))),
+                         9 + round(5 * abs(math.sin(t / 260))), 820 + round(380 * abs(math.sin(t / 400))))
+        return {}, {air.SERVICE_UUID: data}
+
+    sc.feed(PowerSettings().victron_mac, vic)
+    sc.feed(AirSettings().mac, qp)
+    return sc

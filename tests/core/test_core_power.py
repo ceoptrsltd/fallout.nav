@@ -184,11 +184,11 @@ async def test_stations_connect_one_at_a_time(fast):
 
     s = PowerSettings()
     svc = pw.PowerService(lambda: s)
-    for r, proto in ((svc.main, pw.FOSSIBOT), (svc.second, pw.DALY), (svc.third, pw.LEAD)):
+    for r, proto in ((svc.main, pw.FOSSIBOT), (svc.second, pw.DALY)):
         r.link_factory = lambda mac, cb, proto=proto: SlowLink(proto, 4, mac, cb)
     await svc.start()
     try:
-        await _until(lambda: all(r.fresh() is not None for r in (svc.main, svc.second, svc.third)))
+        await _until(lambda: all(r.fresh() is not None for r in (svc.main, svc.second)))
         assert peak[0] == 1
     finally:
         await svc.stop()
@@ -224,13 +224,13 @@ async def _service_with_links(fast):
     s = PowerSettings()
     svc = pw.PowerService(lambda: s)
     links = {}
-    for r, proto in ((svc.main, pw.FOSSIBOT), (svc.second, pw.DALY), (svc.third, pw.LEAD)):
+    for r, proto in ((svc.main, pw.FOSSIBOT), (svc.second, pw.DALY)):
         def make(mac, cb, proto=proto, slot=r.slot):
             links[slot] = RecLink(proto, mac, cb)
             return links[slot]
         r.link_factory = make
     await svc.start()
-    await _until(lambda: all(r.fresh() is not None for r in (svc.main, svc.second, svc.third)))
+    await _until(lambda: all(r.fresh() is not None for r in (svc.main, svc.second)))
     return svc, links
 
 
@@ -246,13 +246,14 @@ async def test_commands_send_exactly_the_documented_frames(fast):
         await svc.control("main", PowerControl(output="ac", on=True))
         await svc.control("second", PowerControl(output="charge", on=False))
         await svc.control("second", PowerControl(output="discharge", on=True))
-        await svc.control("third", PowerControl(output="charger", mode="auto"))
         assert _commands(links["main"], pw.FOSSIBOT) == [bytes.fromhex("11 06 00 1A 00 01 5D 6B")]
         assert links["main"].sent[-1][2] is True  # Fossibot: запись с подтверждением, как чтение
         # Daly: кадры из перехвата приложения Daly (batmon-ha #356)
         assert _commands(links["second"], pw.DALY) == [bytes.fromhex("D2 06 00 A5 00 00 8A 4A"),
                                                         bytes.fromhex("D2 06 00 A6 00 01 BB 8A")]
-        assert _commands(links["third"], pw.LEAD) == [b"\x10"]
+        # модуль FNAV-LEAD сейчас не подключён (третья станция — Victron), но его кадры остаются теми же
+        from fnav.core import leadbatt
+        assert leadbatt.mode_request("auto") == bytes([0x10])
     finally:
         await svc.stop()
 
@@ -264,7 +265,7 @@ async def test_anything_else_is_refused(fast):
     try:
         for slot, cmd in (("main", PowerControl(output="charge", on=True)),  # у Fossibot нет MOSFET
                           ("second", PowerControl(output="ac", on=True)),
-                          ("third", PowerControl(output="charger", on=True)),  # у свинцового — режим, не on
+                          ("third", PowerControl(output="charger", mode="on")),  # Victron только слушаем
                           ("main", PowerControl(output="ac"))):
             with pytest.raises(pw.PowerError) as e:
                 await svc.control(slot, cmd)
@@ -276,7 +277,7 @@ async def test_anything_else_is_refused(fast):
         with pytest.raises(pw.PowerError) as e:
             await svc.control("second", PowerControl(output="charge", on=True))
         assert e.value.status == 409
-        assert all(_commands(links[k], p) == [] for k, p in (("main", pw.FOSSIBOT), ("third", pw.LEAD)))
+        assert _commands(links["main"], pw.FOSSIBOT) == []
     finally:
         await svc.stop()
 
@@ -346,7 +347,7 @@ async def test_a_station_released_for_its_phone_app_lets_go_and_comes_back(fast)
         with pytest.raises(PowerError) as e:
             await svc.control("second", PowerControl(output="charge", on=True))
         assert e.value.status == 409
-        assert svc.main.connected and svc.third.connected, "the others stay"
+        assert svc.main.connected, "the others stay"
 
         svc.release("second", PowerRelease(minutes=0))  # «подключиться сейчас»
         await _until(lambda: svc.second.connected and svc.telemetry().second.voltage_v is not None)
@@ -488,4 +489,45 @@ async def test_alarm_on_keeps_the_main_station_ready_and_the_light_gets_a_fast_l
         assert cmds[-1] == light_off, "put back as it was"
         assert True in tuned and tuned[-1] is False, "fast while flashing, slow again after"
     finally:
+        await svc.stop()
+
+
+async def test_third_station_is_the_lead_battery_heard_from_the_victron_charger(fast):
+    from fnav.core import victron
+    from fnav.core.advscan import FakeAdvScanner
+    from fnav.core.power import PowerError
+    from fnav.models import PowerRelease
+
+    key = "00112233445566778899aabbccddeeff"
+    sc = FakeAdvScanner(period_s=0.02)
+    frame = [victron.encrypt_frame(key, 7, 0, 12.34, 0.0, 30, 0)]  # покой: 12.34 В, зарядки нет
+    s = PowerSettings(main_mac="", second_mac="", victron_key=key)
+    sc.feed(s.victron_mac, lambda: ({victron.COMPANY_ID: frame[0]}, {}))
+    svc = pw.PowerService(lambda: s, scanner=sc)
+    await svc.start()
+    await sc.start()
+    try:
+        await _until(lambda: svc.telemetry().third.voltage_v is not None)
+        t = svc.telemetry().third
+        rest = t.soc_pct
+        assert (t.voltage_v, t.charging, t.input_w) == (12.34, False, 0) and 0 < rest < 100
+        st = svc.status().stations[2]
+        assert (st.kind, st.connected, st.reading["state"], st.reading["yield_today_wh"]) == ("victron", True, "off", 30)
+
+        frame[0] = victron.encrypt_frame(key, 8, 3, 14.2, 3.5, 40, 47)  # зарядка: напряжение завышено
+        await _until(lambda: svc.telemetry().third.charging)
+        t = svc.telemetry().third
+        assert (t.voltage_v, t.input_w) == (14.2, 47)
+        assert t.soc_pct == rest, "the charge is held from the last resting voltage, not 100 %"
+
+        with pytest.raises(PowerError) as e:
+            svc.release("third", PowerRelease())
+        assert e.value.status == 409  # слушаем вещание — отпускать нечего
+
+        s2 = PowerSettings(main_mac="", second_mac="", victron_key="ffeeddccbbaa99887766554433221100")
+        await svc.apply_settings(s2)  # не тот ключ: данных нет, в статусе причина
+        await asyncio.sleep(0.1)
+        assert svc.telemetry().third.voltage_v is None and "key" in svc.status().stations[2].error.lower()
+    finally:
+        await sc.stop()
         await svc.stop()

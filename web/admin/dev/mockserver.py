@@ -498,14 +498,15 @@ def build_telemetry() -> dict:
     out["alarm"] = alarm.compact()  # alarm.md §4
     out["level"] = level.compact()  # level.md
     soc = round(80 + 10 * math.sin(t / 600), 1)  # power.md: Fossibot slowly discharging, the Daly powerbank low
-    lead_on = MOCK_POWER["mode"] == "on" or (MOCK_POWER["mode"] == "auto" and MOCK_POWER["input"])
     out["power"] = {"main": {"soc_pct": soc, "charging": False, "low": soc <= 20, "input_w": 0, "output_w": 156,
                              "to_empty_min": 1000, "outputs": dict(MOCK_POWER["main"])},
                     "second": {"soc_pct": 9.0, "voltage_v": 20.8, "low": True, "cell_delta_mv": 60, "cell_delta_bad": False, "balancing": True,
                                "cells_mv": [3487, 3487, 3436, 3488, 3488, 3496],
                                "outputs": dict(MOCK_POWER["second"])},
-                    "third": {"soc_pct": 78.5, "voltage_v": 12.48, "charging": lead_on, "low": False,
-                              "outputs": {"charger": lead_on}, "charger_mode": MOCK_POWER["mode"]}}
+                    # the lead battery heard from the Victron solar charger: charging from the panels
+                    "third": {"soc_pct": 78.5, "voltage_v": 13.42, "charging": True, "low": False, "input_w": 47}}
+    air = _mock_air(t)
+    out["air"] = {**air, "battery_pct": None, "age_s": 40} if settings.air.enabled and settings.air.mac else None
     for slot in out["power"]:
         if (rel := _released_s(slot)) is not None:
             out["power"][slot] = {"released_s": rel}
@@ -1348,8 +1349,43 @@ async def power_status():
         return {"slot": slot, "kind": kind, "mac": mac, "connected": bool(mac) and rel is None,
                 "age_s": 3.2 if mac else None, "error": None, "reading": reading if mac else None, "released_s": rel}
     return {"stations": [st("main", "fossibot", p.main_mac, main), st("second", "daly", p.second_mac, second),
-                         st("third", "lead", p.third_mac, {"voltage_v": 12.48, "soc_pct": 78.5, "input_v": 0.0,
-                                                           "input_on": False, "charging": False, "uptime_s": 3600})]}
+                         st("third", "victron", p.victron_mac, {"voltage_v": 13.42, "soc_pct": 78.5, "current_a": 3.5,
+                                                                "pv_power_w": 47, "yield_today_wh": 120, "load_a": 0.0,
+                                                                "state": "bulk", "error": 0})]}
+
+
+def _mock_air(t: float) -> dict:
+    """Air sensor (docs/contracts/air.md): a day-shaped wave — stuffy and warm in the evening, clean at night."""
+    day = (t % 86400) / 86400 * 2 * math.pi
+    wob = math.sin(t / 700) * 0.5 + math.sin(t / 3100)
+    return {"temp_c": round(21.5 + 3.5 * math.sin(day - 2.2) + 0.4 * wob, 1),
+            "humidity_pct": round(46 + 14 * math.sin(day + 0.6) + 2 * wob, 1),
+            "co2_ppm": round(max(420, 950 + 620 * math.sin(day - 1.2) + 90 * wob)),
+            "pm25": round(max(1, 12 + 16 * max(0.0, math.sin(day - 0.4)) + 3 * wob)),
+            "pm10": round(max(2, 22 + 30 * max(0.0, math.sin(day - 0.4)) + 5 * wob))}
+
+
+@app.get("/api/air/history")
+async def air_history(hours: float = 1.0):
+    hours = max(1.0, min(168.0, hours))
+    step = 900.0 if hours >= 144 else 60.0
+    t1 = time.time()
+    t1 = t1 - t1 % step + step
+    n = int(hours * 3600 // step)
+    t0 = t1 - n * step
+    out: dict = {"t0": t0, "step_s": step, "n": n}
+    keys = ("temp_c", "humidity_pct", "co2_ppm", "pm25", "pm10")
+    for k in keys:
+        out[k] = {"min": [], "avg": [], "max": []}
+    for i in range(n):
+        gap = hours > 24 and 300 < i < 330  # a night without the sensor
+        pts = [_mock_air(t0 + i * step + j * step / 4) for j in range(4)] if not gap else []
+        for k in keys:
+            vals = [p[k] for p in pts]
+            out[k]["min"].append(min(vals) if vals else None)
+            out[k]["avg"].append(round(sum(vals) / len(vals), 1) if vals else None)
+            out[k]["max"].append(max(vals) if vals else None)
+    return out
 
 
 @app.post("/api/bluetooth/power")

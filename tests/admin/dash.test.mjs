@@ -297,9 +297,10 @@ test("power tile: main charge with a gauge, the others in volts, dashes without 
   assert.equal(p.third.balance, "", "no balancing line where the station has none");
   assert.deepEqual([p.third.big, p.third.sub], ["—", "no data"]);
   const c = powerInfo({ main: { soc_pct: 35, input_w: 350, output_w: 20, charging: true }, second: {},
-    third: { soc_pct: 100, voltage_v: 13.6, charging: true } });
-  assert.deepEqual([c.main.kind, c.main.note, c.main.noteKind, c.main.charging], ["warn", "charging", "ok", true]);
-  assert.deepEqual([c.third.big, c.third.sub, c.third.note, c.third.charging], ["100", "13.6 V", "charging", true]);
+    third: { soc_pct: 100, voltage_v: 13.6, charging: true, input_w: 47 } });
+  // charging is a blinking bolt, not a word; the lead battery also shows the charging power
+  assert.deepEqual([c.main.kind, c.main.note, c.main.charging], ["warn", "", true]);
+  assert.deepEqual([c.third.big, c.third.sub, c.third.note, c.third.charging], ["100", "13.6 V · 47 W", "", true]);
   assert.equal(fmtHm(45), "45 min");
   assert.equal(fmtHm(0), "");
 });

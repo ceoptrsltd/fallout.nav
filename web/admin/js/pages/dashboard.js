@@ -12,6 +12,8 @@ import { alarmStateText, armLeft, kindInfo } from "../alarm-fmt.js";
 import { recLink } from "../rec-play.js";
 import { eventThumb } from "../snap-view.js";
 import { installEntry } from "../install.js";
+import { METRICS as AIR_METRICS, fmtValue, levelOf } from "../air-fmt.js";
+import { sparkline } from "../air-chart.js";
 import { powerControls } from "../power-controls.js";
 import {
   EVENTS_N, ACT_COOL_MS, pollDelay, alarmLive, alarmActions, actCooldown, alarmWord, bannerWord, armedFor, armProgress, armHint, alarmChips,
@@ -399,7 +401,8 @@ export function mount(root) {
     const bal = h(".db-ts", { hidden: true });
     const note = h(".db-ts");
     const volts = h("span.db-pw-cells", { hidden: true, title: "cell voltages, V" });
-    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit, volts), bar, subLine, bal, note), big, unit, bar, sub, cells, bal, note, volts };
+    const bolt = h("span.db-pw-bolt", { hidden: true, title: "charging" }, icon("bolt")); // charging: a blinking bolt, no word
+    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit, bolt, volts), bar, subLine, bal, note), big, unit, bar, sub, cells, bal, note, volts, bolt };
   };
   const pwMain = pwCol("Fossibot", true);
   const pwSecond = pwCol("Powerbank", false);
@@ -412,6 +415,43 @@ export function mount(root) {
       h(".db-power", null, pwMain.el, pwSecond.el, pwThird.el)),
     pwCtl);
   pwTile.hidden = true;
+
+  // air quality (docs/contracts/air.md): the values now, each with a tiny line of the last hour
+  const airCells = new Map();
+  const airGrid = h(".db-air");
+  for (const m of AIR_METRICS) {
+    const val = h("span.db-air-v", null, "—");
+    const spark = h("span.db-air-s");
+    airCells.set(m.key, { val, spark });
+    airGrid.append(h(".db-air-c", null, h(".db-air-l", null, m.short || m.label), h(".db-air-n", null, val, h("span.db-air-u", null, m.unit)), spark));
+  }
+  const airAge = h("span.db-air-age");
+  const airTile = h("a.db-tile.wide", { href: "#/air" },
+    h(".db-tl", null, icon("air"), h("span", null, "Air"), airAge, h("span.db-go", null, "›")), airGrid);
+  airTile.hidden = true;
+  let airHist = null;
+  let airTimer = null;
+  function renderAir(t) {
+    const a = t.air;
+    airTile.hidden = !a;
+    if (!a) return;
+    put(airAge, a.age_s == null ? "no data" : "");
+    for (const m of AIR_METRICS) {
+      const c = airCells.get(m.key);
+      put(c.val, fmtValue(m, a[m.key]));
+      cls(c.val, "db-air-v " + levelOf(m, a[m.key]));
+    }
+    if (!airTimer) loadAir();
+  }
+  async function loadAir() {
+    clearTimeout(airTimer);
+    airTimer = setTimeout(loadAir, 60000);
+    if (document.hidden || !store.online) return;
+    try { airHist = await api.get("/api/air/history?hours=1"); } catch { return; }
+    if (stopped) return;
+    for (const m of AIR_METRICS) airCells.get(m.key).spark.replaceChildren(sparkline(m, airHist[m.key]?.avg || []));
+  }
+
   function renderPower(t) {
     const pi = powerInfo(t.power);
     pwTile.hidden = !pi;
@@ -423,8 +463,9 @@ export function mount(root) {
       cls(c.big, "db-pw-big " + kindCls(x.kind));
       put(c.sub, x.sub);
       put(c.note, x.note || "");
-      cls(c.note, "db-ts " + kindCls(x.noteKind) + (x.charging ? " db-charging" : ""));
+      cls(c.note, "db-ts " + kindCls(x.noteKind));
       c.note.hidden = !x.note;
+      c.bolt.hidden = !x.charging;
       put(c.cells, x.cells || "");
       c.cells.hidden = !x.cells;
       cls(c.cells, "db-cells" + (x.cellsBad ? " red db-blink" : ""));
@@ -641,7 +682,7 @@ export function mount(root) {
     put(modeNow, t ? screenNowText(t.display) : "");
   }
 
-  const tiles = h(".db-tiles", null, posTile, camTile, quickTile, sysTile, lvTile, pwTile, radioTile);
+  const tiles = h(".db-tiles", null, posTile, camTile, quickTile, sysTile, lvTile, pwTile, airTile, radioTile);
   const install = installEntry("button.db-install", "Install app"); // hides itself in the installed app
   const van = h(".db-van", null, seenEl, errBox, tiles, h(".db-foot", null, install));
 
@@ -729,6 +770,7 @@ export function mount(root) {
     }
 
     renderPower(t);
+    renderAir(t);
     renderRadio(false);
 
     const errs = Array.isArray(t.errors) ? t.errors : [];
@@ -890,6 +932,7 @@ export function mount(root) {
     clearTimeout(noteTimer);
     clearTimeout(volPendingT);
     clearInterval(tick);
+    clearTimeout(airTimer);
     document.removeEventListener("visibilitychange", onVis);
     offTel();
     offConn();

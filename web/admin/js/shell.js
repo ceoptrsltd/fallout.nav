@@ -22,6 +22,7 @@ const PAGES = [
   { id: "recordings", title: "Recordings", icon: "rec", load: () => import("./pages/recordings.js") },
   { id: "radio", title: "Radio", icon: "radio", load: () => import("./pages/radio.js") },
   { id: "bluetooth", title: "Bluetooth", icon: "bt", load: () => import("./pages/bluetooth.js") },
+  { id: "air", title: "Air", icon: "air", load: () => import("./pages/air.js") },
   { id: "nav", title: "Navigation", icon: "nav", load: () => import("./pages/nav.js") },
   { id: "compass", title: "Compass", icon: "compass", load: () => import("./pages/compass.js") },
   { id: "level", title: "Level", icon: "level", load: () => import("./pages/level.js") },

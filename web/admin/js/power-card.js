@@ -1,5 +1,6 @@
 // Power stations card (Bluetooth page): BLE addresses and live readings (docs/contracts/power.md).
-// Main — Fossibot (charge, % large on screen), second — Daly BMS, third — lead battery via the FNAV-LEAD module.
+// Main — Fossibot (charge, % large on screen), second — Daly BMS, third — the lead battery heard from the Victron
+// solar charger's broadcasts (no connection, so no «Release»).
 // A station holds one Bluetooth connection: «Release» lets it go for power.release_min so its own phone app can see it.
 import { h, clear } from "./dom.js";
 import { api, errText } from "./api.js";
@@ -9,7 +10,8 @@ import { toast, switchEl } from "./ui.js";
 const SLOTS = [
   { slot: "main", key: "main_mac", title: "Main — Fossibot", hint: "Charge, % — large on the screen" },
   { slot: "second", key: "second_mac", title: "Second — Daly BMS", hint: "Charge and voltage — middle column on the screen" },
-  { slot: "third", key: "third_mac", title: "Third — lead battery (FNAV-LEAD)", hint: "XIAO ESP32-C6 module: charge (by voltage), voltage, charger — right column" },
+  { slot: "third", key: "victron_mac", title: "Third — lead battery (Victron SmartSolar)", listen: true,
+    hint: "Heard from the solar charger's broadcasts: voltage, charge (estimated from the resting voltage), charging power — right column" },
 ];
 const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
 
@@ -33,6 +35,15 @@ export function readingRows(kind, r) {
       ["AC out", `${n1(r.ac_out_v)} V, ${n1(r.ac_out_hz)} Hz`],
       ["To empty / full", `${mins(r.to_empty_min)} / ${mins(r.to_full_min)}`],
       ["Battery", `${n1(r.capacity_ah)} Ah`],
+    ];
+  }
+  if (kind === "victron") {
+    return [
+      ["Battery", `${n1(r.voltage_v)} V (≈ ${n1(r.soc_pct)} %)`],
+      ["Charger", `${String(r.state || "").replace(/_/g, " ")}${r.error ? ` · error ${r.error}` : ""}`],
+      ["Charging", `${n1(r.current_a)} A · panels ${r.pv_power_w ?? "—"} W`],
+      ["Yield today", `${r.yield_today_wh ?? "—"} Wh`],
+      ["Load", `${n1(r.load_a)} A`],
     ];
   }
   if (kind === "lead") {
@@ -98,6 +109,20 @@ export function powerCard() {
         + "«Release» below disconnects for this long, then the device connects again by itself."));
   }
 
+  // the Victron key (VictronConnect → Product info → Instant readout details → Encryption data): shown masked
+  const keyInp = h("input", { type: "password", spellcheck: "false", autocomplete: "off", placeholder: "32 hex characters",
+    style: { width: "190px", fontFamily: "var(--mono)" }, "aria-label": "Victron encryption key" });
+  function keyRow() {
+    if (!keyInp.value && document.activeElement !== keyInp) keyInp.value = store.settings?.power?.victron_key || "";
+    return h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "6px" } },
+      keyInp, h("button.btn.sm", { type: "button", onclick: () => {
+        const v = keyInp.value.trim().toLowerCase();
+        if (v && !/^[0-9a-f]{32}$/.test(v)) { toast("error", "The key is 32 hex characters"); return; }
+        save("victron_key", v);
+      } }, "Save key"),
+      h("span.hint", { style: { margin: 0 } }, "VictronConnect: Product info, Instant readout"));
+  }
+
   function stationBlock(def, s) {
     const inp = inputs[def.key] ??= h("input", { type: "text", spellcheck: "false", placeholder: "AA:BB:CC:DD:EE:FF", style: { width: "190px", fontFamily: "var(--mono)" }, "aria-label": `${def.title} address` });
     if (!inp.value && store.settings?.power) inp.value = store.settings.power[def.key] || "";
@@ -111,11 +136,13 @@ export function powerCard() {
     let state;
     if (released) state = h("span.amber", null, `released for the phone app · back in ${releaseLeft(s.released_s)}`);
     else if (!s || !s.mac) state = h("span.dim", null, "not set — shown as dashes");
+    else if (def.listen && s.connected) state = h("span.green", null, `listening · heard ${Math.round(s.age_s)} s ago`);
+    else if (def.listen) state = h("span.amber", null, s.error || "listening, nothing heard yet");
     else if (s.connected && s.age_s != null) state = h("span.green", null, `connected · read ${Math.round(s.age_s)} s ago`);
     else if (s.connected) state = h("span.amber", null, "connected, waiting for data");
     else state = h("span.amber", null, "connecting…" + (s.error ? ` (${s.error})` : ""));
     // a station takes one connection: let it go for a while so its own phone app can see it
-    const relBtn = !s?.mac ? null : released
+    const relBtn = !s?.mac || def.listen ? null : released
       ? h("button.btn.sm", { type: "button", onclick: () => release(def.slot, 0) }, "Reconnect now")
       : h("button.btn.sm", { type: "button", title: "Disconnect so the station's own phone app can connect",
         onclick: () => release(def.slot) }, `Release for ${relMin} min`);
@@ -126,6 +153,7 @@ export function powerCard() {
       h(".hint", null, def.hint),
       h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "6px" } },
         inp, h("button.btn.sm", { type: "button", onclick: apply }, "Save")),
+      def.listen ? keyRow() : null,
       h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "6px" } }, state, relBtn),
       kv);
   }

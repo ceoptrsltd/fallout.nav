@@ -1,7 +1,9 @@
 """Электростанции по Bluetooth LE (docs/contracts/power.md).
 
-Главная — Fossibot (fnav/core/fossibot.py): заряд, % — на экране крупно. Вторая — Daly BMS (fnav/core/daly.py):
-напряжение — верхняя строка. Третья — пока заглушка (нижняя строка «--.-V»).
+Главная — Fossibot (fnav/core/fossibot.py): заряд, % — на экране крупно. Вторая — Daly BMS (fnav/core/daly.py).
+Третья — свинцовый аккумулятор по вещанию солнечного контроллера Victron (VictronStation, fnav/core/victron.py):
+без подключения, только слушаем. Модуль FNAV-LEAD (fnav/core/leadbatt.py, протокол LEAD) сейчас не используется —
+оставлен для будущей четвёртой станции.
 
 Каждая станция — свой StationReader: держит постоянное подключение (fnav/core/ble.py) и читает показания редко —
 раз в POLL_S (минута), а пока на колонке играет музыка — раз в POLL_MUSIC_S (5 минут): данные медленные, а радио
@@ -34,7 +36,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from fnav.core import daly, fossibot, leadbatt
+from fnav.core import daly, fossibot, leadbatt, victron
+from fnav.core.advscan import AdvScanner
 from fnav.core.ble import BleError, BleLink
 from fnav.core.util import cancel_tasks
 from fnav.models import (
@@ -75,7 +78,7 @@ MUSIC_RETRY_S = 30.0  # пока играет музыка — неудачно�
 
 @dataclass(frozen=True)
 class Protocol:
-    kind: Literal["fossibot", "daly", "lead"]
+    kind: Literal["fossibot", "daly", "lead", "victron"]
     subscribe: tuple[str, ...]
     reply_uuid: str
     write_uuid: str
@@ -383,6 +386,82 @@ class StationReader:
                                   age_s=age, error=self.error, reading=reading, released_s=self.released_s())
 
 
+REST_CURRENT_A = 0.3  # ток заряда меньше — батарея «в покое», по напряжению можно судить о заряде
+VICTRON_STALE_S = 420.0  # вещание ловим окнами раз в 1–3 мин (advscan) — дольше нет пакетов: прочерки
+
+
+class VictronStation:
+    """Третья станция: свинцовый аккумулятор по вещанию Victron SmartSolar (fnav/core/advscan.py). Заряд, % —
+    по напряжению покоя (leadbatt.soc_from_voltage): пока идёт зарядка, напряжение завышено, поэтому держим
+    последнее значение, снятое в покое; не было такого с запуска — оценка по текущему напряжению."""
+
+    slot = "third"
+    proto = Protocol("victron", (), "", "", False, b"", lambda: None, lambda _f: None)
+    connected = False
+
+    def __init__(self, scanner: AdvScanner, mono: Callable[[], float] = time.monotonic) -> None:
+        self.scanner = scanner
+        self.mono = mono
+        self.mac = ""
+        self.key = ""
+        self.reading: victron.VictronReading | None = None
+        self.read_at: float | None = None
+        self.rest_soc: float | None = None
+        self.error: str | None = None
+
+    async def configure(self, mac: str, key: str) -> None:
+        if (mac, key) == (self.mac, self.key):
+            return
+        if self.mac:
+            self.scanner.unwatch(self.mac)
+        self.mac, self.key = mac, key
+        self.reading = self.read_at = self.rest_soc = None
+        self.error = None if key or not mac else "No key (VictronConnect: Product info, Instant readout)"
+        if mac and key:
+            self.scanner.watch(mac, self._on_adv)
+
+    async def stop(self) -> None:
+        if self.mac:
+            self.scanner.unwatch(self.mac)
+
+    def _on_adv(self, mfr: dict[int, bytes], _svc: dict[str, bytes]) -> None:
+        raw = mfr.get(victron.COMPANY_ID)
+        if raw is None or raw[:1] != b"\x10":
+            return
+        r = victron.parse(raw, self.key)
+        if r is None:
+            self.error = "The key does not fit (or this is not a solar charger)"
+            return
+        self.error = None
+        self.reading, self.read_at = r, self.mono()
+        if r.voltage_v is not None and not r.charging and abs(r.current_a or 0) < REST_CURRENT_A:
+            self.rest_soc = leadbatt.soc_from_voltage(r.voltage_v)
+
+    def fresh(self) -> victron.VictronReading | None:
+        if self.reading is None or self.read_at is None or self.mono() - self.read_at > VICTRON_STALE_S:
+            return None
+        return self.reading
+
+    def released_s(self) -> None:
+        return None
+
+    def slot_view(self) -> PowerSlot:
+        r = self.fresh()
+        if r is None or r.voltage_v is None:
+            return PowerSlot()
+        soc = self.rest_soc if self.rest_soc is not None else leadbatt.soc_from_voltage(r.voltage_v)
+        return PowerSlot(soc_pct=soc, voltage_v=r.voltage_v, charging=r.charging, low=soc <= LOW_SOC_PCT,
+                         input_w=r.pv_power_w if r.charging else 0)
+
+    def status(self) -> PowerStationStatus:
+        age = None if self.read_at is None else round(self.mono() - self.read_at, 1)
+        reading = dataclasses.asdict(self.reading) if self.reading is not None else None
+        if reading is not None:
+            reading["soc_pct"] = self.slot_view().soc_pct
+        return PowerStationStatus(slot="third", kind="victron", mac=self.mac, connected=self.fresh() is not None,
+                                  age_s=age, error=self.error, reading=reading)
+
+
 class FakeLink:
     """--mock: «станция» отвечает настоящими кадрами протокола с медленно меняющимися значениями."""
 
@@ -439,7 +518,8 @@ class PowerService:
     def __init__(self, get_settings: Callable[[], PowerSettings], mock: bool = False,
                  quiet: Callable[[], bool] = lambda: False, link_factory: LinkFactory | None = None,
                  tune: Callable[[bool], Awaitable[None]] | None = None,
-                 busy: Callable[[], bool] = lambda: False, guard: Callable[[], bool] = lambda: False) -> None:
+                 busy: Callable[[], bool] = lambda: False, guard: Callable[[], bool] = lambda: False,
+                 scanner: AdvScanner | None = None) -> None:
         self.get_settings = get_settings
         self.mock = mock
 
@@ -452,9 +532,12 @@ class PowerService:
 
         self.main = StationReader("main", FOSSIBOT, quiet, factory(FOSSIBOT))
         self.second = StationReader("second", DALY, quiet, factory(DALY))
-        self.third = StationReader("third", LEAD, quiet, factory(LEAD))
         lock = asyncio.Lock()
-        for r in (self.main, self.second, self.third):
+        self.connect_lock = lock  # поиск вещания (advscan) берёт его же
+        self.scanner = scanner or AdvScanner(quiet, busy, lock)
+        self.scanner.lock = lock
+        self.third = VictronStation(self.scanner)
+        for r in (self.main, self.second):
             r.connect_lock = lock
             r.after_connect = self._tune if tune is not None else None
             # музыка играет — подключаться реже; но мигает свет (тревога) — без пауз: музыка может играть и при
@@ -474,14 +557,14 @@ class PowerService:
     async def apply_settings(self, s: PowerSettings) -> None:
         if not self.running:
             return
-        main_mac, second_mac, third_mac = s.main_mac, s.second_mac, s.third_mac
+        main_mac, second_mac = s.main_mac, s.second_mac
         if self.mock:  # в демо станции «есть» и без настроек
             main_mac, second_mac = main_mac or "70:AF:09:00:00:01", second_mac or "74:C1:4E:00:00:02"
-            third_mac = third_mac or "58:8C:81:00:00:03"
         async with self._lock:
             await self.main.set_mac(main_mac)
             await self.second.set_mac(second_mac)
-            await self.third.set_mac(third_mac)
+            # в демо ключ «есть» и без настроек (fnav/core/runtime.py mock_adv_scanner)
+            await self.third.configure(s.victron_mac, s.victron_key or ("00112233445566778899aabbccddeeff" if self.mock else ""))
 
     # ── команды ──
     def _reader(self, slot: str) -> StationReader:
@@ -513,6 +596,8 @@ class PowerService:
     def release(self, slot: str, body: PowerRelease) -> PowerStatus:
         """Отпустить станцию для приложения на телефоне на body.minutes (нет — power.release_min); 0 — вернуть сейчас."""
         r = self._reader(slot)
+        if isinstance(r, VictronStation):
+            raise PowerError(409, "This station is only listened to: its phone app works at the same time")
         if not r.mac:
             raise PowerError(409, "The station has no address")
         if slot == "main" and self.guard() and body.minutes != 0:

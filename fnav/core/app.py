@@ -856,6 +856,11 @@ def _register_bluetooth(app: FastAPI, core: Core) -> None:
         """Команда станции — только по слайдеру в веб-интерфейсе (docs/contracts/power.md «Управление»)."""
         return (await core.power.control(slot, body)).model_dump()
 
+    @app.get("/api/air/history")
+    async def air_history(hours: float = 1.0):
+        """Датчик воздуха (docs/contracts/air.md): последние hours часов корзинами мин / среднее / макс."""
+        return core.air.history(hours).model_dump()
+
     @app.post("/api/power/{slot}/release")
     async def power_release(slot: str, body: PowerRelease):
         """Отпустить станцию для её приложения на телефоне (docs/contracts/power.md «Отпустить»); minutes=0 — вернуть."""

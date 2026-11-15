@@ -99,6 +99,8 @@ const ICONS = {
   share: "M12 2 7.5 6.5l1.4 1.4L11 5.8V15h2V5.8l2.1 2.1 1.4-1.4L12 2zM5 10h3v2H6v8h12v-8h-2v-2h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V11a1 1 0 0 1 1-1z",
   dots: "M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
   more: "M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 0h6v6h-6v-6z",
+  // three wavy streams of air
+  air: "M3 8h10.5a2.5 2.5 0 1 0-2.4-3.2l-1.9-.6A4.5 4.5 0 1 1 13.5 10H3V8zm0 4h15a3.5 3.5 0 1 1-3.4 4.4l1.9-.5A1.5 1.5 0 1 0 18 14H3v-2zm0 4h8.5a3 3 0 1 1-2.9 3.8l1.9-.5a1 1 0 1 0 1-1.3H3v-2z",
   // phone with an arrow down into it
   install: "M16 1H8a2 2 0 0 0-2 2v18a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm0 18H8V5h8v14zm-4-1 4-4h-3V7h-2v7H8l4 4z",
 };

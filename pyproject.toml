@@ -16,7 +16,7 @@ dependencies = [
 # Only on the device (installed from apt / pip there):
 # opencv-python-headless: fnav-watch (YuNet faces, the fallback person detector; numpy stays the apt one)
 # ncnn: fnav-watch person detector NanoDet-Plus-m-1.5x 416 (one thread)
-pi = ["smbus2>=0.4", "gpiozero>=2.0", "lgpio>=0.2", "pygeomag>=1.1", "gps>=3.19", "pyubx2>=1.2", "dbus-fast>=2.0",
+pi = ["smbus2>=0.4", "gpiozero>=2.0", "lgpio>=0.2", "pygeomag>=1.1", "gps>=3.19", "pyubx2>=1.2", "dbus-fast>=2.0", "cryptography>=42",
       "opencv-python-headless>=4.10", "ncnn>=1.0.20261020"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.3", "Pillow>=10", "opencv-python-headless>=4.10",
        "ncnn>=1.0.20261020"]

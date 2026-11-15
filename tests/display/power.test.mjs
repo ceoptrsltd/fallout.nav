@@ -79,6 +79,16 @@ test("power: the main station charging — a smaller percentage, the charging po
   assert.ok(px(fontOf(chg, "83")) < px(fontOf(idle, "83")), "smaller while charging");
 });
 
+test("power: the lead battery charging from the sun — a bolt and the watts, like the main station", () => {
+  const draw = (third) => {
+    const ctx = recCtx();
+    drawPower(ctx, { now: 0.1, telemetry: { power: { main: {}, second: {}, third } } }, SAFE);
+    return texts(ctx);
+  };
+  assert.ok(draw({ soc_pct: 78, voltage_v: 13.4, charging: true, input_w: 47 }).includes("47W"));
+  assert.ok(!draw({ soc_pct: 78, voltage_v: 12.4, charging: false, input_w: 0 }).some((t) => t.endsWith("W")));
+});
+
 test("power: a charging station runs its charge segments", () => {
   const lit = [0, 0.5, 1, 1.5, 2, 2.3].map(chargeLit);
   assert.deepEqual(lit, [0, 1, 2, 3, 4, 0], "fill one by one, then again");

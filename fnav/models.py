@@ -451,11 +451,40 @@ class PowerSettings(_Model):
     main_mac: str = "70:AF:09:06:E9:1A"  # главная — Fossibot F3600 Pro («POWER-0201»): заряд, % крупно
     second_mac: str = "74:C1:4E:10:00:9B"  # вторая — Daly BMS («Tattu powerbank»)
     light_on_alarm: bool = True  # охрана сработала — мигать светом Fossibot (alarm.hazard.seconds)
-    third_mac: str = "10:BD:A3:B2:48:5A"  # третья — свинцовый 12 V, модуль XIAO ESP32-C6 «FNAV-LEAD» (firmware/lead-battery)
+    # третья — свинцовый аккумулятор 12 V по показаниям солнечного контроллера Victron SmartSolar: слушаем его
+    # вещание (fnav/core/victron.py), ключ — из VictronConnect (Instant readout); без ключа — прочерки
+    victron_mac: str = "D6:95:22:A1:3B:1A"
+    victron_key: str = ""
+    # модуль XIAO ESP32-C6 «FNAV-LEAD» (firmware/lead-battery, fnav/core/leadbatt.py) — сейчас не используется,
+    # оставлен для будущей четвёртой станции
+    third_mac: str = ""
     # «Отпустить» станцию для её приложения на телефоне (станция держит одно подключение): на столько минут
     release_min: int = Field(15, ge=1, le=240)
 
-    @field_validator("main_mac", "second_mac", "third_mac")
+    @field_validator("victron_key")
+    @classmethod
+    def _key(cls, v: str) -> str:
+        k = (v or "").strip().lower()
+        if k and not re.fullmatch(r"[0-9a-f]{32}", k):
+            raise ValueError("The Victron key is 32 hex characters")
+        return k
+
+    @field_validator("main_mac", "second_mac", "third_mac", "victron_mac")
+    @classmethod
+    def _mac(cls, v: str) -> str:
+        m = (v or "").strip().upper().replace("-", ":")
+        if m and not re.fullmatch(r"[0-9A-F]{2}(:[0-9A-F]{2}){5}", m):
+            raise ValueError("Invalid Bluetooth address")
+        return m
+
+
+class AirSettings(_Model):
+    """Датчик воздуха Qingping Air Monitor Lite (docs/contracts/air.md): слушаем его вещание Bluetooth LE."""
+
+    enabled: bool = True
+    mac: str = "EC:4D:3E:7D:AE:4D"
+
+    @field_validator("mac")
     @classmethod
     def _mac(cls, v: str) -> str:
         m = (v or "").strip().upper().replace("-", ":")
@@ -495,6 +524,7 @@ class Settings(_Model):
     system: SystemSettings = SystemSettings()
     vehicle: VehicleSettings = VehicleSettings()
     power: PowerSettings = PowerSettings()
+    air: AirSettings = AirSettings()
 
 
 # ───────────────────────────── Датчики ─────────────────────────────
@@ -938,7 +968,7 @@ class PowerStationStatus(_Model):
     """Для админки (GET /api/power): подключение и все показания станции."""
 
     slot: Literal["main", "second", "third"]
-    kind: Literal["fossibot", "daly", "lead", "none"]
+    kind: Literal["fossibot", "daly", "lead", "victron", "none"]
     mac: str = ""
     connected: bool = False
     age_s: float | None = None  # сколько секунд назад последнее показание
@@ -953,6 +983,37 @@ class PowerControl(_Model):
     output: Literal["usb", "dc", "ac", "light", "charge", "discharge", "charger"]
     on: bool | None = None  # usb/dc/ac/light/charge/discharge
     mode: Literal["auto", "on", "off"] | None = None  # charger
+
+
+class AirTelemetry(_Model):
+    """Датчик воздуха (fnav/core/air.py). Нет свежих данных — все значения None."""
+
+    temp_c: float | None = None
+    humidity_pct: float | None = None
+    co2_ppm: int | None = None
+    pm25: int | None = None  # мкг/м³
+    pm10: int | None = None
+    battery_pct: int | None = None
+    age_s: int | None = None  # сколько секунд назад пришло показание
+
+
+class AirSeries(_Model):
+    min: list[float | None] = []
+    avg: list[float | None] = []
+    max: list[float | None] = []
+
+
+class AirHistory(_Model):
+    """GET /api/air/history: n корзин по step_s секунд, первая начинается в t0 (unix)."""
+
+    t0: float
+    step_s: float
+    n: int
+    temp_c: AirSeries = AirSeries()
+    humidity_pct: AirSeries = AirSeries()
+    co2_ppm: AirSeries = AirSeries()
+    pm25: AirSeries = AirSeries()
+    pm10: AirSeries = AirSeries()
 
 
 class PowerRelease(_Model):
@@ -983,4 +1044,5 @@ class Telemetry(_Model):
     alarm: AlarmTelemetry | None = None
     level: LevelTelemetry | None = None
     power: PowerTelemetry | None = None  # электростанции (docs/contracts/power.md)
+    air: AirTelemetry | None = None  # датчик воздуха (docs/contracts/air.md); None — не настроен
     errors: list[str] = []

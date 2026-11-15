@@ -76,7 +76,11 @@ export function powerControls() {
   const chgSw = slideSwitch({ label: "Charger", onslide: (on) => send("third", { output: "charger", mode: on ? "on" : "off" }, "third:charger", on) });
   rows.third = h(".pc-row", null, autoSw, chgSw);
   rc.set("third", reconnect("third"));
-  groups.push(h(".pc-grp", null, h(".pc-title", null, "Lead battery"), rows.third, h("span.pc-away", { hidden: true }), rc.get("third")));
+  // the FNAV-LEAD module's charger (firmware/lead-battery) — not in use now: the third station is the battery heard
+  // from the Victron charger, which has nothing to switch. The group shows up again with a station that has a
+  // charger mode (the future fourth one).
+  const leadGrp = h(".pc-grp", { hidden: true }, h(".pc-title", null, "Lead battery"), rows.third, h("span.pc-away", { hidden: true }), rc.get("third"));
+  groups.push(leadGrp);
 
   const el = h(".pc", null, ...groups);
 
@@ -98,7 +102,8 @@ export function powerControls() {
     const auto = shownState(leadMode === "auto", expect.get("third:auto"), now);
     autoSw.set({ on: auto, disabled: !known, unknown: !known });
     chgSw.set({ on: shownState(leadOn, expect.get("third:charger"), now), disabled: !known || auto, unknown: !known });
-    for (const slot of ["main", "second", "third"]) state(slot, rows[slot], power);
+    leadGrp.hidden = !known;
+    for (const slot of ["main", "second"]) state(slot, rows[slot], power);
   };
   return el;
 }

@@ -390,8 +390,9 @@ export function powerInfo(p) {
     big: soc === null ? "—" : String(Math.floor(soc)) /* as the station shows it: 83.5 → 83 */, unit: soc === null ? "" : "%",
     frac: soc === null ? null : Math.max(0, Math.min(1, soc / 100)), kind: socKind(soc),
     sub: soc === null ? "no data" : watts ? `In ${m.input_w ?? 0} W · Out ${m.output_w ?? 0} W` : "",
-    note: soc === null ? "" : m.charging ? "charging" : fmtHm(m.to_empty_min) ? `≈ ${fmtHm(m.to_empty_min)} left` : "",
-    noteKind: m.charging ? "ok" : "", charging: !!m.charging && soc !== null,
+    // charging — only the blinking bolt beside the % (no word); the watts are in the line above
+    note: soc === null || m.charging ? "" : fmtHm(m.to_empty_min) ? `≈ ${fmtHm(m.to_empty_min)} left` : "",
+    noteKind: "", charging: !!m.charging && soc !== null,
   };
   const side = (x) => {
     const s = x && num(x.soc_pct) ? x.soc_pct : null;
@@ -399,8 +400,9 @@ export function powerInfo(p) {
     const on = s !== null || v !== null;
     return {
       big: s === null ? "—" : String(Math.floor(s)), unit: s === null ? "" : "%", kind: socKind(s),
-      sub: v !== null ? `${v.toFixed(1)} V` : on ? "" : "no data",
-      note: on && x.charging ? "charging" : "", noteKind: "ok", charging: on && !!x.charging,
+      // charging — the blinking bolt beside the % and the charging power after the voltage (lead battery: the panels)
+      sub: (v !== null ? `${v.toFixed(1)} V` : on ? "" : "no data") + (on && x.charging && num(x.input_w) ? ` · ${Math.round(x.input_w)} W` : ""),
+      note: "", noteKind: "", charging: on && !!x.charging,
       // Daly: разница ячеек (опасная — красным и мигает)
       cells: on && num(x.cell_delta_mv) ? `Δ${Math.round(x.cell_delta_mv)} mV` : "", cellsBad: on && !!x.cell_delta_bad,
       // Daly: балансировка ячеек — идёт или нет (у других станций строки нет)
