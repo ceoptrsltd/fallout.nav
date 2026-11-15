@@ -4,8 +4,11 @@
 // Слева крупно заряд главной станции, %; справа две колонки — вторая (Powerbank) и третья (свинцовый аккумулятор):
 // сверху заряд, %, под ним напряжение; черта — посередине. Нет данных — прочерки; заряд ≤ 20 % (low) — мигает;
 // заряжается — анимация: у главной пульсирует молния под знаком %, в колонке между % и напряжением бегут сегменты
-// заряда (как на телефоне). У Powerbank мелко третьей строкой — разница ячеек «Δ60mV» (опасная — мигает). Ширина постоянная (по самым широким значениям) — соседи не «дышат».
+// заряда (как на телефоне). У Powerbank мелко третьей строкой — разница ячеек «Δ60mV» (опасная — мигает).
+// Раз в несколько секунд по рамке плашки пробегает «треск» молнии (ui/lightning.js).
+// Ширина постоянная (по самым широким значениям) — соседи не «дышат».
 
+import { drawPlateLightning } from "./lightning.js";
 import { C, blinkOn, blit, fontNum, outlinedText, plateSprite, setting, spriteGeneration, textWidth } from "./theme.js";
 
 export const POWER_H = 84; // как плашка радио/погоды (ui/radio.js RADIO_H): две строки индикаторов + поля
@@ -147,5 +150,7 @@ export function drawPower(ctx, state, safe) {
       outlinedText(ctx, d, cx, y + 69, CD(), { lw: 3, fill: slot.cell_delta_bad ? C.ink : C.inkDim });
     }
   });
-  return { x, y, w: m.w, h: POWER_H };
+  const rect = { x, y, w: m.w, h: POWER_H };
+  drawPlateLightning(ctx, rect, now, { chamfer: 9, bounds: safe });
+  return rect;
 }

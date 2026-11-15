@@ -1,24 +1,13 @@
-// Молния вокруг плашки (для плашки станций, ui/power.js) — несколько вариантов на выбор, страница
-// ui/lightning-preview.html. Раз в period секунд — вспышка длиной burst секунд; между вспышками ничего не рисуется
+// Молния вокруг плашки станций (ui/power.js) — «треск»: раз в PERIOD_S секунд на BURST_S секунды по рамке
+// мерцают короткие ломаные дуги с ветками и искрами наружу; между вспышками ничего не рисуется
 // (HUD с перерисовкой по изменению не перерисовывается зря, map/retained.js). Всё детерминировано от now: случайность —
 // из генератора, засеянного номером цикла и кадра (одинаковое now → одинаковые вызовы).
 // Монохромный кинескоп: яркая сердцевина (C.ink) с тёмной обводкой и слабым ореолом, линии ≥ 2 px.
 
 import { C } from "./theme.js";
 
-export const LIGHTNING_VARIANTS = [
-  { id: "a", name: "Comet", note: "a bright head races once around the frame with a fading tail, sparks fly off the head" },
-  { id: "b", name: "Twin bolts", note: "two jagged branching bolts crawl from opposite corners and meet, sparks at the tips" },
-  { id: "c", name: "Crackle", note: "short electric crackle: flickering jagged arcs all around the frame, outward sparks" },
-  { id: "d", name: "Ring discharge", note: "a bolt closes a ring around the plate, flickers, then discharges from the corners" },
-];
-
-const DEFAULTS = {
-  a: { period: 7, burst: 1.3 },
-  b: { period: 7, burst: 1.4 },
-  c: { period: 6, burst: 0.7 },
-  d: { period: 8, burst: 1.5 },
-};
+export const PERIOD_S = 6;
+export const BURST_S = 0.7;
 const EDGE = 5; // настолько молнии можно выйти за зону безопасности (рамка плашки стоит у самого её края)
 const FLICKER_S = 0.05; // кадр «дрожания» молнии
 const GAP = -1; // молния бежит по самой рамке плашки: плашка стоит у края зоны безопасности, снаружи её низ и
@@ -150,84 +139,9 @@ function spark(ctx, p, r, age, a) {
   bolt(ctx, [{ x: p.x + vx * d0, y: p.y + vy * d0 }, { x: p.x + vx * d1, y: p.y + vy * d1 }], 2, fade);
 }
 
-// ── варианты ────────────────────────────────────────────────────────────
+// ── треск ───────────────────────────────────────────────────────────────
 
-/** A — «комета»: голова один раз обегает рамку, хвост гаснет, от головы летят искры. */
-function comet(ctx, per, t, burst, cycle) {
-  const L = per.len;
-  const ease = (u) => 1 - Math.pow(1 - u, 2.2);
-  const head = ease(Math.min(1, t / (burst * 0.85))) * L;
-  const start = seedOf(cycle, 1) % 997 / 997 * L; // каждый раз — с нового места
-  const tail = L * 0.32;
-  const fadeOut = t > burst * 0.85 ? 1 - (t - burst * 0.85) / (burst * 0.15) : 1;
-  const frame = Math.floor(t / FLICKER_S);
-  const r = rng(seedOf(cycle, frame, 11));
-  const pieces = 8;
-  for (let i = pieces - 1; i >= 0; i--) {
-    const s1 = head - (tail * i) / pieces;
-    const s0 = head - (tail * (i + 1)) / pieces;
-    if (s1 <= 0) continue;
-    const pts = jag(along(per, start + Math.max(0, s0), start + s1, 5), r, 2.6);
-    bolt(ctx, pts, Math.max(2, 4 - i * 0.4), fadeOut * Math.pow(1 - i / pieces, 0.6));
-  }
-  // голова: светящийся шар с тёмной каймой
-  const hp = at(per, start + head);
-  ctx.globalAlpha = 0.3 * fadeOut;
-  ctx.fillStyle = C.ink;
-  ctx.beginPath();
-  ctx.arc(hp.x, hp.y, 9, 0, 2 * Math.PI);
-  ctx.fill();
-  ctx.globalAlpha = fadeOut;
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = C.dark;
-  ctx.beginPath();
-  ctx.arc(hp.x, hp.y, 4.5, 0, 2 * Math.PI);
-  ctx.fill();
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-  // искры: рождаются каждые 40 мс у головы, живут 0.3 с
-  const born = Math.floor(t / 0.04);
-  for (let k = Math.max(0, born - 8); k <= born; k++) {
-    const tb = k * 0.04;
-    const age = (t - tb) / 0.3;
-    const rs = rng(seedOf(cycle, k, 12));
-    const p = at(per, start + ease(Math.min(1, tb / (burst * 0.85))) * L);
-    for (let j = 0; j < 2; j++) spark(ctx, p, rs, age, fadeOut);
-  }
-}
-
-/** B — две ломаные молнии ползут из противоположных углов навстречу, с ветками наружу и искрами на кончиках. */
-function twin(ctx, per, t, burst, cycle) {
-  const L = per.len;
-  const grow = Math.min(1, t / (burst * 0.6));
-  const fade = t > burst * 0.7 ? Math.max(0, 1 - (t - burst * 0.7) / (burst * 0.3)) : 1;
-  const frame = Math.floor(t / FLICKER_S);
-  const s0 = per.segs[2].s0 + (cycle % 2 ? per.segs[4].s0 - per.segs[2].s0 : 0); // правый верх / правый низ
-  for (const dir of [1, -1]) {
-    const r = rng(seedOf(cycle, frame, 20 + dir));
-    const len = (L / 2) * grow;
-    const a = dir > 0 ? s0 : s0 - len;
-    const b = dir > 0 ? s0 + len : s0;
-    if (len < 4) continue;
-    const pts = jag(along(per, a, b, 7), r, 3.2);
-    bolt(ctx, pts, 2.5, fade);
-    // ветки наружу
-    for (let i = 3; i < pts.length - 1; i += 6) if (r() < 0.55) branch(ctx, pts[i], r, 8 + 12 * r(), 2, fade * 0.8);
-    // искры у кончика
-    const tip = dir > 0 ? pts[pts.length - 1] : pts[0];
-    const rs = rng(seedOf(cycle, frame, 30 + dir));
-    if (grow < 1) for (let j = 0; j < 3; j++) spark(ctx, tip, rs, (t * 7 + j / 3) % 1, fade);
-  }
-  // встреча — вспышка искр там, где молнии сомкнулись
-  if (grow >= 1 && t < burst * 0.85) {
-    const p = at(per, s0 + L / 2);
-    const rs = rng(seedOf(cycle, 40));
-    const age = (t - burst * 0.6) / (burst * 0.25);
-    for (let j = 0; j < 7; j++) spark(ctx, p, rs, age, fade);
-  }
-}
-
-/** C — треск: на каждом кадре несколько коротких дуг в случайных местах рамки, ветки и искры наружу. */
+/** Треск: на каждом кадре несколько коротких дуг в случайных местах рамки, ветки и искры наружу. */
 function crackle(ctx, per, t, burst, cycle) {
   const L = per.len;
   const frame = Math.floor(t / FLICKER_S);
@@ -247,38 +161,10 @@ function crackle(ctx, per, t, burst, cycle) {
   }
 }
 
-/** D — кольцо: молния замыкает кольцо вокруг плашки, дрожит, затем разряд — искры из углов. */
-function ring(ctx, per, t, burst, cycle) {
-  const L = per.len;
-  const tClose = burst * 0.3, tHold = burst * 0.55;
-  const frame = Math.floor(t / FLICKER_S);
-  const r = rng(seedOf(cycle, frame, 60));
-  const s0 = per.segs[0].s0 + per.segs[0].l * 0.5; // середина верхней грани
-  if (t < tHold) {
-    const k = Math.min(1, t / tClose);
-    const half = (L / 2) * (1 - Math.pow(1 - k, 2));
-    const pts = jag(along(per, s0 - half, s0 + half, 6), r, k < 1 ? 2.5 : 3.5);
-    bolt(ctx, pts, k < 1 ? 2.5 : 3, 1);
-    if (k >= 1) for (let i = 2; i < pts.length; i += 9) if (r() < 0.4) branch(ctx, pts[i], r, 6 + 9 * r(), 2, 0.8);
-  } else {
-    // разряд: кольцо гаснет, из углов — искры
-    const age = (t - tHold) / (burst - tHold);
-    bolt(ctx, jag(along(per, 0, L, 8), r, 2), 2, 1 - age);
-    const rs = rng(seedOf(cycle, 61));
-    for (const g of per.segs.filter((_, i) => i % 2 === 1)) {
-      const p = at(per, g.s0 + g.l / 2);
-      for (let j = 0; j < 4; j++) spark(ctx, p, rs, age, 1);
-    }
-  }
-}
-
-const DRAW = { a: comet, b: twin, c: crackle, d: ring };
-
 /** Идёт ли вспышка: { cycle, t } или null (между вспышками). */
-export function lightningPhase(now, variant = "a", opts = {}) {
-  const d = DEFAULTS[variant] ?? DEFAULTS.a;
-  const period = opts.period ?? d.period;
-  const burst = Math.min(opts.burst ?? d.burst, period);
+export function lightningPhase(now, opts = {}) {
+  const period = opts.period ?? PERIOD_S;
+  const burst = Math.min(opts.burst ?? BURST_S, period);
   if (!Number.isFinite(now) || now < 0) return null;
   const cycle = Math.floor(now / period);
   const t = now - cycle * period;
@@ -290,8 +176,8 @@ export function lightningPhase(now, variant = "a", opts = {}) {
  * opts: chamfer (скос плашки, 9), period / burst (с), bounds ({x, y, w, h}: зона безопасности — за неё не дальше EDGE px).
  * Возвращает прямоугольник, в котором рисовала.
  */
-export function drawPlateLightning(ctx, rect, now, variant = "a", opts = {}) {
-  const ph = lightningPhase(now, variant, opts);
+export function drawPlateLightning(ctx, rect, now, opts = {}) {
+  const ph = lightningPhase(now, opts);
   if (!ph || !rect) return null;
   const per = perimeter(rect, opts.chamfer ?? 9);
   const pad = 40;
@@ -308,7 +194,7 @@ export function drawPlateLightning(ctx, rect, now, variant = "a", opts = {}) {
   ctx.clip();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  (DRAW[variant] ?? DRAW.a)(ctx, per, ph.t, ph.burst, ph.cycle);
+  crackle(ctx, per, ph.t, ph.burst, ph.cycle);
   ctx.restore();
   return box;
 }
