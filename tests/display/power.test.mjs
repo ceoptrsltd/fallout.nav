@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 globalThis.OffscreenCanvas = undefined; // спрайты не нужны (null — blit пропускает)
-const { drawPower, powerWidth, socText, voltText, deltaText, chargeLit, CHARGE_SEGS, POWER_H } = await import("../../web/display/ui/power.js");
+const { drawPower, powerWidth, socText, voltText, deltaText, wattText, chargeLit, CHARGE_SEGS, POWER_H } = await import("../../web/display/ui/power.js");
 const { camState, drawIndicators, drawRecTag, rightColumnWidth, indicatorsWidth } = await import("../../web/display/ui/status.js");
 
 function recCtx() {
@@ -53,6 +53,30 @@ test("power: values and dashes", () => {
   assert.equal(drawPower(recCtx(), { telemetry: { power: null } }, SAFE), null, "no data");
   const off = { telemetry: { power }, settings: { power: { show_on_screen: false } } };
   assert.equal(drawPower(recCtx(), off, SAFE), null, "switched off in the settings");
+});
+
+test("power: the main station charging — a smaller percentage, the charging power under it", () => {
+  assert.equal(wattText({ input_w: 412.4 }), "412W");
+  assert.equal(wattText({}), "--W");
+  const draw = (main) => {
+    const ctx = recCtx();
+    drawPower(ctx, { now: 0.1, telemetry: { power: { main, second: {}, third: {} } } }, SAFE);
+    return ctx;
+  };
+  const idle = draw({ soc_pct: 83, input_w: 0, charging: false });
+  assert.ok(!texts(idle).some((t) => t.endsWith("W")), "not charging — no watts");
+  const chg = draw({ soc_pct: 83, input_w: 412, charging: true });
+  assert.ok(texts(chg).includes("412W") && texts(chg).includes("83"));
+  const fontOf = (ctx, text) => {
+    let font = null;
+    for (const c of ctx.calls) {
+      if (c[0] === "=font") font = c[1];
+      if (c[0] === "fillText" && c[1] === text) return font;
+    }
+    return null;
+  };
+  const px = (f) => Number(/(\d+)px/.exec(f)[1]);
+  assert.ok(px(fontOf(chg, "83")) < px(fontOf(idle, "83")), "smaller while charging");
 });
 
 test("power: a charging station runs its charge segments", () => {

@@ -1,7 +1,7 @@
 // Электростанции — плашка справа внизу (docs/contracts/power.md, docs/contracts/display.md).
 // Данные — state.telemetry.power = {main, second, third: {soc_pct, voltage_v, charging, low, …}}; плашку выключает
 // настройка power.show_on_screen.
-// Слева крупно заряд главной станции, %; справа две колонки — вторая (Powerbank) и третья (свинцовый аккумулятор):
+// Слева крупно заряд главной станции, %; заряжается — процент мельче, под ним молния и мощность зарядки «412W»; справа две колонки — вторая (Powerbank) и третья (свинцовый аккумулятор):
 // сверху заряд, %, под ним напряжение; черта — посередине. Нет данных — прочерки; заряд ≤ 20 % (low) — мигает;
 // заряжается — анимация: у главной пульсирует молния под знаком %, в колонке между % и напряжением бегут сегменты
 // заряда (как на телефоне). У Powerbank мелко третьей строкой — разница ячеек «Δ60mV» (опасная — мигает).
@@ -16,6 +16,10 @@ const PAD = 14;
 const BIG = () => fontNum(44, 700);
 const BIG_3 = () => fontNum(38, 700); // «100»
 const PCT = () => fontNum(24, 600);
+const BIG_CHG = () => fontNum(34, 700); // главная заряжается: процент мельче, под ним — мощность
+const BIG_CHG_3 = () => fontNum(30, 700);
+const PCT_CHG = () => fontNum(19, 600);
+const WATTS = () => fontNum(17, 500);
 const CF = () => fontNum(26, 600); // % в колонках
 const CF_3 = () => fontNum(22, 600); // «100%»
 const CV = () => fontNum(19, 500); // напряжение под ним
@@ -39,6 +43,12 @@ export function socText(slot) {
 export function deltaText(slot) {
   const d = slot?.cell_delta_mv;
   return Number.isFinite(d) ? `Δ${Math.round(d)}mV` : "";
+}
+
+/** Мощность зарядки «412W»; нет данных — «--W». */
+export function wattText(slot) {
+  const w = slot?.input_w;
+  return Number.isFinite(w) ? `${Math.max(0, Math.round(w))}W` : "--W";
 }
 
 /** «20.8V»; нет данных — «--.-V». */
@@ -119,17 +129,25 @@ export function drawPower(ctx, state, safe) {
   const cy = y + POWER_H / 2;
   const ink = (slot, known) => (!known ? C.inkDim : slot?.low && !blinkOn(now, 1, 0.6) ? C.inkDim : C.ink);
 
-  // главная: крупный %
+  // главная: крупный %; заряжается — мельче, под ним молния и мощность зарядки
   const main = p.main;
   const pct = socText(main);
   const mainInk = ink(main, pct !== "--");
-  const big = textWidth(ctx, BIG(), pct) > m.bigW + 2 ? BIG_3() : BIG();
+  const chg = !!main?.charging;
+  const [f1, f3, fp, yc] = chg ? [BIG_CHG(), BIG_CHG_3(), PCT_CHG(), cy - 9] : [BIG(), BIG_3(), PCT(), cy + 2];
+  const big = textWidth(ctx, f1, pct) > m.bigW + 2 ? f3 : f1;
   const xn = x + PAD;
-  outlinedText(ctx, pct, xn, cy + 2, big, { align: "left", lw: 6, fill: mainInk });
+  outlinedText(ctx, pct, xn, yc, big, { align: "left", lw: 6, fill: mainInk });
   const xp = xn + textWidth(ctx, big, pct) + 1;
-  outlinedText(ctx, "%", xp, cy - 11, PCT(), { align: "left", lw: 4, fill: mainInk });
-  if (main?.charging && blinkOn(now, 1, 0.65)) bolt(ctx, xp + 8, cy + 15);
-  const leftEnd = xp + textWidth(ctx, PCT(), "%");
+  outlinedText(ctx, "%", xp, yc - (chg ? 8 : 13), fp, { align: "left", lw: 4, fill: mainInk });
+  let leftEnd = xp + textWidth(ctx, fp, "%");
+  if (chg) {
+    const yw = y + POWER_H - 17;
+    if (blinkOn(now, 1, 0.65)) bolt(ctx, xn + 5, yw, 0.75);
+    const wt = wattText(main);
+    outlinedText(ctx, wt, xn + 13, yw, WATTS(), { align: "left", lw: 4, fill: wt === "--W" ? C.inkDim : C.ink });
+    leftEnd = Math.max(leftEnd, xn + 13 + textWidth(ctx, WATTS(), wt));
+  }
 
   // справа: две колонки (вторая, третья), прижаты к правому краю; в колонке по центру: %, под ним напряжение
   const rightStart = x + m.w - (PAD - 4) - 2 * m.colW - COL_GAP;
