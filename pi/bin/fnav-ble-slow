@@ -2,7 +2,8 @@
 # Slow down the Bluetooth LE connections to the power stations (docs/contracts/power.md "Радио").
 # BlueZ connects with the kernel default: a connection event every 30-50 ms per station. Three stations took a
 # good part of the one radio the onboard chip shares with the speaker (A2DP) and Wi-Fi - the music stuttered and
-# clicked. The stations are read once in 30 s, so an event every 400-500 ms is plenty.
+# clicked. The stations are read once in a minute or five, so an event every 400-500 ms is plenty, and a
+# switch on the Dashboard is still confirmed in about two seconds (slower intervals made that sluggish).
 # Run as root by fnav-ble-slow.service, which fnav-core starts (sudo systemctl start fnav-ble-slow) after a
 # station connects. Applies to every LE connection where the Pi is the central; safe to run again.
 set -u

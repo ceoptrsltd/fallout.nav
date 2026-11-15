@@ -186,7 +186,8 @@ class Core:
         self.bt.radio_quiet = lambda: self.view_camera == "rear" and self.camera_rear.enabled
         # электростанции по BLE (docs/contracts/power.md): подключаются тоже не при заднем виде
         self.power = PowerService(lambda: self.store.get().power, mock=opts.mock, quiet=self.bt.radio_quiet,
-                                  after_connect=None if opts.mock else slow_ble_links)
+                                  after_connect=None if opts.mock else slow_ble_links,
+                                  busy=lambda: self.radio.phase == "playing")
         self.speedlimits = SpeedLimitService(paths.data_dir() / "speedlimits.sqlite", lambda: self.hub.snapshot().gps)
         self.timezone = TimeZoneFollower(lambda: self.store.get().system.auto_timezone, mock=opts.mock)
         self.weather = WeatherService(paths.data_dir() / "weather.json", lambda: self.hub.snapshot().gps,

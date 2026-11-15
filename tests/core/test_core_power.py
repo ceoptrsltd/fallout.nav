@@ -97,6 +97,7 @@ class ScriptLink:
 def fast(monkeypatch):
     monkeypatch.setattr(pw, "CONNECT_RETRY_S", 0.01)
     monkeypatch.setattr(pw, "POLL_S", 0.05)
+    monkeypatch.setattr(pw, "POLL_FAIL_S", 0.05)
     ScriptLink.tries = 0
 
 
@@ -137,7 +138,7 @@ async def test_no_connect_while_the_rear_view_is_on_and_stale_readings_vanish(fa
         quiet[0] = False
         await _until(lambda: r.fresh() is not None)
         assert r.slot_view().low is False
-        r.read_at -= pw.STALE_S + 1
+        r.read_at -= pw.POLL_S + pw.STALE_S + 1
         await r.stop()
         assert r.slot_view().voltage_v is None
     finally:
@@ -400,5 +401,41 @@ async def test_after_a_connect_the_link_is_slowed_down_and_a_failure_of_that_is_
     try:
         await _until(lambda: svc.second.fresh() is not None)
         assert calls == [1], "once per connect"
+    finally:
+        await svc.stop()
+
+
+async def test_while_music_plays_the_stations_are_read_rarely_and_retried_rarely(fast, monkeypatch):
+    monkeypatch.setattr(pw, "POLL_MUSIC_S", 30.0)
+    monkeypatch.setattr(pw, "MUSIC_RETRY_S", 30.0)
+    music = [True]
+    s = PowerSettings(main_mac="", second_mac="74:C1:4E:10:00:9B", third_mac="")
+    svc = pw.PowerService(lambda: s, busy=lambda: music[0])
+    links = []
+
+    def make(mac, cb):
+        links.append(RecLink(pw.DALY, mac, cb))
+        return links[-1]
+    svc.second.link_factory = make
+    await svc.start()
+    try:
+        await _until(lambda: svc.second.fresh() is not None)
+        await asyncio.sleep(0.3)  # POLL_S 0.05 дал бы ~6 чтений
+        assert len(links[0].sent) == 1, "one read, the next in POLL_MUSIC_S"
+        assert svc.second.poll_s() == 30.0
+        music[0] = False
+        assert svc.second.poll_s() == pw.POLL_S
+    finally:
+        await svc.stop()
+
+    ScriptLink.tries = 0
+    music[0] = True
+    svc = pw.PowerService(lambda: s, busy=lambda: music[0])
+    svc.second.link_factory = lambda mac, cb: ScriptLink(pw.DALY, 99, mac, cb)  # не подключается
+    await svc.start()
+    try:
+        await _until(lambda: svc.second.error is not None)
+        await asyncio.sleep(0.3)  # CONNECT_RETRY_S 0.01 дал бы десятки попыток
+        assert ScriptLink.tries == 1, "no bursts while the music plays"
     finally:
         await svc.stop()

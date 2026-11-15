@@ -3,8 +3,9 @@
 Главная — Fossibot (fnav/core/fossibot.py): заряд, % — на экране крупно. Вторая — Daly BMS (fnav/core/daly.py):
 напряжение — верхняя строка. Третья — пока заглушка (нижняя строка «--.-V»).
 
-Каждая станция — свой StationReader: держит постоянное подключение (fnav/core/ble.py) и раз в POLL_S (30 с) читает
-показания. Подключаются станции по очереди (общий connect_lock). Подключение LE у встроенного чипа Pi удаётся не с первого
+Каждая станция — свой StationReader: держит постоянное подключение (fnav/core/ble.py) и читает показания редко —
+раз в POLL_S (минута), а пока на колонке играет музыка — раз в POLL_MUSIC_S (5 минут): данные медленные, а радио
+у чипа одно на Wi-Fi, колонку и станции (power.md «Радио»). Подключаются станции по очереди (общий connect_lock). Подключение LE у встроенного чипа Pi удаётся не с первого
 раза (ble.py), поэтому неудачи сначала
 повторяются часто (CONNECT_RETRY_S), а если станции так и нет (не нашлась в эфире или долго не подключается) —
 всё реже (AWAY_BACKOFF_S): попытки занимают радио, общее с Wi-Fi. Пока на экране задний вид (quiet) — не
@@ -48,11 +49,13 @@ from fnav.models import (
 
 log = logging.getLogger("fnav.core.power")
 
-POLL_S = 30.0  # чаще не нужно: радио общее с Wi-Fi и колонкой (A2DP)
+POLL_S = 60.0  # данные медленные; радио общее с Wi-Fi и колонкой (A2DP)
+POLL_MUSIC_S = 300.0  # пока на колонке играет музыка — ещё реже
+POLL_FAIL_S = 30.0  # станция не ответила — переспросить через столько (а не через весь период)
 READ_TIMEOUT_S = 3.0  # ответ приходит за 0.1–0.3 с
 READ_TRIES = 3
 READ_FAILS_DROP = 3  # столько опросов подряд без ответа — переподключиться
-STALE_S = 100.0  # показания старше (три опроса подряд без ответа) — на экране прочерк
+STALE_S = 100.0  # показания старше периода опроса на столько (три переспроса без ответа) — на экране прочерк
 LOW_SOC_PCT = 20.0
 CELL_DELTA_BAD_MV = 100  # Daly: разбаланс ячеек больше — опасно (на экране и в веб-интерфейсе мигает)
 # Станция в эфире, а подключение сорвалось («le-connection-abort-by-local» — частая случайность, бывает и 30 раз
@@ -63,6 +66,7 @@ BURST_TRIES = 20
 BURST_PAUSE_S = 30.0
 AWAY_BACKOFF_S = (30.0, 60.0, 120.0, 300.0)
 QUIET_POLL_S = 2.0
+MUSIC_RETRY_S = 30.0  # пока играет музыка — неудачное подключение повторять не чаще (серии попыток слышны)
 # Подключаемся строго по одной станции: чип Pi устанавливает одно LE-подключение за раз, а одновременные попытки
 # мешают друг другу (2026-11-15: три станции сразу после перезапуска — по 30 «abort-by-local» у каждой, ни одной удачи).
 # Замок общий у станций одной PowerService (StationReader.connect_lock).
@@ -88,7 +92,7 @@ LEAD = Protocol("lead", (leadbatt.STATUS_UUID,), leadbatt.STATUS_UUID, leadbatt.
                 leadbatt.Frames, leadbatt.parse)
 
 LinkFactory = Callable[[str, Callable[[str, bytes], None]], Any]
-AFTER_COMMAND_S = 1.5  # после команды прочитать через столько (станция успевает переключить)
+AFTER_COMMAND_S = 1.0  # после команды прочитать через столько (станция успевает переключить)
 LIGHT_BLINK_S = 1.0  # свет при тревоге: столько горит, столько не горит
 
 
@@ -98,7 +102,7 @@ SLOW_TIMEOUT_S = 15.0
 async def slow_ble_links() -> None:
     """Замедлить LE-подключения к станциям (root: pi/systemd/fnav-ble-slow.service, pi/bin/fnav-ble-slow): BlueZ
     подключается с событием связи каждые 30–50 мс на станцию — три станции отнимали радио у колонки (музыка
-    заикалась и щёлкала, 2026-11-15). Опрос раз в 30 с — хватает события раз в 400–500 мс."""
+    заикалась и щёлкала, 2026-11-15). Опрос раз в минуты — хватает события раз в 400–500 мс (реже — слайдеры на Dashboard отвечали бы вяло)."""
     from fnav.core.system import run
 
     rc, _out, err = await run("sudo", "-n", "/usr/bin/systemctl", "start", "fnav-ble-slow", timeout=SLOW_TIMEOUT_S)
@@ -115,10 +119,12 @@ class PowerError(Exception):
 
 class StationReader:
     def __init__(self, slot: Literal["main", "second", "third"], proto: Protocol, quiet: Callable[[], bool] = lambda: False,
-                 link_factory: LinkFactory = BleLink, mono: Callable[[], float] = time.monotonic) -> None:
+                 link_factory: LinkFactory = BleLink, mono: Callable[[], float] = time.monotonic,
+                 busy: Callable[[], bool] = lambda: False) -> None:
         self.slot = slot
         self.proto = proto
         self.quiet = quiet
+        self.busy = busy  # на колонке играет музыка — подключаться реже (MUSIC_RETRY_S)
         self.link_factory = link_factory
         self.mono = mono
         self.mac = ""
@@ -190,9 +196,13 @@ class StationReader:
         self._resume.clear()
         log.info("power: %s %s release over, connecting again", self.slot, self.mac)
 
+    def poll_s(self) -> float:
+        """Как часто читать станцию сейчас: играет музыка — реже."""
+        return POLL_MUSIC_S if self.busy() else POLL_S
+
     def fresh(self) -> Any:
-        """Показания не старше STALE_S или None."""
-        if self.reading is None or self.read_at is None or self.mono() - self.read_at > STALE_S:
+        """Показания не старше периода опроса + STALE_S или None."""
+        if self.reading is None or self.read_at is None or self.mono() - self.read_at > self.poll_s() + STALE_S:
             return None
         return self.reading
 
@@ -294,6 +304,8 @@ class StationReader:
                 else:
                     away = 0
                     delay = CONNECT_RETRY_S
+                if self.busy():
+                    delay = max(delay, MUSIC_RETRY_S)
                 if delay > CONNECT_RETRY_S:
                     log.info("power: %s %s not connected after %d tries (%s), next try in %.0f s", self.slot,
                              self.mac, fails, self.error, delay)
@@ -322,7 +334,7 @@ class StationReader:
                             await self.link.disconnect()
                         break
                 try:
-                    async with asyncio.timeout(POLL_S):
+                    async with asyncio.timeout(POLL_FAIL_S if read_fails else self.poll_s()):
                         await self._wake.wait()
                 except TimeoutError:
                     continue
@@ -420,7 +432,8 @@ def fake_daly(voltage: float, soc: float = 55.0) -> bytes:
 class PowerService:
     def __init__(self, get_settings: Callable[[], PowerSettings], mock: bool = False,
                  quiet: Callable[[], bool] = lambda: False, link_factory: LinkFactory | None = None,
-                 after_connect: Callable[[], Awaitable[None]] | None = None) -> None:
+                 after_connect: Callable[[], Awaitable[None]] | None = None,
+                 busy: Callable[[], bool] = lambda: False) -> None:
         self.get_settings = get_settings
         self.mock = mock
 
@@ -438,6 +451,7 @@ class PowerService:
         for r in (self.main, self.second, self.third):
             r.connect_lock = lock
             r.after_connect = after_connect
+            r.busy = busy
         self._light_task: asyncio.Task | None = None
         self.running = False
         self._lock = asyncio.Lock()  # настройки меняются подряд — переподключения по очереди

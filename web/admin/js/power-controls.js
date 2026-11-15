@@ -1,7 +1,7 @@
 // Power stations' switches on the Dashboard (docs/contracts/power.md «Управление»): slide-to-switch only.
 // Fossibot — AC / DC / USB / light; Daly powerbank — charge / discharge MOSFET; lead battery — charger auto / manual.
 // State comes from telemetry.power (outputs, charger_mode); after a slide the switch shows the wanted state until
-// telemetry agrees (the station is read 1.5 s after a command) or EXPECT_MS passes. A station with no data (released
+// telemetry agrees (the station is read 1 s after a command) or EXPECT_MS passes. A station with no data (released
 // for its phone app or not connected) shows «Reconnect now» instead of its greyed-out switches.
 import { h } from "./dom.js";
 import { api, errText } from "./api.js";

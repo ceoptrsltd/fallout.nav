@@ -68,7 +68,8 @@ fallout.nav turns a Raspberry Pi Compute Module 4 behind the dashboard of a 2001
   also switches the charger through an RC relay when 12 V is present. The web Dashboard has slide‑to‑switch
   controls for the Fossibot's AC / DC / USB / light, the BMS's charge / discharge MOSFETs and the charger (auto /
   on / off); the Fossibot's light blinks when the alarm goes off. One station at a time on the shared radio, read
-  every 30 s. A station takes one Bluetooth connection, so the web UI can **release** it for a while (15 min by
+  once a minute (every 5 minutes while music plays), with slow connection intervals and low-duty scanning so the
+  stations never cut into the speaker's audio. A station takes one Bluetooth connection, so the web UI can **release** it for a while (15 min by
   default) for its own phone app; the Dashboard shows the cell voltages and balancing of the powerbank.
 - **Web UI** (phone or laptop, installable as an app) — dashboard, alarm, live video from both cameras (WebRTC, or
   an on‑demand H.264 stream with the rear camera's sound), recordings with alarm events on the timeline,

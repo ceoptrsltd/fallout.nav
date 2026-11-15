@@ -2,7 +2,7 @@
 
 The third power station of fallout.nav: a Seeed Studio **XIAO ESP32-C6** next to a 12 V lead-acid battery. It
 measures the battery and the charger's 12 V supply, switches the charger on through an RC relay when 12 V is
-present, and reports over **Bluetooth LE** as `FNAV-LEAD`. The Pi (`fnav/core/leadbatt.py`) reads it every 30 s and
+present, and reports over **Bluetooth LE** as `FNAV-LEAD`. The Pi (`fnav/core/leadbatt.py`) reads it every 1–5 minutes and
 shows the charge on the car screen and the web Dashboard; the Dashboard can also switch the charger by hand.
 
 The full design notes (in Russian) are in [`docs/contracts/power.md`](../../docs/contracts/power.md), section
@@ -39,7 +39,7 @@ Service `6e4c0001-f4a5-4c3a-9f39-1d2b5f0c7a01`:
 
 | Characteristic | UUID | Access |
 |---|---|---|
-| STATUS | `6e4c0002-f4a5-4c3a-9f39-1d2b5f0c7a01` | read, notify (every 2 s while connected) |
+| STATUS | `6e4c0002-f4a5-4c3a-9f39-1d2b5f0c7a01` | read, notify (on change and once a minute while connected) |
 | CMD | `6e4c0003-f4a5-4c3a-9f39-1d2b5f0c7a01` | write, write without response |
 
 **CMD** is one byte: `0x01` sends STATUS now, `0x10` is charger auto, `0x11` is charger on (manual), `0x12` is

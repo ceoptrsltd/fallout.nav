@@ -45,6 +45,7 @@ echo "Installing system files from $PI"
 for u in fnav-core fnav-camera fnav-camera-rear fnav-watch fnav-display fnav-games fnav-tunnel fnav-radio fnav-bt-reset fnav-ble-slow mediamtx; do
     put "$PI/systemd/$u.service" "/etc/systemd/system/$u.service" 0644 unit
 done
+put "$PI/bluetooth/main.conf" /etc/bluetooth/main.conf 0644 bluetooth
 put "$PI/systemd/seatd.service.d/fnav.conf" /etc/systemd/system/seatd.service.d/fnav.conf 0644 unit
 put "$PI/systemd/bluealsa.service.d/fnav.conf" /etc/systemd/system/bluealsa.service.d/fnav.conf 0644 unit
 put "$PI/systemd/NetworkManager-wait-online.service.d/fnav.conf" \
@@ -101,6 +102,8 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
             nm) systemctl reload NetworkManager 2>/dev/null || true ;;
             reexec) systemctl daemon-reexec || true ;;
             journald) systemctl restart systemd-journald 2>/dev/null || true ;;
+            # new radio settings: the speaker and the stations drop and reconnect by themselves
+            bluetooth) systemctl restart bluetooth 2>/dev/null || true ;;
         esac
     done
 fi
