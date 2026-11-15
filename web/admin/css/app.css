@@ -1056,19 +1056,24 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .db-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .db-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 11px 13px 12px; color: var(--text); text-decoration: none; transition: opacity .3s; -webkit-tap-highlight-color: transparent; }
 .db-tile.wide { grid-column: 1 / -1; }
-.db-power { display: grid; grid-template-columns: 1.1fr 1.25fr 1fr; gap: 4px 14px; margin-top: 4px; } /* the powerbank column holds the most */
+/* The three stations fit any tile width without wrapping: every size inside is tied to the tile's width (cqw), so
+   the proportions that fit on a phone fit everywhere; each column is as wide as its content, the spare room goes
+   between them. A line that still does not fit (four-digit watts on the narrowest phone) ends with an ellipsis. */
+.db-power { container-type: inline-size; display: grid; grid-template-columns: repeat(3, minmax(0, auto)); justify-content: space-between;
+  gap: 4px clamp(8px, 2.6cqw, 18px); margin-top: 4px; }
 .db-pw-col { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.db-pw-col + .db-pw-col { border-left: 1px solid var(--line); padding-left: 14px; }
-.db-pw-lbl { font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.db-pw-v { display: flex; flex-wrap: wrap; align-items: baseline; white-space: nowrap; line-height: 1.1; } /* the cells sit right of the %, and go under it only when there is no room at all */
-.db-pw-big { font-family: var(--f-num); font-size: 30px; font-weight: 500; color: var(--ink); text-shadow: 0 0 10px rgba(236, 247, 216, .12); }
+.db-pw-col + .db-pw-col { border-left: 1px solid var(--line); padding-left: clamp(8px, 2.6cqw, 18px); }
+.db-power .db-ts { font-size: clamp(10.5px, 3.3cqw, 13.5px); }
+.db-pw-lbl { font-size: clamp(9.5px, 2.9cqw, 12px); letter-spacing: .06em; text-transform: uppercase; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-pw-v { display: flex; align-items: baseline; white-space: nowrap; line-height: 1.1; } /* the cells sit right of the % */
+.db-pw-big { font-family: var(--f-num); font-size: clamp(24px, 8.4cqw, 38px); font-weight: 500; color: var(--ink); text-shadow: 0 0 10px rgba(236, 247, 216, .12); }
 .db-pw-big.green { color: var(--green); text-shadow: 0 0 10px rgba(93, 255, 138, .22); }
 .db-pw-big.amber { color: var(--amber); }
 .db-pw-big.red { color: var(--red); }
-.db-pw-unit { margin-left: 3px; font-size: 14px; color: var(--dim); }
+.db-pw-unit { margin-left: 3px; font-size: clamp(11px, 3.6cqw, 15px); color: var(--dim); }
 /* Daly: напряжения ячеек мелко справа от процента, по 3 в столбце */
-.db-pw-cells { display: inline-grid; grid-template-rows: repeat(3, auto); grid-auto-flow: column; gap: 0 8px;
-  margin-left: 10px; align-self: center; font-family: var(--f-num); font-size: 11px; line-height: 1.2; color: var(--dim); }
+.db-pw-cells { display: inline-grid; grid-template-rows: repeat(3, auto); grid-auto-flow: column; gap: 0 clamp(4px, 1.7cqw, 10px);
+  margin-left: clamp(5px, 2.2cqw, 14px); align-self: center; font-family: var(--f-num); font-size: clamp(9px, 2.9cqw, 13px); line-height: 1.2; color: var(--dim); }
 .db-pw-cells[hidden] { display: none; }
 .db-batt { position: relative; height: 18px; margin: 5px 7px 5px 0; padding: 2px; border: 1px solid var(--metal); border-radius: 3px; }
 .db-batt::after { content: ""; position: absolute; right: -5px; top: 4px; width: 3px; height: 8px; border-radius: 0 2px 2px 0; background: var(--metal); }
@@ -1112,7 +1117,6 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 @media (prefers-reduced-motion: no-preference) { .db-charging::before, .db-balancing::before { animation: db-pulse 1.2s ease-in-out infinite; } }
 @keyframes db-pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: no-preference) { .db-blink { animation: db-pulse 1s steps(1, end) infinite; } }
-@media (max-width: 420px) { .db-pw-big { font-size: 25px; } .db-power { gap: 4px 10px; } .db-pw-col + .db-pw-col { padding-left: 10px; } }
 a.db-tile:hover, a.db-tile:active { --face: linear-gradient(180deg, #1d2219, #151912 45%); }
 .db-van.stale .db-tile { opacity: .5; }
 .db-tl { display: flex; align-items: center; gap: 6px; color: var(--faint); font-family: var(--f-label); font-size: 10px; text-transform: uppercase; letter-spacing: .12em; margin-bottom: 2px; }
