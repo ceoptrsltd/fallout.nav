@@ -395,7 +395,7 @@ export function mount(root) {
     const bar = withBar ? h(".db-batt", null, h("i")) : null;
     const sub = h("span");
     const cells = h("span", { hidden: true }); // Daly: «· Δ 60 mV» в той же строке, что и напряжение
-    const subLine = h(".db-ts.wrap", null, sub, cells);
+    const subLine = h(".db-ts", null, sub, cells);
     const bal = h(".db-ts", { hidden: true });
     const note = h(".db-ts");
     const volts = h("span.db-pw-cells", { hidden: true, title: "cell voltages, V" });

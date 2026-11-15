@@ -3,6 +3,7 @@
 // itself is the confirmation, no extra dialog.
 import { h } from "./dom.js";
 
+const THUMB = 46; // px: the thumb with its borders (app.css .sl-thumb) plus the 2 px inset on each side
 export const COMMIT_AT = 0.85; // dragged this far along the track — switch
 
 /** Where the thumb ends after a drag: fraction (0…1) of the track from its start side → commit? */
@@ -32,19 +33,19 @@ export function slideSwitch({ label, on = false, onslide }) {
   function paint(frac = null) {
     const start = cur.on ? 1 : 0;
     const pos = frac === null ? start : cur.on ? 1 - frac : frac;
-    thumb.style.left = `calc(${(pos * 100).toFixed(1)}% - ${(pos * 30).toFixed(1)}px)`;
+    thumb.style.left = `calc(${(pos * 100).toFixed(1)}% - ${(pos * (THUMB - 2) - (1 - 2 * pos) * 3).toFixed(1)}px)`; // 3 px from either end
     el.classList.toggle("on", cur.on && !cur.unknown);
     el.classList.toggle("busy", cur.busy);
     el.classList.toggle("disabled", cur.disabled);
     el.setAttribute("aria-checked", cur.unknown ? "mixed" : String(cur.on));
-    hint.textContent = cur.busy ? "…" : cur.disabled ? "" : cur.on ? "◀ slide to turn off" : "slide to turn on ▶";
+    hint.textContent = cur.busy ? "…" : cur.disabled ? "" : cur.on ? "‹ slide off" : "slide on ›";
     hint.classList.toggle("left", !cur.on);
     state.textContent = cur.unknown ? "—" : cur.on ? "ON" : "OFF";
   }
 
   function frac(ev) {
     const r = track.getBoundingClientRect();
-    const x = Math.max(0, Math.min(1, (ev.clientX - r.left - 15) / Math.max(1, r.width - 30)));
+    const x = Math.max(0, Math.min(1, (ev.clientX - r.left - THUMB / 2) / Math.max(1, r.width - THUMB)));
     return cur.on ? 1 - x : x;
   }
 

@@ -1056,10 +1056,10 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .db-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .db-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 11px 13px 12px; color: var(--text); text-decoration: none; transition: opacity .3s; -webkit-tap-highlight-color: transparent; }
 .db-tile.wide { grid-column: 1 / -1; }
-.db-power { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 4px 14px; margin-top: 4px; }
+.db-power { display: grid; grid-template-columns: 1.1fr 1.25fr 1fr; gap: 4px 14px; margin-top: 4px; } /* the powerbank column holds the most */
 .db-pw-col { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .db-pw-col + .db-pw-col { border-left: 1px solid var(--line); padding-left: 14px; }
-.db-pw-lbl { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+.db-pw-lbl { font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .db-pw-v { white-space: nowrap; line-height: 1.1; }
 .db-pw-big { font-family: var(--f-num); font-size: 30px; font-weight: 500; color: var(--ink); text-shadow: 0 0 10px rgba(236, 247, 216, .12); }
 .db-pw-big.green { color: var(--green); text-shadow: 0 0 10px rgba(93, 255, 138, .22); }
@@ -1082,25 +1082,31 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .db-cells::before { content: " · "; } /* Daly: разница ячеек — в строке напряжения */
 .db-cells.red { color: var(--red); }
 /* power switches: slide-to-switch (slide-switch.js) */
-.pc { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); container-type: inline-size; }
-.pc-grp { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pc { display: flex; flex-direction: column; gap: 24px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); container-type: inline-size; }
+.pc-grp { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .pc-away { font-size: 12.5px; color: var(--amber); }
 .pc-reconnect { justify-self: start; align-self: flex-start; }
-.pc-title { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+.pc-title { font-family: var(--f-label); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
 /* one grid for every group: 2 columns, 4 on a wide tile — the switches line up across groups and fill the width */
-.pc-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+.pc-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 14px; }
 @container (min-width: 600px) { .pc-row { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-.sl { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 4px 8px; min-width: 0; user-select: none; -webkit-user-select: none; }
-.sl-label { font-size: 12.5px; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sl-state { grid-row: 1; grid-column: 2; font-family: var(--f-num); font-size: 13px; color: var(--dim); text-align: right; } /* ON / OFF beside the label */
-.sl.on .sl-state { color: var(--green); }
-.sl-track { grid-row: 2; grid-column: 1 / -1; position: relative; height: 32px; border: 1px solid var(--metal-lo); border-radius: 16px; background: #0e110c; overflow: hidden; touch-action: none; }
-.sl.on .sl-track { background: rgba(93, 255, 138, .12); border-color: var(--green-d); }
-.sl-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: flex-start; padding: 0 12px; font-size: 11px; color: var(--faint); pointer-events: none; }
+.sl { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 5px 8px; min-width: 0; user-select: none; -webkit-user-select: none; }
+.sl-label { font-size: 13px; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sl-state { grid-row: 1; grid-column: 2; align-self: end; font-family: var(--f-label); font-size: 10.5px; letter-spacing: .08em; color: var(--faint); text-align: right; } /* ON / OFF beside the label */
+.sl.on .sl-state { color: var(--amber); }
+/* the track is a recessed slot with the app's corner radius; «on» is amber like the other switches (.switch) */
+.sl-track { grid-row: 2; grid-column: 1 / -1; position: relative; height: 38px; border: 1px solid var(--line2); border-radius: var(--radius); background: var(--bg); box-shadow: inset 0 1px 3px rgba(0, 0, 0, .6); overflow: hidden; touch-action: none; }
+.sl.on .sl-track { background: #3a2a07; border-color: var(--amber-d); }
+.sl-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: flex-start; padding: 0 12px; font-family: var(--f-label); font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); white-space: nowrap; pointer-events: none; }
 .sl-hint.left { justify-content: flex-end; }
-.sl-thumb { position: absolute; top: 1px; width: 30px; height: 28px; border-radius: 14px; background: var(--metal-hi); box-shadow: 0 0 0 1px #000; cursor: grab; touch-action: none; transition: left .2s; }
-.sl.drag .sl-thumb { transition: none; cursor: grabbing; }
-.sl.on .sl-thumb { background: var(--green); }
+.sl.on .sl-hint { color: var(--amber-d); }
+/* the thumb is a small button plate with a grip */
+.sl-thumb { position: absolute; top: 3px; width: 44px; height: 30px; border-radius: 4px; background: var(--panel3); border: 1px solid var(--line2); box-shadow: 0 1px 2px rgba(0, 0, 0, .7); cursor: grab; touch-action: none; transition: left .2s; }
+.sl-thumb::after { content: ""; position: absolute; left: 50%; top: 8px; bottom: 8px; width: 10px; margin-left: -5px;
+  background: repeating-linear-gradient(90deg, var(--dim) 0 2px, transparent 2px 4px); }
+.sl.drag .sl-thumb { transition: none; cursor: grabbing; border-color: var(--amber-d); }
+.sl.on .sl-thumb { background: var(--amber); border-color: var(--amber); }
+.sl.on .sl-thumb::after { background: repeating-linear-gradient(90deg, #5a3c00 0 2px, transparent 2px 4px); }
 .sl.busy .sl-thumb { opacity: .6; }
 .sl.disabled { opacity: .45; }
 .sl.disabled .sl-thumb { cursor: default; }

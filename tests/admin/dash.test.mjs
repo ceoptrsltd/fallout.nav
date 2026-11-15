@@ -286,7 +286,7 @@ test("power tile: main charge with a gauge, the others in volts, dashes without 
   assert.deepEqual([p.main.big, p.main.unit, p.main.kind, p.main.sub, p.main.note], ["87", "%", "ok", "In 0 W · Out 156 W", "≈ 16 h 40 min left"]);
   assert.ok(Math.abs(p.main.frac - 0.874) < 1e-9);
   assert.deepEqual([p.second.big, p.second.unit, p.second.kind, p.second.sub], ["9", "%", "bad", "20.8 V"]);
-  assert.deepEqual([p.second.cells, p.second.cellsBad], ["Δ 140 mV", true]);
+  assert.deepEqual([p.second.cells, p.second.cellsBad], ["Δ140 mV", true]);
   assert.deepEqual([p.second.balance, p.second.balancing], ["balancing", true]);
   assert.deepEqual(p.second.cellVolts, ["3.487", "3.436"]);
   assert.deepEqual(p.third.cellVolts, []);
