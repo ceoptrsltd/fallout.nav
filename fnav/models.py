@@ -868,6 +868,12 @@ class AlarmCameraVideo(_Model):
     lost: bool = False  # на охране пропало дольше video_loss_s (было video_lost) и ещё не вернулось
 
 
+class AlarmLast(_Model):
+    kind: AlarmKind
+    ts: float
+    title: str
+
+
 class AlarmStatus(_Model):
     state: AlarmStateName = "off"
     armed_at: float | None = None
@@ -884,12 +890,7 @@ class AlarmStatus(_Model):
     storage_error: str | None = None  # журнал / состояние / outbox не пишутся на карту (охрана работает)
     seq: int = 0  # как Telemetry.alarm.seq
     events_rev: int = 0  # меняется при любой правке журнала (новое событие, снимок к нему, очистка): ?events=0 + events
-
-
-class AlarmLast(_Model):
-    kind: AlarmKind
-    ts: float
-    title: str
+    last_trigger: AlarmLast | None = None  # последнее срабатывание охраны в журнале (удар, наклон, движение, люди…)
 
 
 class AlarmTelemetry(_Model):

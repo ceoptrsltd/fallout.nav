@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 import {
   EVENTS_N, POLL, pollDelay, alarmLive, alarmActions, alarmWord, armedFor, armProgress, armHint, alarmChips,
-  recentEvents, recentKey, eventExtras, eventCamera, snapCams, snapPath, thumbPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
+  lastTriggerText, recentEvents, recentKey, eventExtras, eventCamera, snapCams, snapPath, thumbPath, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
 } from "../../web/admin/js/dash-fmt.js";
 
@@ -303,4 +303,11 @@ test("power tile: main charge with a gauge, the others in volts, dashes without 
   assert.deepEqual([c.third.big, c.third.sub, c.third.note, c.third.charging], ["100", "13.6 V · 47 W", "", true]);
   assert.equal(fmtHm(45), "45 min");
   assert.equal(fmtHm(0), "");
+});
+
+test("lastTriggerText: when the alarm last went off, or never", () => {
+  assert.equal(lastTriggerText(null, 1000), "");
+  assert.equal(lastTriggerText({ state: "armed" }, 1000), "Never triggered yet");
+  assert.match(lastTriggerText({ last_trigger: { kind: "impact", ts: 1000 - 7200, title: "Impact detected" } }, 1000),
+    /^Last triggered 2 h ago, (\d\d:\d\d|[A-Z][a-z]{2} \d\d:\d\d) · Impact detected$/);
 });

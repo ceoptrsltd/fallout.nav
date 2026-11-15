@@ -98,6 +98,8 @@ VISION_KINDS = ("approach", "face", "loiter")  # от камеры (fnav-watch):
 # пропало видео камеры: как события камер (без сирены: бывает и сбой Wi-Fi, и перезагрузка камеры); вернулось —
 # только журнал и push (не тревога)
 NO_SIREN_KINDS = (*VISION_KINDS, "video_lost")
+# события, с которыми охрана срабатывает (state → triggered); не они — постановка, снятие, проверка, сирена вручную
+TRIGGER_KINDS = ("impact", "tilt", "move", "approach", "face", "loiter", "video_lost")
 # поставили / сняли с охраны: не тревога — только журнал (и push, если с клавиатуры или снята посреди тревоги)
 SWITCH_KINDS = ("armed", "disarmed")
 SOURCE_TEXT = {"keypad": "with the keypad", "web": "from the app"}  # откуда поставили / сняли (data.source)
@@ -1705,7 +1707,7 @@ class AlarmService:
             level_g=self._level("status"),
             tilt_deg=round(angle, 1) if angle is not None and self.state in DETECTED else None,
             siren=self.siren.sounding, events=self.events[:max(0, min(events, STATUS_EVENTS))],
-            seq=self.seq, events_rev=self.events_rev,
+            seq=self.seq, events_rev=self.events_rev, last_trigger=self._last_trigger(),
             relay=AlarmRelay(configured=self.relay.configured, pending=self._pending),
             hazard=self.hazard.status(),
             vision=self.vision_status() if self.vision_status else AlarmVision(
@@ -1713,6 +1715,10 @@ class AlarmService:
             cameras=self.video.status(self.get_video()) if self.get_video else [],
             storage_error=self.storage_error(),
         )
+
+    def _last_trigger(self) -> AlarmLast | None:
+        ev = next((e for e in self.events if e.kind in TRIGGER_KINDS), None)
+        return AlarmLast(kind=ev.kind, ts=ev.ts, title=ev.title) if ev else None
 
     def telemetry(self) -> AlarmTelemetry:
         last = self.events[0] if self.events else None

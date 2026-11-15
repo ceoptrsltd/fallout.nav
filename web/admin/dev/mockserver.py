@@ -1930,6 +1930,8 @@ class FakeAlarm:
             "events": self.events[:100 if events is None else max(0, min(events, 100))],
             "relay": {"configured": self.relay_configured, "pending": self.pending},
             "seq": self.seq, "events_rev": self.rev,
+            "last_trigger": next(({"kind": e["kind"], "ts": e["ts"], "title": e["title"]} for e in self.events
+                                  if e["kind"] in ("impact", "tilt", "move", "approach", "face", "loiter", "video_lost")), None),
         }
 
     def compact(self) -> dict:

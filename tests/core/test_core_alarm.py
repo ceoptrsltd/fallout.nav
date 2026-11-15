@@ -1380,9 +1380,11 @@ async def test_arm_disarm_journal_and_push(tmp_path):
                                hazard=HazardSettings(enabled=True),
                                relay=RelayConfig("http://relay", "tok"), transport=httpx.MockTransport(relay))
     await svc.start(background=False)
+    assert svc.status().last_trigger is None  # ни разу не срабатывала
     await svc.arm()  # из админки
     await svc.disarm()
     assert [(e.kind, e.data["source"]) for e in svc.events] == [("disarmed", "web"), ("armed", "web")]
+    assert svc.status().last_trigger is None  # постановка и снятие — не срабатывание
     assert svc.outbox.count() == 0 and svc.seq == 2  # хозяин сам — без push
     assert await svc.toggle() is True  # клавиша
     assert await svc.toggle() is False
@@ -1395,6 +1397,7 @@ async def test_arm_disarm_journal_and_push(tmp_path):
     st = await svc.disarm()  # из админки, но посреди тревоги — push
     assert st.state == "off" and not svc.hazard.active
     assert svc.events[0].data == {"source": "web", "was": "triggered"}
+    assert st.last_trigger is not None and st.last_trigger.kind == "impact"  # последнее срабатывание, не снятие
     assert await svc.send_once() == 5
     kinds = [(e["kind"], e["data"]["source"]) for e in relay.bodies[-1]["events"] if e["kind"] != "impact"]
     assert kinds == [("armed", "keypad"), ("disarmed", "keypad"), ("armed", "keypad"), ("disarmed", "web")]

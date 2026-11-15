@@ -21,7 +21,7 @@ import {
   recentEvents, recentKey, eventExtras, eventCamera, eventAgo, fixInfo, fmtLatLon, motionInfo, limitText, camInfo,
   rearInfo, screenAction, exposureInfo, tempInfo, throttleInfo, diskInfo, netInfo, levelInfo, radioInfo, speakerInfo,
   nextVolume, VOL_STEP, powerInfo,
-  newerAlarm, serverPos,
+  newerAlarm, serverPos, lastTriggerText,
 } from "../dash-fmt.js";
 
 const nowS = () => Date.now() / 1000;
@@ -180,14 +180,18 @@ export function mount(root) {
     if (stale) sub = "No connection · last known state" + (l.at > 0 ? ", " + eventAgo(l.at / 1000, now) : "");
     put(abSub, sub);
 
-    // the statuses that matter: camera watch, hazard lights, problems (shock sensor, notifications)
-    const chips = stale ? [] : alarmChips(st, { sensorOk: l.sensorOk, hazardActive: l.hazard }).filter((c) => c.key !== "hazard" || c.kind !== "warn");
-    const csig = JSON.stringify(chips);
+    // the last line: when the alarm last went off; problems (shock sensor, camera watch, notifications) before it
+    const chips = stale ? [] : alarmChips(st, { sensorOk: l.sensorOk, hazardActive: l.hazard })
+      .filter((c) => c.kind === "bad" || (c.kind === "warn" && c.key !== "hazard" && c.key !== "vision"));
+    const lastTxt = l.state === "triggered" ? "" : lastTriggerText(st, now);
+    const csig = JSON.stringify(chips) + lastTxt;
     if (csig !== chipSig) {
       chipSig = csig;
       clear(abInfo);
-      chips.forEach((c, i) => abInfo.append(i ? " · " : "", h(`span${c.kind ? "." + kindCls(c.kind) : ""}`, { title: c.title || "" }, c.text)));
-      abInfo.hidden = !chips.length;
+      chips.forEach((c) => abInfo.append(h(`span.${kindCls(c.kind)}`, { title: c.title || "" }, c.text), " · "));
+      if (lastTxt) abInfo.append(h("span", null, lastTxt));
+      else if (abInfo.lastChild) abInfo.lastChild.remove(); // the trailing « · »
+      abInfo.hidden = !chips.length && !lastTxt;
     }
     const bad = chips.some((c) => c.kind === "bad");
 

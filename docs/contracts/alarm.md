@@ -243,7 +243,9 @@ cameras: [{camera: "front"|"rear", video: bool (кадры идут), lost: bool
 охраны, «Notifications wait in memory only (lost on restart): …» — outbox, «Notifications wait in memory and in
 alarm_outbox.db.pending.json: …» — outbox, но очередь лежит в запасном файле; охрана при этом работает; на странице
 охраны — красная строка «Storage»), seq: int (как `Telemetry.alarm.seq`), events_rev: int (номер правки журнала: новое
-событие, снимок / запись к нему, очистка; после перезапуска — другой)}`
+событие, снимок / запись к нему, очистка; после перезапуска — другой), last_trigger: {kind, ts, title} | null (последнее
+срабатывание охраны в журнале — удар, наклон, движение, люди, пропало видео; не постановка / снятие / проверка; Dashboard
+пишет его на кнопке охраны: «Last triggered 2 h ago · …», нет — «Never triggered yet»)}`
 
 | Метод | Путь | Ответ |
 |---|---|---|

@@ -153,6 +153,22 @@ export function alarmChips(st, { sensorOk = null, hazardActive = null } = {}) {
   return out;
 }
 
+/** The alarm button's last line: when the alarm last went off — «Last triggered 2 h ago · Impact detected»;
+ *  nothing in the log — «Never triggered yet»; no status yet — "". */
+export function lastTriggerText(st, nowS) {
+  if (!st || typeof st !== "object") return "";
+  const t = st.last_trigger;
+  if (!t || !num(t.ts)) return "Never triggered yet";
+  // the clock time too (the browser's local time); older than today — with the weekday, older than a week — the date
+  const d = new Date(t.ts * 1000);
+  const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const age = nowS - t.ts;
+  const sameDay = new Date(nowS * 1000).toDateString() === d.toDateString();
+  const when = sameDay ? hm : age < 6 * 86400 ? `${d.toLocaleDateString("en-GB", { weekday: "short" })} ${hm}`
+    : `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} ${hm}`;
+  return `Last triggered ${eventAgo(t.ts, nowS)}, ${when}` + (t.title ? ` · ${t.title}` : "");
+}
+
 // ───── events ─────
 
 /** The newest n events (the log is newest first; sorted again to be safe). */
