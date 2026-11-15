@@ -394,6 +394,9 @@ export function powerInfo(p) {
       note: on && x.charging ? "charging" : "", noteKind: "ok", charging: on && !!x.charging,
       // Daly: разница ячеек (опасная — красным и мигает)
       cells: on && num(x.cell_delta_mv) ? `Δ ${Math.round(x.cell_delta_mv)} mV cells` : "", cellsBad: on && !!x.cell_delta_bad,
+      // Daly: балансировка ячеек — идёт или нет (у других станций строки нет)
+      balance: on && typeof x.balancing === "boolean" ? (x.balancing ? "balancing" : "balancing off") : "",
+      balancing: on && x.balancing === true,
     };
   };
   return { main, second: side(p.second), third: side(p.third) };

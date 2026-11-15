@@ -395,8 +395,9 @@ export function mount(root) {
     const bar = withBar ? h(".db-batt", null, h("i")) : null;
     const sub = h(".db-ts");
     const cells = h(".db-ts", { hidden: true });
+    const bal = h(".db-ts", { hidden: true });
     const note = h(".db-ts");
-    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit), bar, sub, cells, note), big, unit, bar, sub, cells, note };
+    return { el: h(".db-pw-col", null, h(".db-pw-lbl", null, label), h(".db-pw-v", null, big, unit), bar, sub, cells, bal, note), big, unit, bar, sub, cells, bal, note };
   };
   const pwMain = pwCol("Fossibot", true);
   const pwSecond = pwCol("Powerbank", false);
@@ -425,6 +426,9 @@ export function mount(root) {
       put(c.cells, x.cells || "");
       c.cells.hidden = !x.cells;
       cls(c.cells, "db-ts" + (x.cellsBad ? " red db-blink" : ""));
+      put(c.bal, x.balance || "");
+      c.bal.hidden = !x.balance;
+      cls(c.bal, "db-ts" + (x.balancing ? " green db-balancing" : ""));
       if (c.bar) {
         c.bar.className = "db-batt " + kindCls(x.kind);
         c.bar.firstChild.style.width = x.frac === null ? "0%" : `${Math.round(x.frac * 100)}%`;

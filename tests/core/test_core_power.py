@@ -312,6 +312,9 @@ def test_readings_carry_the_switch_states():
     st = pw.StationReader("second", pw.DALY)
     st.reading, st.read_at = daly.parse(daly_frame({40: 208, 42: 500, 49: 6, 56: 60})), st.mono()
     assert (st.slot_view().cell_delta_mv, st.slot_view().cell_delta_bad) == (60, False)
+    assert st.slot_view().balancing is False
+    st.reading = daly.parse(daly_frame({40: 208, 42: 500, 49: 6, 52: 1}))
+    assert st.slot_view().balancing is True
     st.reading = daly.parse(daly_frame({40: 208, 42: 500, 49: 6, 56: 140}))
     assert st.slot_view().cell_delta_bad
     body = bytearray(pw.fake_fossibot(80.0))

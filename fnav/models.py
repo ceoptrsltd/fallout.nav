@@ -921,6 +921,7 @@ class PowerSlot(_Model):
     charger_mode: Literal["auto", "on", "off"] | None = None  # свинцовый: зарядка по входу 12 V или вручную
     cell_delta_mv: int | None = None  # Daly: разница самой высокой и самой низкой ячейки, мВ
     cell_delta_bad: bool = False  # разница больше CELL_DELTA_BAD_MV (fnav/core/power.py) — мигает
+    balancing: bool | None = None  # Daly: идёт балансировка ячеек (рег. 52); у других станций — None
 
 
 class PowerTelemetry(_Model):

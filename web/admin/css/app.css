@@ -1073,6 +1073,7 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .db-batt.amber i { background: var(--amber); }
 .db-batt.red i { background: var(--red); }
 .db-charging::before { content: "⚡ "; }
+.db-balancing::before { content: "⇄ "; }
 /* power switches: slide-to-switch (slide-switch.js) */
 .pc { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .pc-grp { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -1092,7 +1093,7 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .sl.busy .sl-thumb { opacity: .6; }
 .sl.disabled { opacity: .45; }
 .sl.disabled .sl-thumb { cursor: default; }
-@media (prefers-reduced-motion: no-preference) { .db-charging::before { animation: db-pulse 1.2s ease-in-out infinite; } }
+@media (prefers-reduced-motion: no-preference) { .db-charging::before, .db-balancing::before { animation: db-pulse 1.2s ease-in-out infinite; } }
 @keyframes db-pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: no-preference) { .db-blink { animation: db-pulse 1s steps(1, end) infinite; } }
 @media (max-width: 420px) { .db-pw-big { font-size: 25px; } .db-power { gap: 4px 10px; } .db-pw-col + .db-pw-col { padding-left: 10px; } }
