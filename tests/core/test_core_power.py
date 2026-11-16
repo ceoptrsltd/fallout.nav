@@ -789,3 +789,22 @@ def test_lead_voltage_above_any_rest_is_not_a_charge_estimate():
     assert s.view(13.03) == (None, False) and "above any resting" in s.note(13.03)
     soc, approx = s.view(12.4)
     assert soc is not None and approx
+
+
+def test_lead_slow_charger_is_seen_by_a_voltage_that_stays_above_rest():
+    """Measured 2026-11-16: 13.03 -> 13.05 V in 20 min - too slow for the rise rule; 20 min above any resting
+    voltage without falling is charging. Surface charge after charging falls - not taken for it."""
+    from fnav.core.leadsoc import LeadSoc
+
+    t = [0.0]
+    s = LeadSoc(mono=lambda: t[0], wall=lambda: 1_000_000.0 + t[0])
+    for k in range(21):
+        t[0] = 60.0 * k
+        s.feed(13.03 + 0.01 * (k // 10), False)
+        assert s.external is (k >= 20), k
+    t = [0.0]
+    s = LeadSoc(mono=lambda: t[0], wall=lambda: 1_000_000.0 + t[0])
+    for k in range(30):
+        t[0] = 60.0 * k
+        s.feed(13.30 - 0.01 * (k // 3), False)
+    assert not s.external

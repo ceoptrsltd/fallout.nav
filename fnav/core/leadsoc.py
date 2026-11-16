@@ -46,6 +46,9 @@ STEP_V = 0.05  # скачок от этого — выключили/включ�
 HOLD_WINDOW_S = 600.0  # держится ровно 10 мин ...
 HOLD_V = 13.2  # ... выше этого — абсорбция/поддержка зарядного (поверхностный заряд здесь заметно падает)
 FLAT_V = 0.01
+# Слабое зарядное поднимает медленно (замер 2026-11-16: 13.03 → 13.05 В за 20 мин) — RISE_V за 5 мин не набирается:
+SLOW_WINDOW_S = 1200.0  # 20 мин не ниже CHARGE_V, без падения и с подъёмом на SLOW_RISE_V — тоже зарядка
+SLOW_RISE_V = 0.02  # больше мерцания младшего разряда; поверхностный заряд после зарядки только падает
 STOP_DROP_V = 0.10  # упало за HOLD_WINDOW_S на столько — зарядное отключилось (просадка от лёгкой нагрузки меньше)
 # Покой: заряд по напряжению берём только так
 SETTLE_S = 3 * 3600.0  # после зарядки: поверхностный заряд стекает часы (Battery University — от 4 ч, Trojan — 6 ч);
@@ -139,7 +142,8 @@ class LeadSoc:
                 self.external = False
                 log.info("lead battery: charging from another source ended (%.2f V)", v)
             return
-        if v >= CHARGE_V and (self._rising(now) or self._holding(now)):
+        if v >= CHARGE_V and (self._rising(now) or self._holding(now, HOLD_WINDOW_S, HOLD_V)
+                              or self._holding(now, SLOW_WINDOW_S, CHARGE_V, SLOW_RISE_V)):
             self.external = True
             log.info("lead battery: charging from another source (%.2f V)", v)
 
@@ -153,13 +157,14 @@ class LeadSoc:
         small = [d for d in steps if abs(d) < STEP_V]
         return round(sum(small), 2) >= RISE_V and sum(d > 0 for d in small) >= 2 and steps[-1] >= 0
 
-    def _holding(self, now: float) -> bool:
-        """Высоко и ровно 10 мин — зарядное держит абсорбцию/поддержку (поверхностный заряд так не стоит)."""
-        w = self._window(now, HOLD_WINDOW_S)
-        if len(w) < 4 or w[-1][0] - w[0][0] < HOLD_WINDOW_S - 120:
+    def _holding(self, now: float, span: float, level: float, rise: float = -FLAT_V) -> bool:
+        """Не ниже level и без падения всё окно span (и поднялось не меньше чем на rise) — зарядное держит или
+        медленно поднимает (поверхностный заряд так не стоит: он падает)."""
+        w = self._window(now, span)
+        if len(w) < 4 or w[-1][0] - w[0][0] < span - 120:
             return False
         vs = [x for _t, x in w]
-        return min(vs) >= HOLD_V and round(max(vs) - vs[-1], 2) <= FLAT_V and round(vs[-1] - vs[0], 2) >= -FLAT_V
+        return min(vs) >= level and round(max(vs) - vs[-1], 2) <= FLAT_V and round(vs[-1] - vs[0], 2) >= rise
 
     def _absorption(self, now: float, v: float) -> None:
         if v >= ABSORB_V:
