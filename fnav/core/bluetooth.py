@@ -649,6 +649,9 @@ class FakeBluetooth(BluetoothBase):
             BtDevice(address="11:22:33:44:55:01", name="JBL Go 3", icon="audio-card", paired=True, trusted=True,
                      connected=True, audio=True, rssi=-52),
             BtDevice(address="11:22:33:44:55:03", name="Galaxy S24", icon="phone", paired=True, trusted=True),
+            # те, кого ядро читает само (станция и датчик воздуха): на странице Bluetooth — без кнопок сопряжения
+            BtDevice(address="74:C1:4E:10:00:9B", name="Tattu powerbank", connected=True, rssi=-61),
+            BtDevice(address="EC:4D:3E:7D:AE:4D", name="Qingping Air Monitor Lite", rssi=-70),
         )}
         if not self.audio_device:
             self.audio_device, self.audio_name = "11:22:33:44:55:01", "JBL Go 3"

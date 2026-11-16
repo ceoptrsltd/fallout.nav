@@ -4,7 +4,7 @@ import { h, icon, clear } from "../dom.js";
 import { api, errText } from "../api.js";
 import { store, on, applySettings } from "../store.js";
 import { toast, banner, badge, switchEl, confirmDialog } from "../ui.js";
-import { rssiBars, btIconName, btName, sortDevices, splitDevices } from "../radio-fmt.js";
+import { rssiBars, btIconName, btName, sortDevices, splitDevices, btOwnDevice } from "../radio-fmt.js";
 import { powerCard } from "../power-card.js";
 
 const SCAN_S = 20;
@@ -107,21 +107,23 @@ export function mount(root) {
   function deviceRow(d) {
     const b = busy.get(d.address);
     const isSpk = bt && bt.audio_device === d.address;
+    const own = btOwnDevice(d.address, store.settings); // a station or the air sensor: the core reads it itself
     const badges = [];
+    if (own) badges.push(badge(own.label, "ok"));
     if (d.connected) badges.push(badge("connected", "ok"));
     if (isSpk) badges.push(badge("radio speaker", "warn"));
     if (d.paired && !d.connected) badges.push(badge("paired"));
-    if (!d.paired) badges.push(badge("new"));
+    if (!d.paired && !own) badges.push(badge("new"));
     const acts = [];
     if (b) {
       acts.push(h("span.bt-busy", null, h("span.spin"), " ", b.what, " ", h("span.mono.dim", null, Math.round((Date.now() - b.since) / 1000) + " s")));
-    } else {
+    } else if (!own) {
       if (d.connected) acts.push(h("button.btn.sm", { type: "button", onclick: () => act(d, "disconnect") }, "Disconnect"));
       else acts.push(h("button.btn.sm" + (d.audio ? ".primary" : ""), { type: "button", disabled: !(bt && bt.powered), onclick: () => act(d, "connect") }, d.paired ? "Connect" : "Pair & connect"));
       if (d.paired) acts.push(h("button.btn.sm.icon.danger", { type: "button", title: "Forget", onclick: () => act(d, "forget") }, icon("trash")));
     }
     const err = rowErr.get(d.address);
-    const hintTxt = b && b.what === "Pairing…" ? "Put the speaker in pairing mode (usually: hold the Bluetooth button until it blinks)." : null;
+    const hintTxt = b && b.what === "Pairing…" ? (d.audio ? "Put the speaker in pairing mode (usually: hold the Bluetooth button until it blinks)." : "Put the device in pairing mode.") : null;
     return h(".bt-row" + (d.connected ? ".conn" : "") + (isSpk ? ".spk" : ""), null,
       h("span.ic", null, icon(btIconName(d))),
       h(".who", null,
@@ -130,7 +132,7 @@ export function mount(root) {
         h(".badges", null, badges)),
       rssiEl(d.rssi),
       h(".acts", null, acts),
-      err ? h(".msg.red", null, err) : hintTxt ? h(".msg.amber", null, hintTxt) : null,
+      err ? h(".msg.red", null, err) : hintTxt ? h(".msg.amber", null, hintTxt) : own ? h(".msg.dim", null, own.note) : null,
     );
   }
 
@@ -201,7 +203,7 @@ export function mount(root) {
         catch (e) { toast("error", errText(e)); renderSettings(store.settings); }
       } }), hint ? h(".hint", null, hint) : null));
     };
-    add("bluetooth", "auto_connect", "Reconnect the radio speaker automatically", "Every 30 s while it is not connected and Bluetooth is on; if it stays away, less often (up to every 5 min) — each try silences Wi-Fi for ~5 s. Not while the rear view is on screen");
+    add("bluetooth", "auto_connect", "Reconnect the radio speaker automatically", "Every 30 s while it is not connected and Bluetooth is on; if it stays away, less often (up to every 5 min) — each try silences Wi-Fi for ~5 s.");
     add("bluetooth", "enabled", "Turn Bluetooth on at startup", null);
   }
   const offSet = on("settings", renderSettings);

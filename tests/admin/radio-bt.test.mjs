@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 import {
   groupGenres, codecText, stationTags, sameStation, radioStateText, radioStateHint,
-  rssiBars, btIconName, btName, sortDevices, splitDevices, debounce,
+  rssiBars, btIconName, btName, sortDevices, splitDevices, debounce, btOwnDevice,
 } from "../../web/admin/js/radio-fmt.js";
 
 test("groupGenres: moods → genres → eras, order kept, empty groups dropped", () => {
@@ -77,4 +77,15 @@ test("debounce: one trailing call with the last value; flush and cancel", async 
   d(5); d.cancel();
   await new Promise((r) => setTimeout(r, 40));
   assert.deepEqual(calls, [3, 4]);
+});
+
+test("btOwnDevice: stations and the air sensor are read by the core itself - nothing to pair", () => {
+  const st = { power: { main_mac: "70:AF:09:06:E9:1A", second_mac: "74:C1:4E:10:00:9B", victron_mac: "D6:95:22:A1:3B:1A", third_mac: "" },
+    air: { mac: "EC:4D:3E:7D:AE:4D" } };
+  assert.equal(btOwnDevice("ec:4d:3e:7d:ae:4d", st).label, "air sensor");
+  assert.equal(btOwnDevice("74:C1:4E:10:00:9B", st).label, "power station");
+  assert.equal(btOwnDevice("D6:95:22:A1:3B:1A", st).label, "lead battery");
+  assert.equal(btOwnDevice("AA:BB:CC:DD:EE:FF", st), null);
+  assert.equal(btOwnDevice("", st), null);
+  assert.equal(btOwnDevice("AA:BB:CC:DD:EE:FF", null), null);
 });

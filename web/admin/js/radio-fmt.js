@@ -118,3 +118,18 @@ export function debounce(fn, ms) {
   d.cancel = () => { clearTimeout(t); t = null; lastArgs = null; };
   return d;
 }
+
+/** A device the core reads by itself (power stations, the air sensor): nothing to pair or connect on the Bluetooth
+ * page. → {label, note} | null. settings — store.settings (power.*_mac, air.mac). */
+export function btOwnDevice(address, settings) {
+  const mac = String(address || "").toUpperCase();
+  if (!mac) return null;
+  const p = (settings && settings.power) || {}, a = (settings && settings.air) || {};
+  const same = (x) => !!x && String(x).toUpperCase() === mac;
+  if (same(a.mac)) return { label: "air sensor", note: "Read from its broadcasts — no pairing or connection needed." };
+  if (same(p.victron_mac)) return { label: "lead battery", note: "Read from the solar charger's broadcasts — no pairing or connection needed." };
+  if (same(p.main_mac) || same(p.second_mac) || same(p.third_mac)) {
+    return { label: "power station", note: "Connected by the device itself — see Power stations on this page." };
+  }
+  return null;
+}
