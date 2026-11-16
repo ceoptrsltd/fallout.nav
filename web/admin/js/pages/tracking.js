@@ -88,10 +88,17 @@ const STOP_SVG = (n) => `
 </svg>${n > 1 ? `<span class="n">${n > 99 ? "99+" : n}</span>` : ""}`;
 
 const VEH_HTML = `
-<div class="rot"><svg viewBox="0 0 36 36" width="36" height="36" aria-hidden="true">
-  <circle class="halo" cx="18" cy="18" r="16"/>
-  <path class="arrow" d="M18 4 27.5 29 18 23.5 8.5 29z"/>
-  <circle class="dot" cx="18" cy="18" r="6"/>
+<div class="rot"><svg viewBox="0 0 44 44" width="44" height="44" aria-hidden="true">
+  <circle class="halo" cx="22" cy="22" r="21"/>
+  <g class="arrow" transform="translate(12 2.5) scale(0.5)">
+    <rect class="lt" x="1.5" y="9.5" width="5" height="3.6" rx="1.2"/><rect class="lt" x="33.5" y="9.5" width="5" height="3.6" rx="1.2"/>
+    <path class="lt" d="M8.5 11V7.5Q8.5 3 14 3H26Q31.5 3 31.5 7.5V11Z"/>
+    <rect class="lt" x="3" y="9" width="34" height="66" rx="4"/>
+    <rect class="dk" x="6.5" y="13.5" width="27" height="11" rx="1"/><rect class="dk" x="6.5" y="26.5" width="27" height="11" rx="1"/>
+    <rect class="ln" x="13.5" y="41.5" width="13" height="13" rx="2.6"/><rect class="dk" x="28.5" y="41" width="5.5" height="19" rx="0.8"/>
+    <rect class="ln" x="7" y="59" width="8.5" height="10" rx="1.6"/><rect class="ln" x="18" y="59" width="8.5" height="10" rx="1.6"/>
+  </g>
+  <circle class="dot" cx="22" cy="22" r="6"/>
 </svg></div>`;
 
 /** Shortest-way angle interpolation, degrees. */
@@ -368,7 +375,7 @@ export async function mount(root) {
   }
 
   // ── vehicle ──
-  const vehMarker = L.marker([0, 0], { icon: L.divIcon({ className: "trk-veh", html: VEH_HTML, iconSize: [36, 36], iconAnchor: [18, 18] }), interactive: false, keyboard: false, zIndexOffset: 1000 });
+  const vehMarker = L.marker([0, 0], { icon: L.divIcon({ className: "trk-veh", html: VEH_HTML, iconSize: [44, 44], iconAnchor: [22, 22] }), interactive: false, keyboard: false, zIndexOffset: 1000 });
   let vehOnMap = false;
   let live = null; // {lat, lon, heading, speed, t}
   // shown position glides from where it is to each new fix over the interval between fixes

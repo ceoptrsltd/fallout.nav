@@ -51,7 +51,7 @@ fallout.nav turns a Raspberry Pi Compute Module 4 behind the dashboard of a 2001
 - **Navigation screen in a Fallout / Mad Max style** on a 5″ monochrome CRT (WAECO Mobitronic RV‑50):
   Esri satellite imagery with streets, heading‑up rotation (the vehicle icon turns first, the map catches up),
   zoom by speed, the camera view when stopped, dead reckoning in tunnels, three compass designs, a wasteland
-  muscle‑car icon, a clock, weather, a speed‑limit sign, a radio panel, a standby screen while the alarm
+  camper icon (our van from above), a clock, weather, a speed‑limit sign, a radio panel, a standby screen while the alarm
   is armed (the owner's logo and phone, a "contact the owner" marquee), a slow pixel drift against burn‑in.
 - **Sensors** — Holybro M8N GPS (u‑blox NEO‑M8N, 10 Hz, configured over UBX, Static Hold), IST8310 compass
   with **automatic calibration against the GPS course while driving**, and an MPU‑6050 accelerometer + gyro

@@ -344,22 +344,25 @@ tbody tr:hover { background: var(--panel2); }
 .trk-stop { cursor: pointer; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .7)); }
 .trk-stop svg { display: block; }
 .trk-stop .n { position: absolute; top: -6px; right: -8px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--green); color: #031a0b; font: 700 10.5px/17px var(--mono); text-align: center; box-shadow: 0 0 0 1.5px #031a0b; }
-.trk-veh .rot { width: 36px; height: 36px; transform-origin: 50% 50%; }
+.trk-veh .rot { width: 44px; height: 44px; transform-origin: 50% 50%; }
 .trk-veh svg { display: block; overflow: visible; filter: drop-shadow(0 0 4px rgba(93, 255, 138, .65)); }
 .trk-veh .halo { fill: rgba(93, 255, 138, .16); stroke: rgba(93, 255, 138, .55); stroke-width: 1; }
-.trk-veh .arrow { fill: var(--green); stroke: #031a0b; stroke-width: 1.5; stroke-linejoin: round; }
+/* the vehicle: our camper from above (the same drawing as on the car screen, web/display/ui/vehicle.js) */
+.trk-veh .arrow .lt { fill: #f2e9c8; stroke: #14160f; stroke-width: 2.6; stroke-linejoin: round; }
+.trk-veh .arrow .dk { fill: #14160f; }
+.trk-veh .arrow .ln { fill: none; stroke: #14160f; stroke-width: 1.8; }
 .trk-veh .dot { display: none; fill: var(--green); stroke: #031a0b; stroke-width: 1.5; }
 .trk-veh.nohead .arrow { display: none; }
 .trk-veh.nohead .dot { display: block; }
 .trk-veh.stale svg { filter: drop-shadow(0 0 3px rgba(0, 0, 0, .8)); }
 .trk-veh.stale .halo { fill: rgba(141, 153, 135, .18); stroke: rgba(141, 153, 135, .6); }
-.trk-veh.stale .arrow, .trk-veh.stale .dot { fill: var(--dim); }
+.trk-veh.stale .arrow .lt, .trk-veh.stale .dot { fill: var(--dim); }
 .trk-legend { display: flex; gap: 6px 18px; flex-wrap: wrap; margin-top: 8px; color: var(--dim); font-size: 12.5px; }
 .trk-legend span { display: inline-flex; align-items: center; gap: 7px; }
 .trk-legend i { display: inline-block; flex: none; font-style: normal; }
 .trk-legend .lg-stop { width: 17px; height: 17px; border: 2px solid var(--amber); border-radius: 4px; color: var(--amber); font: 800 11px/13px var(--sans); text-align: center; background: var(--panel); }
 .trk-legend .lg-dot { width: 9px; height: 9px; border-radius: 50%; background: #ffd24a; box-shadow: 0 0 0 2px #0a0c0a; }
-.trk-legend .lg-veh { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 14px solid var(--green); }
+.trk-legend .lg-veh { width: 9px; height: 15px; border-radius: 2.5px; background: linear-gradient(#14160f, #14160f) 50% 22% / 5px 5px no-repeat #f2e9c8; border: 1.5px solid #14160f; box-shadow: 0 0 0 1px rgba(93, 255, 138, .55); }
 .trk-modal { min-width: min(520px, 80vw); }
 .trk-sum { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-bottom: 12px; }
 .trk-sum .k { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }

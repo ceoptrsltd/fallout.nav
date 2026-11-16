@@ -319,8 +319,11 @@ function makeState(cfg, now) {
       camera_rear: o.rear === false ? null : { state: "recording", camera: "rear", recording: o.recording ?? true },
       power: o.power === false ? null : {
         main: "soc" in o ? { soc_pct: o.soc, charging: !!o.charging, input_w: o.charging ? 412 : 0, low: o.soc != null && o.soc <= 20 } : { soc_pct: 87 },
-        second: o.connected === false ? {} : { voltage_v: 20.8, soc_pct: 55, low: false },
-        third: o.connected === false ? {} : { voltage_v: 13.6, soc_pct: 100, charging: true, input_w: 47, low: false },
+        // «charging»: Powerbank заряжается (ватты и разница ячеек по очереди), свинцовый — от источника, которого
+        // контроллер не видит (процента нет, полоса зарядки); иначе свинцовый — от солнца
+        second: o.connected === false ? {} : { voltage_v: 24.3, soc_pct: 58, low: false, cell_delta_mv: 53, charging: !!o.charging, input_w: o.charging ? 480 : 0 },
+        third: o.connected === false ? {} : o.charging ? { voltage_v: 13.1, soc_pct: null, charging: true, input_w: null, low: false }
+          : { voltage_v: 13.6, soc_pct: 100, charging: true, input_w: 47, low: false },
       },
       system: { internet: o.internet ?? true, time_synced: o.timeSynced ?? true },
       radio: typeof cfg.radio === "function" ? cfg.radio(now) : cfg.radio ?? null,
@@ -611,7 +614,7 @@ async function main() {
     }
   }
   const vh = document.getElementById("vehicle");
-  addView(vh, { kind: "closeup" }, "<b>Wasteland muscle car</b> — close-up (not to scale): spiked ram grille, supercharger, armour plates, twin racing stripes, hub spikes, quad exhausts, spare tyre");
+  addView(vh, { kind: "closeup" }, "<b>The camper from above</b> — close-up (not to scale): an alcove Peugeot Boxer; two solar panels across the front of the roof, the air conditioner in the middle, a panel along the right side, two hatches at the back");
   addView(vh, { kind: "life" }, "<b>1:1</b> — north-up rotations; bottom left — no GPS fix (translucent, blinking)");
 
   const sh = document.getElementById("states");
