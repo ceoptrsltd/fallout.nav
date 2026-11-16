@@ -21,7 +21,7 @@ NOTIFY_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
 WRITE_UUID = "0000fff2-0000-1000-8000-00805f9b34fb"
 ADDR = 0xD2
 REGS = 62
-CHARGE_MIN_A = 0.3  # ток заряда меньше — не зарядка (шум датчика тока)
+CHARGE_MIN_A = 0.3  # ток заряда (и разряда) меньше — не считаем (шум датчика тока)
 
 
 def crc16(data: bytes) -> int:
@@ -104,6 +104,11 @@ class DalyReading:
     def input_w(self) -> int:
         """Мощность зарядки, Вт (не заряжается — 0)."""
         return round(self.voltage_v * self.current_a) if self.charging else 0
+
+    @property
+    def output_w(self) -> int:
+        """Мощность разряда, Вт (минус тока; не разряжается — 0)."""
+        return round(self.voltage_v * -self.current_a) if self.current_a <= -CHARGE_MIN_A else 0
 
 
 def parse(frame: bytes) -> DalyReading | None:

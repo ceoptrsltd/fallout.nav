@@ -55,6 +55,10 @@ def test_daly_charging_is_a_positive_current():
     for raw in (30002, 30000, 29800):  # sensor noise, rest, discharge
         r = daly.parse(daly_frame({40: 232, 41: raw, 42: 375, 49: 6}))
         assert not r.charging and r.input_w == 0
+    assert r.output_w == 464  # 23.2 V x 20 A going out: the screen shows the watts
+    st.reading = r
+    assert st.slot_view().output_w == 464 and st.slot_view().charging is False
+    assert daly.parse(daly_frame({40: 232, 41: 29998, 42: 375, 49: 6})).output_w == 0
 
 
 def test_broken_frames_are_rejected():

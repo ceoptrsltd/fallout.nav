@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 globalThis.OffscreenCanvas = undefined; // спрайты не нужны (null — blit пропускает)
-const { drawPower, powerWidth, socText, voltText, deltaText, wattText, chargeLit, thirdLine, CHARGE_SEGS, POWER_H } = await import("../../web/display/ui/power.js");
+const { drawPower, powerWidth, socText, voltText, deltaText, wattText, outText, chargeLit, thirdLine, CHARGE_SEGS, POWER_H } = await import("../../web/display/ui/power.js");
 const { camState, drawIndicators, drawRecTag, rightColumnWidth, indicatorsWidth } = await import("../../web/display/ui/status.js");
 
 function recCtx() {
@@ -117,7 +117,7 @@ test("power: a charging station runs its charge segments", () => {
   assert.ok(rects(true) >= rects(false) + 2 * CHARGE_SEGS);
 });
 
-test("power: the powerbank's cell spread, small; a dangerous one blinks", () => {
+test("power: the powerbank's cell spread is not on the screen - only a dangerous one, blinking", () => {
   assert.equal(deltaText({ cell_delta_mv: 60 }), "Δ60mV");
   assert.equal(deltaText({}), "");
   const shown = (bad, now) => {
@@ -126,8 +126,24 @@ test("power: the powerbank's cell spread, small; a dangerous one blinks", () => 
     drawPower(ctx, { now, telemetry: { power } }, SAFE);
     return texts(ctx).some((t) => t.startsWith("Δ"));
   };
-  assert.ok(shown(false, 0.1) && shown(false, 0.4), "steady");
+  assert.ok(!shown(false, 0.1) && !shown(false, 0.4), "an ordinary spread is not drawn");
   assert.notEqual(shown(true, 0.1), shown(true, 0.4), "blinks");
+});
+
+test("power: a station giving power shows the watts going out - the main one and the powerbank", () => {
+  assert.equal(outText({ output_w: 57.6 }), "58W");
+  assert.equal(outText({ output_w: 0 }), "");
+  assert.equal(outText({}), "");
+  const power = { main: { soc_pct: 99, charging: false, input_w: 0, output_w: 58 },
+    second: { soc_pct: 61, voltage_v: 24.3, charging: false, input_w: 0, output_w: 126, cell_delta_mv: 43 }, third: { voltage_v: 13.0 } };
+  const ctx = recCtx();
+  drawPower(ctx, { now: 0.1, telemetry: { power } }, SAFE);
+  assert.ok(texts(ctx).includes("58W") && texts(ctx).includes("126W"));
+  assert.ok(!texts(ctx).some((t) => t.startsWith("Δ")));
+  // charging wins on the main one: the watts coming in
+  const ctx2 = recCtx();
+  drawPower(ctx2, { now: 0.1, telemetry: { power: { ...power, main: { soc_pct: 99, charging: true, input_w: 1098, output_w: 58 } } } }, SAFE);
+  assert.ok(texts(ctx2).includes("1098W") && !texts(ctx2).includes("58W"));
 });
 
 test("power: low charge blinks", () => {
@@ -170,11 +186,15 @@ test("recording tag: camera numbers 1 and 2, missing one crossed out", () => {
   assert.ok(noRear > both, "the missing camera's number is crossed out");
 });
 
-test("powerbank charging: the third line takes turns - the bolt with watts, then the cell difference", () => {
-  const pb = { soc_pct: 54, voltage_v: 24.0, charging: true, input_w: 480, cell_delta_mv: 48 };
-  assert.deepEqual([0, 3.9, 4, 5.9, 6, 10].map((t) => thirdLine(pb, t)), ["watts", "watts", "delta", "delta", "watts", "delta"]);
-  assert.equal(thirdLine({ ...pb, cell_delta_bad: true }, 0), "delta"); // a dangerous difference is never hidden
-  assert.equal(thirdLine({ ...pb, charging: false, input_w: 0 }, 0), "delta");
+test("third line of a column: watts in, watts out, a dangerous cell difference takes turns with them", () => {
+  const pb = { soc_pct: 54, voltage_v: 24.0, charging: true, input_w: 480, output_w: 0, cell_delta_mv: 48 };
+  assert.deepEqual([0, 4, 10].map((t) => thirdLine(pb, t)), ["watts", "watts", "watts"]);
+  const out = { ...pb, charging: false, input_w: 0, output_w: 126 };
+  assert.equal(thirdLine(out, 5), "out");
+  assert.equal(thirdLine({ ...out, output_w: 0 }, 0), ""); // idle: nothing, the ordinary difference is not shown
+  const bad = { ...pb, cell_delta_bad: true, cell_delta_mv: 140 };
+  assert.deepEqual([0, 3.9, 4, 5.9, 6].map((t) => thirdLine(bad, t)), ["watts", "watts", "delta", "delta", "watts"]);
+  assert.equal(thirdLine({ ...bad, charging: false, input_w: 0 }, 0), "delta");
   assert.equal(thirdLine({ soc_pct: 70, voltage_v: 13.4, charging: true, input_w: 47 }, 5), "watts"); // lead: the sun
   assert.equal(thirdLine({ voltage_v: 13.1, charging: true, input_w: null }, 0), ""); // unseen source: running segments
 });

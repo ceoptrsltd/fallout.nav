@@ -1,12 +1,14 @@
 // Электростанции — плашка справа внизу (docs/contracts/power.md, docs/contracts/display.md).
 // Данные — state.telemetry.power = {main, second, third: {soc_pct, voltage_v, charging, low, …}}; плашку выключает
 // настройка power.show_on_screen.
-// Слева крупно заряд главной станции, %; заряжается — процент мельче, под ним молния и мощность зарядки «412W»; справа две колонки — вторая (Powerbank) и третья (свинцовый аккумулятор):
+// Слева крупно заряд главной станции, %; заряжается — процент мельче, под ним молния и мощность зарядки «412W»;
+// не заряжается, а отдаёт — так же мельче, под ним стрелка вниз и мощность на выходе «58W»; справа две колонки — вторая (Powerbank) и третья (свинцовый аккумулятор):
 // сверху заряд, %, под ним напряжение; черта — посередине. Третья заряжается от солнца — третьей строкой молния и ватты. Нет данных — прочерки; заряд ≤ 20 % (low) — мигает;
-// Powerbank заряжается — третья строка по очереди: молния с ваттами (WATTS_SHOW_S) и разница ячеек; опасная разница — только она.
+// Третья строка колонки: заряжается — молния и ватты; разряжается (Powerbank) — стрелка вниз и ватты на выходе.
+// Разницу ячеек Powerbank на экране не показываем — только опасную (cell_delta_bad): мигает, по очереди с ваттами.
 // у третьей процент «примерно» (soc_approx: не из покоя сейчас — держится с покоя до зарядки или оценка) — тусклый;
 // заряжается — анимация: у главной пульсирует молния под знаком %, в колонке между % и напряжением бегут сегменты
-// заряда (как на телефоне). У Powerbank мелко третьей строкой — разница ячеек «Δ60mV» (опасная — мигает).
+// заряда (как на телефоне).
 // Раз в несколько секунд по рамке плашки пробегает «треск» молнии (ui/lightning.js).
 // Ширина постоянная (по самым широким значениям) — соседи не «дышат».
 
@@ -57,6 +59,12 @@ export function wattText(slot) {
   return Number.isFinite(w) ? `${Math.max(0, Math.round(w))}W` : "--W";
 }
 
+/** Мощность на выходе «58W» (станция отдаёт); не отдаёт или нет данных — "". */
+export function outText(slot) {
+  const w = slot?.output_w;
+  return Number.isFinite(w) && Math.round(w) > 0 ? `${Math.round(w)}W` : "";
+}
+
 /** «20.8V»; нет данных — «--.-V». */
 export function voltText(slot) {
   const v = slot?.voltage_v;
@@ -101,15 +109,39 @@ function bolt(ctx, cx, cy, k = 1) {
   ctx.restore();
 }
 
-export const WATTS_SHOW_S = 4; // Powerbank заряжается: столько секунд ватты ...
-export const DELTA_SHOW_S = 2; // ... и столько — разница ячеек
+export const WATTS_SHOW_S = 4; // опасная разница ячеек: столько секунд ватты ...
+export const DELTA_SHOW_S = 2; // ... и столько — она
 
-/** Что в третьей строке колонки сейчас: "watts" (молния и мощность зарядки), "delta" (разница ячеек) или "". */
+/** Что в третьей строке колонки сейчас: "watts" (молния и мощность зарядки), "out" (стрелка и мощность на выходе),
+ * "delta" (опасная разница ячеек) или "". */
 export function thirdLine(slot, now) {
-  const watts = !!slot?.charging && Number.isFinite(slot.input_w) && slot.input_w > 0;
-  const delta = deltaText(slot) !== "";
-  if (watts && delta) return slot.cell_delta_bad || now % (WATTS_SHOW_S + DELTA_SHOW_S) >= WATTS_SHOW_S ? "delta" : "watts";
-  return watts ? "watts" : delta ? "delta" : "";
+  const flow = !!slot?.charging && Number.isFinite(slot.input_w) && slot.input_w > 0 ? "watts"
+    : !slot?.charging && outText(slot) ? "out" : "";
+  if (!(slot?.cell_delta_bad && deltaText(slot))) return flow;
+  return flow && now % (WATTS_SHOW_S + DELTA_SHOW_S) < WATTS_SHOW_S ? flow : "delta";
+}
+
+/** Стрелка вниз: станция отдаёт. */
+function outArrow(ctx, cx, cy, k = 1) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(k, k);
+  ctx.beginPath();
+  ctx.moveTo(-2, -8);
+  ctx.lineTo(2, -8);
+  ctx.lineTo(2, 0);
+  ctx.lineTo(6, 0);
+  ctx.lineTo(0, 8);
+  ctx.lineTo(-6, 0);
+  ctx.lineTo(-2, 0);
+  ctx.closePath();
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = C.dark;
+  ctx.stroke();
+  ctx.fillStyle = C.ink;
+  ctx.fill();
+  ctx.restore();
 }
 
 export const CHARGE_SEGS = 4;
@@ -148,11 +180,13 @@ export function drawPower(ctx, state, safe) {
   const cy = y + POWER_H / 2;
   const ink = (slot, known) => (!known ? C.inkDim : slot?.low && !blinkOn(now, 1, 0.6) ? C.inkDim : C.ink);
 
-  // главная: крупный %; заряжается — мельче, под ним молния и мощность зарядки
+  // главная: крупный %; заряжается или отдаёт — мельче, под ним молния и мощность зарядки / стрелка и мощность на выходе
   const main = p.main;
   const pct = socText(main);
   const mainInk = ink(main, pct !== "--");
-  const chg = !!main?.charging;
+  const charging = !!main?.charging;
+  const out = charging ? "" : outText(main);
+  const chg = charging || out !== ""; // вторая строка занята ваттами
   const [f1, f3, fp, yc] = chg ? [BIG_CHG(), BIG_CHG_3(), PCT_CHG(), cy - 9] : [BIG(), BIG_3(), PCT(), cy + 2];
   const big = pct.length > 2 ? f3 : f1;
   const xn = x + PAD;
@@ -162,8 +196,9 @@ export function drawPower(ctx, state, safe) {
   let leftEnd = xp + textWidth(ctx, fp, "%");
   if (chg) {
     const yw = y + POWER_H - 17;
-    if (blinkOn(now, 1, 0.65)) bolt(ctx, xn + 5, yw, 0.75);
-    const wt = wattText(main);
+    if (!charging) outArrow(ctx, xn + 5, yw, 0.75);
+    else if (blinkOn(now, 1, 0.65)) bolt(ctx, xn + 5, yw, 0.75);
+    const wt = charging ? wattText(main) : out;
     outlinedText(ctx, wt, xn + 13, yw, WATTS(), { align: "left", lw: 4, fill: wt === "--W" ? C.inkDim : C.ink });
     leftEnd = Math.max(leftEnd, xn + 13 + textWidth(ctx, WATTS(), wt));
   }
@@ -184,14 +219,15 @@ export function drawPower(ctx, state, safe) {
     // заряжается: известна мощность (свинцовый — от солнечного контроллера) — мигающая молния и ватты третьей
     // строкой, как у главной; нет — бегущие сегменты между % и напряжением
     const line = thirdLine(slot, now);
-    if (line === "watts") {
-      const wt = wattText(slot);
+    if (line === "watts" || line === "out") {
+      const wt = line === "out" ? outText(slot) : wattText(slot);
       const ww = textWidth(ctx, CD(), wt);
       const x0 = Math.round(cx - (ww + 11) / 2);
-      if (blinkOn(now, 1, 0.65)) bolt(ctx, x0 + 4, y + ROW_3, 0.62);
+      if (line === "out") outArrow(ctx, x0 + 4, y + ROW_3, 0.62);
+      else if (blinkOn(now, 1, 0.65)) bolt(ctx, x0 + 4, y + ROW_3, 0.62);
       outlinedText(ctx, wt, x0 + 11, y + ROW_3, CD(), { align: "left", lw: 3, fill: C.ink });
     } else if (slot?.charging && (slot.cell_delta_bad || !(Number.isFinite(slot.input_w) && slot.input_w > 0))) {
-      // полоса зарядки — третьей строкой; она занята разницей ячеек — между % и напряжением
+      // полоса зарядки — третьей строкой; она занята опасной разницей ячеек — между % и напряжением
       chargeBar(ctx, cx - m.colW / 2 + 2, y + (line === "" ? ROW_3 - 3 : ROW_PCT + 11), m.colW - 4, now);
     }
     const d = deltaText(slot);

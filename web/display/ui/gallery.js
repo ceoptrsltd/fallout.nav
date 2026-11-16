@@ -318,10 +318,10 @@ function makeState(cfg, now) {
       camera: { state: "recording", recording: o.recording ?? true },
       camera_rear: o.rear === false ? null : { state: "recording", camera: "rear", recording: o.recording ?? true },
       power: o.power === false ? null : {
-        main: "soc" in o ? { soc_pct: o.soc, charging: !!o.charging, input_w: o.charging ? 412 : 0, low: o.soc != null && o.soc <= 20 } : { soc_pct: 87 },
+        main: "soc" in o ? { soc_pct: o.soc, charging: !!o.charging, input_w: o.charging ? 412 : 0, output_w: 58, low: o.soc != null && o.soc <= 20 } : { soc_pct: 87, output_w: 58 },
         // «charging»: Powerbank заряжается (ватты и разница ячеек по очереди), свинцовый — от источника, которого
         // контроллер не видит (процента нет, полоса зарядки); иначе свинцовый — от солнца
-        second: o.connected === false ? {} : { voltage_v: 24.3, soc_pct: 58, low: false, cell_delta_mv: 53, charging: !!o.charging, input_w: o.charging ? 480 : 0 },
+        second: o.connected === false ? {} : { voltage_v: 24.3, soc_pct: 58, low: false, cell_delta_mv: 53, charging: !!o.charging, input_w: o.charging ? 480 : 0, output_w: o.charging ? 0 : 126 },
         third: o.connected === false ? {} : o.charging ? { voltage_v: 13.1, soc_pct: null, charging: true, input_w: null, low: false }
           : { voltage_v: 13.6, soc_pct: 100, charging: true, input_w: 47, low: false },
       },
