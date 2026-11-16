@@ -504,7 +504,8 @@ def build_telemetry() -> dict:
                                "cells_mv": [3487, 3487, 3436, 3488, 3488, 3496],
                                "outputs": dict(MOCK_POWER["second"])},
                     # the lead battery heard from the Victron solar charger: charging from the panels
-                    "third": {"soc_pct": 78.5, "voltage_v": 13.42, "charging": True, "low": False, "input_w": 47}}
+                    "third": {"soc_pct": 78.5, "soc_approx": True, "voltage_v": 13.42, "charging": True, "low": False,
+                              "input_w": 47}}
     air = _mock_air(t)
     out["air"] = {**air, "battery_pct": None, "age_s": 40} if settings.air.enabled and settings.air.mac else None
     for slot in out["power"]:
@@ -1392,7 +1393,9 @@ async def power_status():
     return {"stations": [st("main", "fossibot", p.main_mac, main), st("second", "daly", p.second_mac, second),
                          st("third", "victron", p.victron_mac, {"voltage_v": 13.42, "soc_pct": 78.5, "current_a": 3.5,
                                                                 "pv_power_w": 47, "yield_today_wh": 120, "load_a": 0.0,
-                                                                "state": "bulk", "error": 0})]}
+                                                                "state": "bulk", "error": 0, "soc_approx": True,
+                                                                "external_charging": False,
+                                                                "soc_note": "at rest, 6 h ago; charging from solar"})]}
 
 
 def _mock_air(t: float) -> dict:

@@ -588,16 +588,17 @@ async def test_third_station_is_the_lead_battery_heard_from_the_victron_charger(
     try:
         await _until(lambda: svc.telemetry().third.voltage_v is not None)
         t = svc.telemetry().third
-        rest = t.soc_pct
-        assert (t.voltage_v, t.charging, t.input_w) == (12.34, False, 0) and 0 < rest < 100
+        assert (t.voltage_v, t.charging, t.input_w) == (12.34, False, 0) and 0 < t.soc_pct < 100
+        assert t.soc_approx, "no settled rest yet: an estimate from the voltage now"
         st = svc.status().stations[2]
         assert (st.kind, st.connected, st.reading["state"], st.reading["yield_today_wh"]) == ("victron", True, "off", 30)
+        assert st.reading["soc_note"] == "estimate from the voltage now" and st.reading["external_charging"] is False
 
         frame[0] = victron.encrypt_frame(key, 8, 3, 14.2, 3.5, 40, 47)  # зарядка: напряжение завышено
         await _until(lambda: svc.telemetry().third.charging)
         t = svc.telemetry().third
         assert (t.voltage_v, t.input_w) == (14.2, 47)
-        assert t.soc_pct == rest, "the charge is held from the last resting voltage, not 100 %"
+        assert t.soc_pct is None, "charging and no trusted charge: a dash, not 100 % from the raised voltage"
 
         with pytest.raises(PowerError) as e:
             svc.release("third", PowerRelease())
@@ -610,3 +611,181 @@ async def test_third_station_is_the_lead_battery_heard_from_the_victron_charger(
     finally:
         await sc.stop()
         await svc.stop()
+
+
+# ── заряд свинцового по напряжению (fnav/core/leadsoc.py) ──
+
+class Clock:
+    def __init__(self, t: float = 1000.0) -> None:
+        self.t = t
+
+    def mono(self) -> float:
+        return self.t
+
+    def wall(self) -> float:
+        return 1_700_000_000.0 + self.t
+
+
+def _lead(clock, path=None):
+    from fnav.core.leadsoc import LeadSoc
+    return LeadSoc(clock.mono, clock.wall, path)
+
+
+def _feed(est, clock, volts, step=60.0, solar=False, state="off"):
+    for v in volts:
+        clock.t += step
+        est.feed(v, solar, state)
+
+
+def _rest(est, clock, v, minutes=20):
+    _feed(est, clock, [v] * minutes)
+
+
+def test_lead_soc_is_taken_at_rest_only_when_the_voltage_is_flat():
+    c = Clock()
+    est = _lead(c)
+    _feed(est, c, [12.37] * 5)
+    soc, approx = est.view(12.37)
+    assert est.soc is None and approx and 69 < soc < 71, "5 min: an estimate from the voltage, marked approximate"
+    _feed(est, c, [12.37] * 12)
+    assert est.soc == 70.0 and est.view(12.37) == (70.0, False), "flat 15 min: a trusted charge"
+
+    c2 = Clock()
+    busy = _lead(c2)
+    _feed(busy, c2, [12.30, 12.42] * 15)  # нагрузка включается и выключается
+    assert busy.soc is None and busy.view(12.30)[1], "a changing load: never a trusted value"
+
+
+def test_lead_external_charging_is_seen_by_a_steady_rise():
+    """Evening, no sun: a charger the Victron does not see pulls the voltage up (2026-11-16: 13.0 V and 100 % shown)."""
+    c = Clock()
+    est = _lead(c)
+    _rest(est, c, 12.37)
+    assert est.soc == 70.0
+    _feed(est, c, [12.98, 13.00])  # скачок при включении (не в счёт) и рост по сотым
+    assert not est.external, "not yet: one small step is within the noise"
+    _feed(est, c, [13.01])
+    assert est.external and est.charging, "+0.03 V in two minutes, two steps up"
+    assert est.view(13.01) == (70.0, True), "the charge before charging, approximate - not 100 %"
+    _feed(est, c, [13.03, 13.05, 13.07, 13.08, 13.08, 13.10])
+    assert est.external and est.soc == 70.0
+
+    st = pw.VictronStation(scanner=None, mono=c.mono)  # как это видит экран
+    st.soc = est
+    from fnav.core import victron
+    st.reading, st.read_at = victron.VictronReading(13.10, 0.0, 0, 0, None, "off", 0), c.t
+    v = st.slot_view()
+    assert (v.charging, v.soc_pct, v.soc_approx, v.input_w) == (True, 70.0, True, None), "a bolt without watts"
+
+
+def test_lead_noise_and_a_load_switching_off_are_not_charging():
+    c = Clock()
+    est = _lead(c)
+    _feed(est, c, [13.00, 13.01] * 10)  # мерцание младшего разряда у 13.0 В
+    assert not est.external
+    c2 = Clock()
+    est2 = _lead(c2)
+    _feed(est2, c2, [12.55, 12.55, 12.70, 12.71, 12.72, 12.73, 12.74])  # нагрузку выключили: ступенька и отход
+    assert not est2.external, "below any charging level"
+    c3 = Clock()
+    est3 = _lead(c3)
+    _feed(est3, c3, [12.98, 12.98, 13.10, 13.10, 13.09, 13.09, 13.08, 13.08, 13.07, 13.07, 13.06])  # после зарядки
+    assert not est3.external, "one step up, then the surface charge falls"
+
+
+def test_lead_charger_holding_a_high_voltage_and_its_end():
+    c = Clock()
+    est = _lead(c)
+    _feed(est, c, [13.60, 13.61, 13.60, 13.60, 13.61, 13.60, 13.60, 13.60, 13.60, 13.60, 13.60])
+    assert est.external, "flat at 13.6 V for 10 min: a charger in absorption/float"
+    _feed(est, c, [13.40, 13.30])
+    assert not est.external and est.settling(), "the charger stopped: the voltage falls"
+
+
+def test_lead_soc_waits_for_the_surface_charge_after_charging():
+    c = Clock()
+    est = _lead(c)
+    _rest(est, c, 12.37)
+    _feed(est, c, [12.98, 13.00, 13.02, 13.03, 13.05] + [13.05 + 0.01 * i for i in range(60)])  # час зарядки
+    assert est.external
+    _feed(est, c, [12.90, 12.85])
+    assert not est.external
+    _feed(est, c, [12.80] * 150)  # 2.5 ч ровно — но поверхностный заряд ещё может держаться
+    assert est.soc == 70.0 and est.view(12.80) == (70.0, True)
+    assert "settling" in est.note(12.80)
+    _feed(est, c, [12.50] * 40)
+    assert est.soc == 80.0 and est.view(12.50) == (80.0, False), "settled: the new charge"
+
+    c2 = Clock()
+    fresh = _lead(c2)  # первый запуск во время зарядки: доверенного нет — прочерк
+    _feed(fresh, c2, [12.98, 13.00, 13.02, 13.03, 13.05])
+    assert fresh.external and fresh.view(13.05) == (None, False)
+    assert fresh.note(13.05) == "none yet: charging from another source"
+
+
+def test_lead_high_resting_voltage_needs_a_long_rest():
+    c = Clock()
+    est = _lead(c)
+    _rest(est, c, 12.95, minutes=60)
+    assert est.soc is None, "12.95 V may be a weak charger or a surface charge"
+    _rest(est, c, 12.95, minutes=8 * 60)
+    assert est.soc == 100.0
+
+
+def test_lead_full_by_the_charger():
+    c = Clock()
+    est = _lead(c)
+    _rest(est, c, 12.24)
+    _feed(est, c, [14.4] * 3, solar=True, state="absorption")
+    assert est.view(14.4) == (60.0, True)
+    _feed(est, c, [13.5], solar=True, state="float")
+    assert est.view(13.5) == (100.0, False), "the Victron went to float: absorption is over"
+
+    c2 = Clock()
+    alt = _lead(c2)
+    _feed(alt, c2, [13.6, 13.8, 13.9, 14.0, 14.1, 14.2] + [14.2] * 125)  # генератор держит абсорбцию 2 ч
+    assert alt.external and alt.full and alt.view(14.2) == (100.0, False)
+
+
+def test_lead_trend_does_not_span_a_gap():
+    c = Clock()
+    est = _lead(c)
+    _feed(est, c, [13.00, 13.01])
+    c.t += 600  # окно приёма пропало (музыка, помехи)
+    _feed(est, c, [13.03, 13.04])
+    assert not est.external and len(est.hist) == 2
+
+
+def test_lead_soc_survives_a_restart(tmp_path):
+    p = tmp_path / "lead_soc.json"
+    c = Clock()
+    est = _lead(c, p)
+    _rest(est, c, 12.37)
+    _feed(est, c, [12.98, 13.00, 13.02, 13.03, 13.05])  # зарядка началась — событие, в файл сразу
+    est.save()
+    c2 = Clock(5.0)  # перезапуск: монотонные часы с нуля, по настенным прошло ещё полчаса
+    c2_wall = c.wall() + 1800
+    from fnav.core.leadsoc import LeadSoc
+    again = LeadSoc(c2.mono, lambda: c2_wall, p)
+    assert again.soc == 70.0 and again.settling(), "the charge and the fact of charging are both remembered"
+    assert again.view(12.9) == (70.0, True)
+
+    future = LeadSoc(c2.mono, lambda: c.wall() - 3600, p)  # часы ушли назад: время из файла «в будущем»
+    assert future.soc is None
+    old = LeadSoc(c2.mono, lambda: c.wall() + 3 * 86400, p)
+    assert old.soc is None, "older than two days: not used"
+    p.write_text("{broken", encoding="utf-8")
+    assert _lead(Clock(), p).soc is None
+
+
+def test_lead_voltage_above_any_rest_is_not_a_charge_estimate():
+    """Just started, the battery is being charged by an unseen source, the rise is not noticed yet: 13.0 V is not
+    100 % - a dash; a resting voltage with no trusted value is still an approximate estimate."""
+    from fnav.core.leadsoc import LeadSoc
+
+    t = [0.0]
+    s = LeadSoc(mono=lambda: t[0], wall=lambda: 1_000_000.0 + t[0])
+    s.feed(13.03, False)
+    assert s.view(13.03) == (None, False) and "above any resting" in s.note(13.03)
+    soc, approx = s.view(12.4)
+    assert soc is not None and approx

@@ -39,7 +39,9 @@ export function readingRows(kind, r) {
   }
   if (kind === "victron") {
     return [
-      ["Battery", `${n1(r.voltage_v)} V (≈ ${n1(r.soc_pct)} %)`],
+      ["Battery", `${n1(r.voltage_v)} V · ${r.soc_approx ? "≈ " : ""}${n1(r.soc_pct)} %`],
+      ["Charge from", r.soc_note || "—"],
+      ["Other source", r.external_charging ? "charging (seen by the voltage)" : "—"],
       ["Charger", `${String(r.state || "").replace(/_/g, " ")}${r.error ? ` · error ${r.error}` : ""}`],
       ["Charging", `${n1(r.current_a)} A · panels ${r.pv_power_w ?? "—"} W`],
       ["Yield today", `${r.yield_today_wh ?? "—"} Wh`],

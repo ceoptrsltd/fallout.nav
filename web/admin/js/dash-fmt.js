@@ -415,8 +415,10 @@ export function powerInfo(p) {
     const v = x && num(x.voltage_v) ? x.voltage_v : null;
     const on = s !== null || v !== null;
     return {
-      big: s === null ? "—" : String(Math.floor(s)), unit: s === null ? "" : "%", kind: socKind(s),
-      // charging — the blinking bolt beside the % and the charging power after the voltage (lead battery: the panels)
+      // lead battery: soc_approx — not from a battery at rest now (held through charging, old, or an estimate) — «≈72»
+      big: s === null ? "—" : `${x.soc_approx ? "≈" : ""}${Math.floor(s)}`, unit: s === null ? "" : "%", kind: socKind(s),
+      // charging — the blinking bolt beside the % and the charging power after the voltage (lead battery: the panels;
+      // charged by a source the solar charger does not see — the bolt without watts)
       sub: (v !== null ? `${v.toFixed(1)} V` : on ? "" : "no data") + (on && x.charging && num(x.input_w) ? ` · ${Math.round(x.input_w)} W` : ""),
       note: "", noteKind: "", charging: on && !!x.charging,
       // Daly: разница ячеек (опасная — красным и мигает)

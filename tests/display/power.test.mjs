@@ -89,6 +89,21 @@ test("power: the lead battery charging from the sun — a bolt and the watts, li
   assert.ok(!draw({ soc_pct: 78, voltage_v: 12.4, charging: false, input_w: 0 }).some((t) => t.endsWith("W")));
 });
 
+test("power: the lead battery's approximate charge is dim; charged by an unseen source — segments, no watts", () => {
+  const draw = (third) => {
+    const ctx = recCtx();
+    drawPower(ctx, { now: 0.1, telemetry: { power: { main: {}, second: {}, third } } }, SAFE);
+    return ctx;
+  };
+  const exact = draw({ soc_pct: 70, voltage_v: 12.4, charging: false });
+  const approx = draw({ soc_pct: 70, soc_approx: true, voltage_v: 13.0, charging: true, input_w: null });
+  assert.notEqual(fills(approx, "70%"), fills(exact, "70%"), "dim while approximate");
+  assert.equal(fills(approx, "13.0V"), fills(exact, "12.4V"), "the voltage is a measurement: never dim");
+  assert.ok(!texts(approx).some((t) => t.endsWith("W")), "no watts: the source is not seen");
+  const dash = draw({ soc_pct: null, voltage_v: 13.0, charging: true });
+  assert.ok(texts(dash).includes("--%"), "no trusted charge while charging — a dash");
+});
+
 test("power: a charging station runs its charge segments", () => {
   const lit = [0, 0.5, 1, 1.5, 2, 2.3].map(chargeLit);
   assert.deepEqual(lit, [0, 1, 2, 3, 4, 0], "fill one by one, then again");

@@ -301,6 +301,11 @@ test("power tile: main charge with a gauge, the others in volts, dashes without 
   // charging is a blinking bolt, not a word; the lead battery also shows the charging power
   assert.deepEqual([c.main.kind, c.main.note, c.main.charging], ["warn", "", true]);
   assert.deepEqual([c.third.big, c.third.sub, c.third.note, c.third.charging], ["100", "13.6 V · 47 W", "", true]);
+  // the lead battery charged by a source the solar charger does not see: the bolt without watts, the held charge «≈»
+  const e = powerInfo({ third: { soc_pct: 70, soc_approx: true, voltage_v: 13.04, charging: true, input_w: null } });
+  assert.deepEqual([e.third.big, e.third.sub, e.third.charging], ["≈70", "13.0 V", true]);
+  const d = powerInfo({ third: { soc_pct: null, voltage_v: 13.04, charging: true } });
+  assert.deepEqual([d.third.big, d.third.sub, d.third.charging], ["—", "13.0 V", true]);
   assert.equal(fmtHm(45), "45 min");
   assert.equal(fmtHm(0), "");
 });

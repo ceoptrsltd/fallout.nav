@@ -189,7 +189,7 @@ class Core:
                                     AdvScanner(lambda: self.radio.phase == "playing"))
         self.air = AirService(self.advscan, lambda: self.store.get().air, paths.data_dir() / "air_history.json")
         self.power = PowerService(lambda: self.store.get().power, mock=opts.mock,
-                                  scanner=self.advscan,
+                                  scanner=self.advscan, lead_state=paths.data_dir() / "lead_soc.json",
                                   tune=None if opts.mock else slow_ble_links,
                                   busy=lambda: self.radio.phase == "playing",
                                   guard=lambda: self.alarm.state != "off")
