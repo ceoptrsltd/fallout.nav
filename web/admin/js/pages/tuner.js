@@ -8,7 +8,7 @@ import { errText, appUrl } from "../api.js";
 import { toast, banner } from "../ui.js";
 import {
   TUNINGS, tuningById, noteHz, centsOff, nearestNote, noteLabel, nearestString, stringNumber, tuneLevel, tuneHint,
-  fmtCents, needleDeg, detectPitch, decimate2, rms, PitchTracker, NeedleSpring, clampA4, A4_DEFAULT, A4_MIN, A4_MAX,
+  fmtCents, needleDeg, decimate2, rms, PitchTracker, NeedleSpring, clampA4, A4_DEFAULT, A4_MIN, A4_MAX,
   IN_TUNE_CENTS, CLOSE_CENTS, NEEDLE_CENTS,
 } from "../tuner-fmt.js";
 
@@ -92,7 +92,7 @@ export function mount(root) {
   let wake = null;
   let stopped = false;
   let srcNode = null;
-  let lastP = null; // the raw reading of the last tick
+  let lastP = { full: null, near: null }; // the raw readings of the last tick
   let rec = null; // a diagnostics recording in progress
   let sending = "";
 
@@ -262,9 +262,9 @@ export function mount(root) {
       buf = decimate2(buf);
       sr /= 2;
     }
-    const p = detectPitch(buf, sr);
-    lastP = p;
-    return tracker.feed(p ? p.hz : null, now);
+    const out = tracker.track(buf, sr, now);
+    lastP = tracker.last;
+    return out;
   }
 
   // the sound is read on its own clock; the needle is drawn every frame (and by the reading itself when the
@@ -275,9 +275,10 @@ export function mount(root) {
     const now = performance.now();
     reading = analyse(now);
     if (rec) {
-      rec.log.push([Math.round(now - rec.t0), +ac.currentTime.toFixed(4), lastP ? +lastP.hz.toFixed(3) : 0,
-        lastP ? +lastP.clarity.toFixed(3) : 0, +level.toFixed(4), reading.hz ? +reading.hz.toFixed(3) : 0,
-        reading.live ? 1 : 0, reading.held ? 1 : 0, target, +spring.x.toFixed(2)]);
+      rec.log.push([Math.round(now - rec.t0), +ac.currentTime.toFixed(4), lastP.full ? +lastP.full.hz.toFixed(3) : 0,
+        lastP.full ? +lastP.full.clarity.toFixed(3) : 0, +level.toFixed(4), reading.hz ? +reading.hz.toFixed(3) : 0,
+        reading.live ? 1 : 0, reading.held ? 1 : 0, target, +spring.x.toFixed(2),
+        lastP.near ? +lastP.near.hz.toFixed(3) : 0, lastP.near ? +lastP.near.clarity.toFixed(3) : 0]);
     }
     if (lastFrame === null || now - lastFrame > 120) render(now);
   }
@@ -357,7 +358,7 @@ export function mount(root) {
       }
       await post(`/api/tuner/diag/${r.id}/log`, JSON.stringify({ id: r.id, sampleRate: r.sr, samples: r.n, at0: r.at0, ua: navigator.userAgent,
         track, tuning: tuning.id, a4: prefs.a4, pick, analyseMs: ANALYSE_MS, fftSize: fft,
-        cols: ["ms", "acTime", "rawHz", "clarity", "level", "hz", "live", "held", "target", "needle"], log: r.log }), "application/json");
+        cols: ["ms", "acTime", "rawHz", "clarity", "level", "hz", "live", "held", "target", "needle", "nearHz", "nearClarity"], log: r.log }), "application/json");
       sending = "";
       recInfo.dataset.done = `Sent: ${secs} s (${r.id})`;
       toast("ok", `Recording sent: ${secs} s`);
@@ -425,10 +426,11 @@ export function mount(root) {
     const live = listening && reading.live;
 
     // in tune for a moment — the string gets its tick
-    if (live && lvl === "good") {
+    // (a thin string is live for a third of a second on a poor microphone: its held reading counts too)
+    if (hz !== null && lvl === "good") {
       if (inTuneSince === null) inTuneSince = now;
       else if (now - inTuneSince >= TUNED_MS) tuned.add(target);
-    } else if (!reading.held || lvl !== "good") inTuneSince = null;
+    } else inTuneSince = null;
 
     g.setNeedle(needleDeg(pos, SPAN), (hz === null ? "idle" : lvl) + (reading.held && !reading.live ? " held" : ""));
     const n = nearestNote(hz, a4);
