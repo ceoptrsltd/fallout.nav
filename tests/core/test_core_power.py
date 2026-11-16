@@ -127,15 +127,11 @@ async def test_failed_connects_are_retried_and_the_readings_reach_the_screen(fas
         await svc.stop()
 
 
-async def test_no_connect_while_the_rear_view_is_on_and_stale_readings_vanish(fast):
-    quiet = [True]
-    r = pw.StationReader("second", pw.DALY, quiet=lambda: quiet[0],
+async def test_stale_readings_vanish(fast):
+    r = pw.StationReader("second", pw.DALY,
                          link_factory=lambda mac, cb: ScriptLink(pw.DALY, 1, mac, cb))
     await r.set_mac("74:C1:4E:10:00:9B")
     try:
-        await asyncio.sleep(0.1)
-        assert ScriptLink.tries == 0 and r.slot_view().voltage_v is None
-        quiet[0] = False
         await _until(lambda: r.fresh() is not None)
         assert r.slot_view().low is False
         r.read_at -= pw.POLL_S + pw.STALE_S + 1

@@ -5,8 +5,7 @@ Victron SmartSolar (fnav/core/victron.py) и датчик воздуха Qingpin
 Слушаем окнами раз в PERIOD_S, а пока играет музыка — раз в PERIOD_MUSIC_S (радио у чипа одно на Wi-Fi, колонку и
 станции; поиск идёт «редким» окном 30 из 200 мс — pi/bluetooth/main.conf). Окно закрывается, как только услышаны
 все устройства (Victron — за 1–2 с), но не раньше WINDOW_MIN_S и не позже WINDOW_S: пакет Qingping при «редком»
-поиске ловится в среднем раз в 15 с. Пока на экране задний
-вид (quiet) — не слушаем. Окно берёт общий замок подключений станций (fnav/core/power.py): поиск и установление
+поиске ловится в среднем раз в 15 с. Окно берёт общий замок подключений станций (fnav/core/power.py): поиск и установление
 связи друг другу мешают.
 
 BlueZ отдаёт вещание свойствами устройства: ManufacturerData {id: bytes}, ServiceData {uuid: bytes}; с фильтром
@@ -30,7 +29,7 @@ WINDOW_MIN_S = 2.0
 WINDOW_POLL_S = 0.5
 PERIOD_S = 60.0
 PERIOD_MUSIC_S = 180.0
-QUIET_POLL_S = 2.0
+IDLE_POLL_S = 2.0  # подписчиков нет — как часто смотреть, не появились ли
 BLUEZ = "org.bluez"
 ADAPTER = "/org/bluez/hci0"
 ADAPTER_IF, DEVICE_IF = "org.bluez.Adapter1", "org.bluez.Device1"
@@ -46,9 +45,8 @@ def _plain(v: Any) -> Any:
 class AdvScanner:
     """watch(mac, cb) — звать cb на каждый пакет устройства; unwatch(mac). Без подписчиков эфир не слушаем."""
 
-    def __init__(self, quiet: Callable[[], bool] = lambda: False, busy: Callable[[], bool] = lambda: False,
+    def __init__(self, busy: Callable[[], bool] = lambda: False,
                  lock: asyncio.Lock | None = None, adapter: str = ADAPTER) -> None:
-        self.quiet = quiet
         self.busy = busy  # играет музыка — слушать реже
         self.lock = lock or asyncio.Lock()
         self.adapter = adapter
@@ -84,8 +82,8 @@ class AdvScanner:
 
     async def _run(self) -> None:
         while True:
-            if not self.watched or self.quiet():
-                await asyncio.sleep(QUIET_POLL_S)
+            if not self.watched:
+                await asyncio.sleep(IDLE_POLL_S)
                 continue
             try:
                 async with self.lock:

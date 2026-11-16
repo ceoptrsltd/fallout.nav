@@ -10,8 +10,8 @@
 у чипа одно на Wi-Fi, колонку и станции (power.md «Радио»). Подключаются станции по очереди (общий connect_lock). Подключение LE у встроенного чипа Pi удаётся не с первого
 раза (ble.py), поэтому неудачи сначала
 повторяются часто (CONNECT_RETRY_S), а если станции так и нет (не нашлась в эфире или долго не подключается) —
-всё реже (AWAY_BACKOFF_S): попытки занимают радио, общее с Wi-Fi. Пока на экране задний вид (quiet) — не
-подключаемся вовсе (как колонка, fnav/core/bluetooth.py); уже подключённые станции читаются.
+всё реже (AWAY_BACKOFF_S): попытки занимают радио, общее с Wi-Fi. Задний вид на экране подключению не мешает
+(колонку при нём не вызываем, fnav/core/bluetooth.py, а станции — подключаем).
 
 Команды (control): только по слайдеру в веб-интерфейсе (POST /api/power/{slot}/control) и мигание светом Fossibot при
 срабатывании охраны (flash_light, power.light_on_alarm). Каждый протокол сам собирает единственно допустимые кадры
@@ -68,7 +68,6 @@ CONNECT_RETRY_S = 2.0
 BURST_TRIES = 20
 BURST_PAUSE_S = 30.0
 AWAY_BACKOFF_S = (30.0, 60.0, 120.0, 300.0)
-QUIET_POLL_S = 2.0
 RELEASE_CHECK_S = 5.0
 MUSIC_RETRY_S = 30.0  # пока играет музыка — неудачное подключение повторять не чаще (серии попыток слышны)
 # Подключаемся строго по одной станции: чип Pi устанавливает одно LE-подключение за раз, а одновременные попытки
@@ -127,12 +126,11 @@ class PowerError(Exception):
 
 
 class StationReader:
-    def __init__(self, slot: Literal["main", "second", "third"], proto: Protocol, quiet: Callable[[], bool] = lambda: False,
+    def __init__(self, slot: Literal["main", "second", "third"], proto: Protocol,
                  link_factory: LinkFactory = BleLink, mono: Callable[[], float] = time.monotonic,
                  busy: Callable[[], bool] = lambda: False) -> None:
         self.slot = slot
         self.proto = proto
-        self.quiet = quiet
         self.busy = busy  # на колонке играет музыка — подключаться реже (MUSIC_RETRY_S)
         self.hold: Callable[[], bool] = lambda: False  # охрана включена — станцию не отпускать (свет при тревоге)
         self.link_factory = link_factory
@@ -295,9 +293,6 @@ class StationReader:
             if self.released_s() is not None:
                 await self._wait_released()
                 fails = away = 0
-                continue
-            if self.quiet():
-                await asyncio.sleep(QUIET_POLL_S)
                 continue
             try:
                 await self._connect()
@@ -518,7 +513,7 @@ def fake_daly(voltage: float, soc: float = 55.0) -> bytes:
 
 class PowerService:
     def __init__(self, get_settings: Callable[[], PowerSettings], mock: bool = False,
-                 quiet: Callable[[], bool] = lambda: False, link_factory: LinkFactory | None = None,
+                 link_factory: LinkFactory | None = None,
                  tune: Callable[[bool], Awaitable[None]] | None = None,
                  busy: Callable[[], bool] = lambda: False, guard: Callable[[], bool] = lambda: False,
                  scanner: AdvScanner | None = None) -> None:
@@ -532,11 +527,11 @@ class PowerService:
                 return lambda mac, cb: FakeLink(proto, mac, cb)
             return BleLink
 
-        self.main = StationReader("main", FOSSIBOT, quiet, factory(FOSSIBOT))
-        self.second = StationReader("second", DALY, quiet, factory(DALY))
+        self.main = StationReader("main", FOSSIBOT, factory(FOSSIBOT))
+        self.second = StationReader("second", DALY, factory(DALY))
         lock = asyncio.Lock()
         self.connect_lock = lock  # поиск вещания (advscan) берёт его же
-        self.scanner = scanner or AdvScanner(quiet, busy, lock)
+        self.scanner = scanner or AdvScanner(busy, lock)
         self.scanner.lock = lock
         self.third = VictronStation(self.scanner)
         for r in (self.main, self.second):

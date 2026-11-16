@@ -186,12 +186,12 @@ class Core:
         self.bt.on_output(self.radio.set_output)
         # задний вид на экране: колонку не вызывать — вызов глушит Wi-Fi общего чипа, а с ним и заднюю камеру
         self.bt.radio_quiet = lambda: self.view_camera == "rear" and self.camera_rear.enabled
-        # электростанции по BLE (docs/contracts/power.md): подключаются тоже не при заднем виде
+        # электростанции по BLE (docs/contracts/power.md) и вещание задний вид не останавливает
         # вещание BLE (Victron, датчик воздуха): слушаем окнами, реже — пока играет музыка (fnav/core/advscan.py)
         self.advscan: AdvScanner = (mock_adv_scanner() if opts.mock else
-                                    AdvScanner(self.bt.radio_quiet, lambda: self.radio.phase == "playing"))
+                                    AdvScanner(lambda: self.radio.phase == "playing"))
         self.air = AirService(self.advscan, lambda: self.store.get().air, paths.data_dir() / "air_history.json")
-        self.power = PowerService(lambda: self.store.get().power, mock=opts.mock, quiet=self.bt.radio_quiet,
+        self.power = PowerService(lambda: self.store.get().power, mock=opts.mock,
                                   scanner=self.advscan,
                                   tune=None if opts.mock else slow_ble_links,
                                   busy=lambda: self.radio.phase == "playing",
