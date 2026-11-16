@@ -681,7 +681,7 @@ def test_lead_external_charging_is_seen_by_a_steady_rise():
 def test_lead_noise_and_a_load_switching_off_are_not_charging():
     c = Clock()
     est = _lead(c)
-    _feed(est, c, [13.00, 13.01] * 10)  # мерцание младшего разряда у 13.0 В
+    _feed(est, c, [12.98, 12.99] * 10)  # мерцание младшего разряда под 13.0 В
     assert not est.external
     c2 = Clock()
     est2 = _lead(c2)
@@ -792,8 +792,9 @@ def test_lead_voltage_above_any_rest_is_not_a_charge_estimate():
 
 
 def test_lead_slow_charger_is_seen_by_a_voltage_that_stays_above_rest():
-    """Measured 2026-11-16: 13.03 -> 13.05 V in 20 min - too slow for the rise rule; 20 min above any resting
-    voltage without falling is charging. Surface charge after charging falls - not taken for it."""
+    """Measured 2026-11-16: 13.03 -> 13.05 V in 20 min - too slow for the rise rule. The batteries are flooded car
+    ones (full at rest: up to ~12.8 V): 10 min at 13.0 V or more without falling is charging. Surface charge after
+    charging falls - not taken for it."""
     from fnav.core.leadsoc import LeadSoc
 
     t = [0.0]
@@ -801,7 +802,7 @@ def test_lead_slow_charger_is_seen_by_a_voltage_that_stays_above_rest():
     for k in range(21):
         t[0] = 60.0 * k
         s.feed(13.03 + 0.01 * (k // 10), False)
-        assert s.external is (k >= 20), k
+        assert s.external is (k >= 8), k
     t = [0.0]
     s = LeadSoc(mono=lambda: t[0], wall=lambda: 1_000_000.0 + t[0])
     for k in range(30):

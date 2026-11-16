@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 globalThis.OffscreenCanvas = undefined; // спрайты не нужны (null — blit пропускает)
-const { drawPower, powerWidth, socText, voltText, deltaText, wattText, chargeLit, CHARGE_SEGS, POWER_H } = await import("../../web/display/ui/power.js");
+const { drawPower, powerWidth, socText, voltText, deltaText, wattText, chargeLit, thirdLine, CHARGE_SEGS, POWER_H } = await import("../../web/display/ui/power.js");
 const { camState, drawIndicators, drawRecTag, rightColumnWidth, indicatorsWidth } = await import("../../web/display/ui/status.js");
 
 function recCtx() {
@@ -168,4 +168,13 @@ test("recording tag: camera numbers 1 and 2, missing one crossed out", () => {
   const both = strokes([{ recording: true }, { recording: true }]);
   const noRear = strokes([{ recording: true }, null]);
   assert.ok(noRear > both, "the missing camera's number is crossed out");
+});
+
+test("powerbank charging: the third line takes turns - the bolt with watts, then the cell difference", () => {
+  const pb = { soc_pct: 54, voltage_v: 24.0, charging: true, input_w: 480, cell_delta_mv: 48 };
+  assert.deepEqual([0, 3.9, 4, 5.9, 6, 10].map((t) => thirdLine(pb, t)), ["watts", "watts", "delta", "delta", "watts", "delta"]);
+  assert.equal(thirdLine({ ...pb, cell_delta_bad: true }, 0), "delta"); // a dangerous difference is never hidden
+  assert.equal(thirdLine({ ...pb, charging: false, input_w: 0 }, 0), "delta");
+  assert.equal(thirdLine({ soc_pct: 70, voltage_v: 13.4, charging: true, input_w: 47 }, 5), "watts"); // lead: the sun
+  assert.equal(thirdLine({ voltage_v: 13.1, charging: true, input_w: null }, 0), ""); // unseen source: running segments
 });
