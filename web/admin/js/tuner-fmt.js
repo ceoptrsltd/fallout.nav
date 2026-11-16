@@ -207,48 +207,240 @@ export function median(xs) {
   return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : null;
 }
 
+// ───── the spectrum: which string was plucked, and that string alone ─────
+
+const FFT_TABLES = new Map();
+function fftTables(n) {
+  let t = FFT_TABLES.get(n);
+  if (!t) {
+    const rev = new Uint32Array(n);
+    const bits = Math.log2(n);
+    for (let i = 0; i < n; i++) {
+      let r = 0;
+      for (let b = 0; b < bits; b++) r |= ((i >> b) & 1) << (bits - 1 - b);
+      rev[i] = r;
+    }
+    const cos = new Float64Array(n / 2), sin = new Float64Array(n / 2);
+    for (let i = 0; i < n / 2; i++) { cos[i] = Math.cos((2 * Math.PI * i) / n); sin[i] = Math.sin((2 * Math.PI * i) / n); }
+    t = { rev, cos, sin };
+    FFT_TABLES.set(n, t);
+  }
+  return t;
+}
+
+/** In-place FFT of re/im (length a power of two); inverse — with the 1/n. */
+export function fft(re, im, inverse = false) {
+  const n = re.length;
+  const { rev, cos, sin } = fftTables(n);
+  for (let i = 0; i < n; i++) {
+    const j = rev[i];
+    if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+  }
+  for (let size = 2; size <= n; size <<= 1) {
+    const half = size >> 1, step = n / size;
+    for (let i = 0; i < n; i += size) {
+      for (let j = 0, k = 0; j < half; j++, k += step) {
+        const wr = cos[k], wi = inverse ? sin[k] : -sin[k];
+        const xr = re[i + j + half] * wr - im[i + j + half] * wi;
+        const xi = re[i + j + half] * wi + im[i + j + half] * wr;
+        re[i + j + half] = re[i + j] - xr; im[i + j + half] = im[i + j] - xi;
+        re[i + j] += xr; im[i + j] += xi;
+      }
+    }
+  }
+  if (inverse) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+}
+
+/** Spectrum of a buffer (its length a power of two): {re, im, power (Hann-windowed, bins 0…n/2), n, sampleRate}. */
+export function spectrum(buf, sampleRate) {
+  const n = buf.length;
+  if (!n || (n & (n - 1))) return null;
+  const re = Float64Array.from(buf), im = new Float64Array(n);
+  fft(re, im);
+  const half = n >> 1;
+  const power = new Float64Array(half + 1);
+  for (let k = 1; k < half; k++) { // the Hann window, applied in the spectrum: X[k]/2 − (X[k−1] + X[k+1])/4
+    const r = 0.5 * re[k] - 0.25 * (re[k - 1] + re[k + 1]);
+    const i = 0.5 * im[k] - 0.25 * (im[k - 1] + im[k + 1]);
+    power[k] = r * r + i * i;
+  }
+  return { re, im, power, n, sampleRate };
+}
+
+/**
+ * The note of a power spectrum (of what a pluck added): {hz, clarity} or null. Its peaks are the partials of one
+ * string; the note is the highest pitch whose harmonics account for nearly all of them — a lower one (the common
+ * period with an octave below) accounts for them too but is not the note, and a higher one (a loud 2nd harmonic
+ * taken for the note) leaves the odd partials unexplained.
+ * strings (Hz, the tuning): a small microphone may hear nothing but the 2nd harmonic of a thick string — a pitch
+ * that is no string, while its octave (or twelfth) below is one, is that string.
+ * strict: a pitch more than `farCents` from every string is nothing (handling noise, a voice).
+ */
+export function nearString(hz, strings, cents) {
+  return !!strings && strings.some((f) => Math.abs(centsOff(hz, f)) <= cents);
+}
+
+export function combPitch(power, sampleRate, n, { minHz = 60, maxHz = 1100, topHz = 1600, strings = null, strict = false,
+  farCents = 200 } = {}) {
+  const binHz = sampleRate / n;
+  const k0 = Math.max(2, Math.floor(50 / binHz)), k1 = Math.min(power.length - 2, Math.ceil(topHz / binHz));
+  let top = 0;
+  for (let k = k0; k <= k1; k++) if (power[k] > top) top = power[k];
+  if (!(top > 0)) return null;
+  const peaks = [];
+  for (let k = k0; k <= k1; k++) {
+    const p = power[k];
+    if (p < 0.01 * top || p < power[k - 1] || p <= power[k + 1]) continue;
+    const a = Math.sqrt(power[k - 1]), b0 = Math.sqrt(p), c = Math.sqrt(power[k + 1]);
+    const den = a - 2 * b0 + c;
+    peaks.push({ hz: (k + (den < 0 ? (0.5 * (a - c)) / den : 0)) * binHz, e: power[k - 1] + p + power[k + 1] });
+  }
+  if (!peaks.length) return null;
+  const total = peaks.reduce((x, q) => x + q.e, 0);
+  const strong = peaks.slice().sort((x, y) => y.e - x.e).slice(0, 4);
+  const cands = [];
+  for (const q of strong) for (let k = 1; k <= 6; k++) { const f = q.hz / k; if (f >= minHz && f <= maxHz) cands.push(f); }
+  let best = 0;
+  const scored = cands.map((f) => {
+    let e = 0, num0 = 0, den0 = 0;
+    for (const q of peaks) {
+      const m = Math.round(q.hz / f);
+      if (m < 1) continue;
+      const tol = Math.min(0.2 * f, Math.max(0.7 * binHz, 0.02 * q.hz));
+      if (Math.abs(q.hz - m * f) <= tol) { e += q.e; num0 += (q.hz / m) * q.e; den0 += q.e; }
+    }
+    const share = e / total;
+    if (share > best) best = share;
+    return { hz: den0 > 0 ? num0 / den0 : f, share };
+  });
+  if (best < 0.6) return null;
+  let pick = null;
+  for (const c of scored) if (c.share >= 0.85 * best && (!pick || c.hz > pick.hz)) pick = c;
+  if (strings && !nearString(pick.hz, strings, 150)) {
+    let low = null;
+    for (const c of scored) {
+      if (c.hz < pick.hz && harmonicallyRelated(c.hz, pick.hz) && nearString(c.hz, strings, 150) && c.share >= pick.share
+        && (!low || c.hz > low.hz)) low = c;
+    }
+    if (low) pick = low;
+  }
+  if (strict && strings && !nearString(pick.hz, strings, farCents)) return null;
+  return { hz: pick.hz, clarity: pick.share };
+}
+
+/**
+ * One string out of the mix: the signal with only the bands of the first three partials of `hz` (±150 ¢) left —
+ * the lower strings that ring along (and make the sum read an octave or a string down) are gone.
+ * Returns the middle of the buffer (the ends ring after such a cut).
+ */
+export function isolate(spec, hz) {
+  const { n, sampleRate } = spec;
+  const re = new Float64Array(n), im = new Float64Array(n);
+  const binHz = sampleRate / n;
+  for (let k = 1; k < n / 2; k++) {
+    const f = k * binHz;
+    const m = Math.round(f / hz);
+    if (m < 1 || m > 3) continue;
+    const c = Math.abs(1200 * Math.log2(f / (m * hz)));
+    const g = c <= 150 ? 1 : c >= 230 ? 0 : 0.5 * (1 + Math.cos((Math.PI * (c - 150)) / 80));
+    if (g <= 0) continue;
+    re[k] = spec.re[k] * g; im[k] = spec.im[k] * g;
+    re[n - k] = spec.re[n - k] * g; im[n - k] = spec.im[n - k] * g;
+  }
+  fft(re, im, true);
+  const cut = n >> 3;
+  return Float32Array.from(re.subarray(cut, n - cut));
+}
+
 /**
  * Follows one plucked string among the others that still ring.
  *
  * A guitar is never one clean tone: the strings plucked before go on ringing and the lower ones answer the higher
- * (B is the 3rd harmonic of the low E, the high E its 4th). A thin string is loud for a third of a second; after
- * that the sum of everything has a longer common period and a plain detector reads «an octave down» or another
- * string. So the tracker locks on the string that was plucked and then looks for the pitch only next to it:
- *   no lock — the whole range; `need` readings in a row that agree make the lock;
- *   locked — the pitch within ±150 ¢ of the lock; the lock follows the string as the peg is turned;
- *   another string — `need` whole-range readings in a row away from the lock; a pitch that is a harmonic relative
- *     of the lock (an octave down…) counts only right after a pluck (the level jumped);
- *   the string fades — the reading freezes at its steady value (the tail is the least exact part) and is held for
- *     holdMs, then cleared.
- * track(buf, sampleRate, nowMs) → {hz, live, held}; feed({full, near, level}, nowMs) is the same on ready readings.
+ * (B is the 3rd harmonic of the low E, the high E its 4th), and a small microphone hears the 2nd or 3rd harmonic of
+ * a thick string louder than its fundamental. The period of that sum is not the note. So:
+ *   a pluck (the level jumps) — the note is read from what the pluck ADDED to the spectrum (combPitch of the
+ *     difference with the spectrum just before it); `need` such readings in a row that agree lock the string;
+ *   locked — the pitch is measured on that string alone (isolate), within ±120 ¢ of the lock; the lock follows
+ *     the string as the peg is turned;
+ *   no pluck — only a clean steady tone (a reference tone) locks or takes over, and never a harmonic relative;
+ *   the string fades or is muted — the reading freezes at its steady value and is held for holdMs, then cleared.
+ * track(buf, sampleRate, nowMs) → {hz, live, held}; feed({flux, full, near, level, band}, nowMs) is the same on
+ * ready readings (near: (hz) => {hz, clarity, level} | null — the reading on the string isolated at hz).
  */
 export class PitchTracker {
   constructor({ need = 3, keep = 9, holdMs = 1500, onsetRatio = 2.2, onsetPeak = 0.3, onsetMs = 600, sureClarity = 0.9,
-    clearBand = 0.12, tailClarity = 0.3, tailLevel = 0.15, dampRatio = 0.35 } = {}) {
-    Object.assign(this, { need, keep, holdMs, onsetRatio, onsetPeak, onsetMs, sureClarity, clearBand, tailClarity, tailLevel, dampRatio });
+    clearBand = 0.12, tailClarity = 0.3, tailLevel = 0.2, dampRatio = 0.35, fluxShare = 0.3 } = {}) {
+    Object.assign(this, { need, keep, holdMs, onsetRatio, onsetPeak, onsetMs, sureClarity, clearBand, tailClarity, tailLevel,
+      dampRatio, fluxShare });
+    this.strings = null; // Hz of the strings of the tuning (the page sets them): see combPitch
+    this.strict = false; // only pitches near those strings (Auto)
+    this.floor = null; // the quietest the room has been: readings at that level are noise
     this.reset();
   }
 
   reset() {
     this.lock = null; // Hz the string is followed at
     this.recent = []; // its last readings: {hz, w}
-    this.cand = []; // whole-range readings that may become the (next) lock
+    this.cand = []; // readings that may become the (next) lock
     this.levels = [];
+    this.bands = [];
+    this.spectra = []; // the last few power spectra: what was there before a pluck
+    this.base = null; // the spectrum just before the last pluck
     this.onsetAt = null;
     this.lastAt = null;
-    this.lockAt = null;
     this.best = 0; // the best clarity of this string so far
-    this.peak = 0; // its loudest level
+    this.peak = 0; // the loudest its own band has been
     this.env = 0; // the loudness lately (falls by half in a second): what a new pluck is measured against
     this.tickAt = null;
-    this.last = { full: null, near: null, level: 0, onset: false };
+    this.last = { full: null, flux: null, near: null, level: 0, onset: false };
   }
 
   track(buf, sampleRate, now) {
-    const curve = pitchCurve(buf, sampleRate);
-    const full = pickPitch(curve);
-    const near = this.lock !== null ? pickPitch(curve, { near: this.lock }) : null;
-    return this.feed({ full, near, level: curve ? curve.level : rms(buf || []) }, now);
+    const level = rms(buf || []);
+    this.floor = this.floor === null ? level : Math.min(this.floor * 1.003, level); // rises slowly, falls at once
+    const spec = buf && level >= 0.003 ? spectrum(buf, sampleRate) : null;
+    const onset = this._onset(level, now);
+    // what the pluck added: the spectrum now less (twice) the one just before it
+    if (onset && this.base === null) this.base = this.spectra[0] || new Float64Array(spec ? spec.power.length : 0);
+    if (this.onsetAt === null || now - this.onsetAt > this.onsetMs) this.base = null;
+    let flux = null;
+    if (spec && this.base !== null) {
+      const d = new Float64Array(spec.power.length);
+      let add = 0, all = 0;
+      for (let k = 0; k < d.length; k++) {
+        const v = spec.power[k] - 2 * (this.base[k] || 0);
+        if (v > 0) { d[k] = v; add += v; }
+        all += spec.power[k];
+      }
+      if (all > 0 && add >= this.fluxShare * all) flux = combPitch(d, sampleRate, spec.n, { strings: this.strings, strict: this.strict });
+    }
+    if (spec) {
+      this.spectra.push(spec.power);
+      if (this.spectra.length > 4) this.spectra.shift();
+    }
+    let full = spec ? detectPitch(buf, sampleRate) : null;
+    if (full && this.strict && this.strings && !nearString(full.hz, this.strings, 200)) full = null;
+    const near = (hz) => {
+      if (!spec) return null;
+      const one = isolate(spec, hz);
+      const p = pickPitch(pitchCurve(one, sampleRate, { minHz: hz / 1.2, minRms: 0 }), { near: hz, nearCents: 120 });
+      return p ? { ...p, level: rms(one) } : null;
+    };
+    return this.feed({ flux, full, near, level, onset, noise: level < 2 * this.floor }, now);
+  }
+
+  /** A pluck: the level jumped against the last ~150 ms (and is not just the tail of a string swelling a little). */
+  _onset(level, now) {
+    const quiet = this.levels.length ? Math.min(...this.levels) : level;
+    if (this.tickAt !== null) this.env *= 0.5 ** (Math.max(0, now - this.tickAt) / 1000);
+    this.tickAt = now;
+    const onset = level > this.onsetRatio * quiet && level > this.onsetPeak * this.env && level > 0.008
+      && level > 3 * (this.floor ?? 0);
+    if (level > this.env) this.env = level;
+    if (onset) this.onsetAt = now;
+    this.levels.push(level);
+    if (this.levels.length > 4) this.levels.shift();
+    return onset;
   }
 
   _weight(clarity) {
@@ -264,65 +456,66 @@ export class PitchTracker {
     return sum / ws;
   }
 
-  _candidate(full, now, ok, level) {
-    if (!full || !ok) { this.cand = []; return false; }
+  /** A reading that may become the lock: `need` in a row that agree. */
+  _candidate(r, now) {
+    if (!r) { this.cand = []; return false; }
     const prev = this.cand[this.cand.length - 1];
-    if (prev && Math.abs(centsOff(full.hz, prev.hz)) > 60) this.cand = [];
-    this.cand.push(full);
+    if (prev && Math.abs(centsOff(r.hz, prev)) > 60) this.cand = [];
+    this.cand.push(r.hz);
     if (this.cand.length < this.need) return false;
-    // the very first reading of a pluck is sharp (the attack): the lock starts from the ones after it
-    this.recent = this.cand.slice(1).map((c) => ({ hz: c.hz, w: this._weight(c.clarity) }));
+    this.lock = median(this.cand);
     this.cand = [];
-    this.lock = this._estimate();
-    this.best = full.clarity;
-    this.peak = Math.max(level, this.env);
+    this.recent = [];
+    this.bands = [];
+    this.best = 0;
+    this.peak = 0;
+    this.prev = null;
+    this.steady = 0;
     this.lastAt = now;
-    this.lockAt = now;
     return true;
   }
 
-  feed({ full = null, near = null, level = 0 } = {}, now) {
-    // a pluck: the level jumped against the last ~150 ms (and is not just the tail of the string swelling a little)
-    const quiet = this.levels.length ? Math.min(...this.levels) : level;
-    const loud = this.levels.length ? Math.max(...this.levels) : level;
-    if (this.tickAt !== null) this.env *= 0.5 ** (Math.max(0, now - this.tickAt) / 1000);
-    this.tickAt = now;
-    const onset = level > this.onsetRatio * quiet && level > this.onsetPeak * this.env && level > 0.008;
-    if (level > this.env) this.env = level;
-    if (onset) this.onsetAt = now;
-    this.levels.push(level);
-    if (this.levels.length > 4) this.levels.shift();
-    this.last = { full, near, level, onset };
-    // a pluck just now — and, with a string locked, one after that lock (not the pluck that made it)
-    const plucked = this.onsetAt !== null && now - this.onsetAt <= this.onsetMs
-      && (this.lock === null || this.onsetAt - this.lockAt > 150);
-    const sure = full && full.clarity >= this.sureClarity; // a clean steady tone needs no pluck
-
+  feed({ flux = null, full = null, near = null, level = 0, onset, noise = false } = {}, now) {
+    if (onset === undefined) onset = this._onset(level, now);
+    const plucked = this.onsetAt !== null && now - this.onsetAt <= this.onsetMs;
+    const sure = full && full.clarity >= this.sureClarity ? full : null; // a clean steady tone needs no pluck
+    let fresh = false;
     if (this.lock === null) {
-      if (this._candidate(full, now, plucked || sure, level)) return { hz: this.lock, live: true, held: false };
-      return { hz: null, live: false, held: false };
+      fresh = this._candidate(plucked ? flux : sure, now);
+      if (!fresh) { this.last = { full, flux, near: null, level, onset }; return { hz: null, live: false, held: false }; }
+    } else {
+      // another string? by a pluck — whatever it is; with no pluck — only a clean tone that is no relative of this one
+      const r = plucked ? flux : sure && !harmonicallyRelated(sure.hz, this.lock) ? sure : null;
+      fresh = this._candidate(r && Math.abs(centsOff(r.hz, this.lock)) > 150 ? r : null, now);
     }
-    if (level > this.peak) this.peak = level;
-    // another string?
-    const away = full && Math.abs(centsOff(full.hz, this.lock)) > 150;
-    if (this._candidate(full, now, away && (plucked || (sure && !harmonicallyRelated(full.hz, this.lock))), level)) {
-      return { hz: this.lock, live: true, held: false };
+    const nr = typeof near === "function" ? near(this.lock) : near;
+    this.last = { full, flux, near: nr, level, onset };
+    if (nr) {
+      const band = nr.level ?? level;
+      const loud = this.bands.length ? Math.max(...this.bands) : band;
+      this.bands.push(band);
+      if (this.bands.length > 4) this.bands.shift();
+      if (band > this.peak) this.peak = band;
+      // a reading counts while the string still sounds: its band well above what it fell to (the room's noise through
+      // the same band looks like a tone too), fairly clear, and not while the hand mutes it (its level collapses)
+      const clear = nr.clarity >= this.best - this.tailClarity && band >= this.tailLevel * this.peak && !noise;
+      // and it is where the string was, or moves steadily (the peg) — noise through the band jumps about
+      this.steady = this.prev !== null && Math.abs(centsOff(nr.hz, this.prev)) <= 6 ? this.steady + 1 : 0;
+      this.prev = nr.hz;
+      const near0 = Math.abs(centsOff(nr.hz, this.lock)) <= (this.recent.length ? 20 : 50) || this.steady >= 2;
+      if (clear && near0 && band >= this.dampRatio * loud) {
+        if (nr.clarity > this.best) this.best = nr.clarity;
+        this.recent.push({ hz: nr.hz, w: this._weight(nr.clarity) });
+        if (this.recent.length > this.keep) this.recent.shift();
+        this.lock = this._estimate();
+        this.lastAt = now;
+        return { hz: this.lock, live: true, held: false };
+      }
     }
-    // the same string: follow it while the reading is fairly clear and the string is not being muted by the hand
-    const damped = level < this.dampRatio * loud;
-    // a murky reading counts only while the string is still fairly loud: the dying tail is not the pitch any more
-    const clear = near && (near.clarity >= this.best - this.clearBand
-      || (near.clarity >= this.best - this.tailClarity && level >= this.tailLevel * this.peak));
-    if (clear && !damped) {
-      if (near.clarity > this.best) this.best = near.clarity;
-      this.recent.push({ hz: near.hz, w: this._weight(near.clarity) });
-      if (this.recent.length > this.keep) this.recent.shift();
-      this.lock = this._estimate();
-      this.lastAt = now;
-      return { hz: this.lock, live: true, held: false };
-    }
-    if (now - this.lastAt > this.holdMs) {
-      this.reset();
+    if (!fresh && now - this.lastAt > this.holdMs) {
+      this.lock = null;
+      this.recent = [];
+      this.cand = [];
       return { hz: null, live: false, held: false };
     }
     return { hz: this.lock, live: false, held: true };

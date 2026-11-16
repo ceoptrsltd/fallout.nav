@@ -65,6 +65,117 @@ function gauge() {
   return svg;
 }
 
+// ───── the trace: the last seconds of the string against the ideal (the middle line), in the string's colour ─────
+const STRING_COLORS = ["#ff7a59", "#ffb62e", "#e6dc4a", "#5dff8a", "#4fd8e8", "#b79bff"]; // 6th … 1st
+const TRACE_S = 8; // seconds across
+const TRACE_CENTS = 40; // top and bottom of the chart
+function trace() {
+  const cv = h("canvas.tn-trace", { "aria-hidden": "true" });
+  const ctx = cv.getContext("2d");
+  let pts = []; // {t, c, i, held}
+  const push = (t, c, i, held) => {
+    pts.push({ t, c: Math.max(-TRACE_CENTS, Math.min(TRACE_CENTS, c)), i, held });
+    while (pts.length && t - pts[0].t > TRACE_S * 1000 + 500) pts.shift();
+  };
+  const rgba = (hex, a) => `rgba(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)}, ${a})`;
+  function draw(now, labels) {
+    const cssW = cv.clientWidth, cssH = cv.clientHeight;
+    if (!cssW || !cssH) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (cv.width !== Math.round(cssW * dpr) || cv.height !== Math.round(cssH * dpr)) {
+      cv.width = Math.round(cssW * dpr);
+      cv.height = Math.round(cssH * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    const L = 30, R = 10, T = 8, B = 8; // the plot inside the canvas
+    const W = cssW - L - R, H = cssH - T - B, mid = T + H / 2;
+    const y = (c) => mid - (c / TRACE_CENTS) * (H / 2);
+    const x = (t) => L + W - ((now - t) / (TRACE_S * 1000)) * W;
+    // the zones and the grid
+    ctx.fillStyle = "rgba(255, 182, 46, .06)";
+    ctx.fillRect(L, y(CLOSE_CENTS), W, y(-CLOSE_CENTS) - y(CLOSE_CENTS));
+    ctx.fillStyle = "rgba(93, 255, 138, .16)";
+    ctx.fillRect(L, y(IN_TUNE_CENTS), W, y(-IN_TUNE_CENTS) - y(IN_TUNE_CENTS));
+    ctx.lineWidth = 1;
+    ctx.font = "11px Oswald, 'Arial Narrow', sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (const c of [-40, -20, 0, 20, 40]) {
+      ctx.strokeStyle = c === 0 ? "rgba(93, 255, 138, .7)" : "rgba(141, 153, 135, .18)";
+      ctx.beginPath();
+      ctx.moveTo(L, Math.round(y(c)) + 0.5);
+      ctx.lineTo(L + W, Math.round(y(c)) + 0.5);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(141, 153, 135, .8)";
+      ctx.fillText(c === 0 ? "0" : (c > 0 ? "+" : "−") + Math.abs(c), L - 6, y(c));
+    }
+    // the trace: runs of one string; a gap where nothing sounded
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(L, T, W, H);
+    ctx.clip();
+    let run = [];
+    const flush = () => {
+      if (run.length) {
+        const col = STRING_COLORS[run[0].i] || "#dbe4d3";
+        const a = run[0].held ? 0.4 : 1;
+        if (run.length > 1) {
+          ctx.beginPath(); // the area between the string and the ideal
+          ctx.moveTo(x(run[0].t), mid);
+          for (const q of run) ctx.lineTo(x(q.t), y(q.c));
+          ctx.lineTo(x(run[run.length - 1].t), mid);
+          ctx.closePath();
+          ctx.fillStyle = rgba(col, 0.13 * a);
+          ctx.fill();
+        }
+        ctx.beginPath();
+        ctx.moveTo(x(run[0].t), y(run[0].c));
+        for (const q of run) ctx.lineTo(x(q.t), y(q.c));
+        if (run.length === 1) ctx.lineTo(x(run[0].t) + 1, y(run[0].c));
+        ctx.strokeStyle = rgba(col, a);
+        ctx.lineWidth = 2.5;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.setLineDash(run[0].held ? [5, 5] : []);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      run = [];
+    };
+    let prev = null;
+    for (const q of pts) {
+      if (prev && (q.t - prev.t > 200 || q.i !== prev.i || q.held !== prev.held)) {
+        const joined = q.t - prev.t <= 200 && q.i === prev.i; // live ↔ held of one string: no gap in the line
+        flush();
+        if (joined) run.push({ ...prev, held: q.held });
+      }
+      run.push(q);
+      prev = q;
+    }
+    flush();
+    ctx.restore();
+    // the head: where the string is now, with its name
+    const last = pts[pts.length - 1];
+    if (last && now - last.t < 200) {
+      const col = STRING_COLORS[last.i] || "#dbe4d3";
+      ctx.beginPath();
+      ctx.arc(x(last.t), y(last.c), 4.5, 0, 2 * Math.PI);
+      ctx.fillStyle = rgba(col, last.held ? 0.5 : 1);
+      ctx.shadowColor = col;
+      ctx.shadowBlur = last.held ? 0 : 10;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.font = "bold 12px Oswald, 'Arial Narrow', sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillStyle = rgba(col, 0.95);
+      const ly = y(last.c) + (last.c > TRACE_CENTS - 12 ? 14 : -12);
+      ctx.fillText(labels[last.i] || "", x(last.t) - 9, ly);
+    }
+  }
+  return { el: cv, push, draw, clear: () => { pts = []; } };
+}
+
 export function mount(root) {
   root.classList.add("tn-page");
   let prefs = loadPrefs();
@@ -92,7 +203,7 @@ export function mount(root) {
   let wake = null;
   let stopped = false;
   let srcNode = null;
-  let lastP = { full: null, near: null }; // the raw readings of the last tick
+  let lastP = { full: null, near: null, flux: null }; // the raw readings of the last tick
   let rec = null; // a diagnostics recording in progress
   let sending = "";
 
@@ -100,6 +211,7 @@ export function mount(root) {
 
   // ───── the display ─────
   const g = gauge();
+  const tr = trace();
   const noteEl = h("span.tn-note", null, "—");
   const octEl = h("span.tn-oct");
   const centsEl = h("span.tn-cents", null, "— ¢");
@@ -110,7 +222,8 @@ export function mount(root) {
     g,
     h(".tn-read", null, h(".tn-notebox", null, noteEl, octEl), h(".tn-nums", null, centsEl, hzEl)),
     hintEl,
-    targetEl);
+    targetEl,
+    h(".tn-tracebox", null, h("span.tn-sharp2", null, "♯"), tr.el, h("span.tn-flat2", null, "♭")));
 
   // strings: as on the headstock, the 6th (lowest) on the left; Auto picks the one that sounds
   const autoBtn = h("button.btn.tn-auto", { type: "button", title: "Tune whichever string sounds", onclick: () => { pick = null; render(); } }, "Auto");
@@ -118,7 +231,7 @@ export function mount(root) {
   function buildStrings() {
     clear(strBox);
     tuning.notes.forEach((m, i) => {
-      strBox.append(h("button.tn-str", { type: "button", dataset: { i }, title: `String ${stringNumber(i)}: ${noteLabel(m)}`,
+      strBox.append(h("button.tn-str", { type: "button", dataset: { i }, style: "--sc:" + STRING_COLORS[i], title: `String ${stringNumber(i)}: ${noteLabel(m)}`,
         onclick: () => { pick = pick === i ? null : i; target = i; inTuneSince = null; render(); } },
       h("span.tn-str-n", null, noteLabel(m).replace(/\d+$/, "")), h("span.tn-str-k", null, String(stringNumber(i))), h("span.tn-str-ok", null, icon("check"))));
     });
@@ -134,6 +247,7 @@ export function mount(root) {
     save();
     tuned.clear();
     pick = null;
+    tr.clear();
     buildStrings();
     render();
   } }, TUNINGS.map((t) => h("option", { value: t.id, selected: t.id === tuning.id }, `${t.label} — ${t.notes.map((m) => noteLabel(m).replace(/\d+$/, "")).join(" ")}`)));
@@ -278,7 +392,8 @@ export function mount(root) {
       rec.log.push([Math.round(now - rec.t0), +ac.currentTime.toFixed(4), lastP.full ? +lastP.full.hz.toFixed(3) : 0,
         lastP.full ? +lastP.full.clarity.toFixed(3) : 0, +level.toFixed(4), reading.hz ? +reading.hz.toFixed(3) : 0,
         reading.live ? 1 : 0, reading.held ? 1 : 0, target, +spring.x.toFixed(2),
-        lastP.near ? +lastP.near.hz.toFixed(3) : 0, lastP.near ? +lastP.near.clarity.toFixed(3) : 0]);
+        lastP.near ? +lastP.near.hz.toFixed(3) : 0, lastP.near ? +lastP.near.clarity.toFixed(3) : 0,
+        lastP.flux ? +lastP.flux.hz.toFixed(2) : 0, lastP.onset ? 1 : 0]);
     }
     if (lastFrame === null || now - lastFrame > 120) render(now);
   }
@@ -358,7 +473,7 @@ export function mount(root) {
       }
       await post(`/api/tuner/diag/${r.id}/log`, JSON.stringify({ id: r.id, sampleRate: r.sr, samples: r.n, at0: r.at0, ua: navigator.userAgent,
         track, tuning: tuning.id, a4: prefs.a4, pick, analyseMs: ANALYSE_MS, fftSize: fft,
-        cols: ["ms", "acTime", "rawHz", "clarity", "level", "hz", "live", "held", "target", "needle", "nearHz", "nearClarity"], log: r.log }), "application/json");
+        cols: ["ms", "acTime", "rawHz", "clarity", "level", "hz", "live", "held", "target", "needle", "nearHz", "nearClarity", "fluxHz", "onset"], log: r.log }), "application/json");
       sending = "";
       recInfo.dataset.done = `Sent: ${secs} s (${r.id})`;
       toast("ok", `Recording sent: ${secs} s`);
@@ -409,6 +524,9 @@ export function mount(root) {
   function render(now = performance.now()) {
     const a4 = prefs.a4;
     put(a4Val, `${a4} Hz`);
+    // what the tracker may take for a string: the tuning (Auto), or the one tapped — wherever it is now
+    tracker.strings = pick === null ? tuning.notes.map((m) => noteHz(m, a4)) : [noteHz(tuning.notes[pick], a4)];
+    tracker.strict = pick === null;
     const hz = listening ? reading.hz : null;
     if (hz !== null && pick === null) target = nearestString(hz, tuning.notes, a4);
     if (pick !== null) target = pick;
@@ -432,6 +550,8 @@ export function mount(root) {
       else if (now - inTuneSince >= TUNED_MS) tuned.add(target);
     } else inTuneSince = null;
 
+    if (hz !== null) tr.push(now, Math.abs(raw) <= NEEDLE_CENTS ? pos : raw, target, reading.held && !reading.live);
+    tr.draw(now, tuning.notes.map((m) => noteLabel(m)));
     g.setNeedle(needleDeg(pos, SPAN), (hz === null ? "idle" : lvl) + (reading.held && !reading.live ? " held" : ""));
     const n = nearestNote(hz, a4);
     put(noteEl, n ? n.name : listening ? "…" : "—");

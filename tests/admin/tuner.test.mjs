@@ -3,7 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   TUNINGS, tuningById, noteHz, centsOff, nearestNote, noteLabel, nearestString, stringNumber, tuneLevel, tuneHint,
-  fmtCents, needleDeg, detectPitch, pitchCurve, pickPitch, harmonicallyRelated, decimate2, PitchTracker, NeedleSpring, trimmedMean, clampA4, median,
+  fmtCents, needleDeg, detectPitch, pitchCurve, pickPitch, harmonicallyRelated, decimate2, PitchTracker, fft, spectrum,
+  combPitch, isolate, nearString, NeedleSpring, trimmedMean, clampA4, median,
 } from "../../web/admin/js/tuner-fmt.js";
 
 /** A plucked string: the fundamental and its harmonics (the 2nd often louder than the 1st), decaying, with noise. */
@@ -174,42 +175,94 @@ test("tracker on sound: the plucked thin string is kept while the low ones ring 
 });
 
 test("tracker on readings: lock by a pluck or a clean tone, relatives ignored, hold then clear", () => {
-  const rd = (hz, clarity = 0.95) => ({ hz, clarity });
+  const rd = (hz, clarity = 0.95, level) => ({ hz, clarity, ...(level === undefined ? {} : { level }) });
   let tr = new PitchTracker({ holdMs: 1000 });
   let t = 0;
-  const tick = (full, near, level) => tr.feed({ full, near, level }, (t += 45));
+  const tick = (o) => tr.feed(o, (t += 45));
   // murky and no pluck (a tail of something) — nothing
-  for (let i = 0; i < 6; i++) assert.equal(tick(rd(82.4, 0.75), null, 0.01).hz, null);
-  // a pluck: the level jumps; the third agreeing reading locks, the first (the sharp attack) does not count
-  tick(null, null, 0.2);
-  tick(rd(250, 0.9), null, 0.2);
-  tick(rd(247.2), null, 0.15);
-  let o = tick(rd(247), null, 0.12);
-  assert.ok(o.live && Math.abs(o.hz - 247.1) < 0.11, String(o.hz));
-  // the tail: whole-range readings at a third and a half of the pitch — the lock stays, by the reading near it
-  for (let i = 0; i < 8; i++) o = tick(rd(i % 2 ? 82.3 : 123.5, 0.9), rd(246.9, 0.85), 0.05);
+  for (let i = 0; i < 6; i++) assert.equal(tick({ full: rd(82.4, 0.75), level: 0.01 }).hz, null);
+  // a pluck: the level jumps; three readings of what it added lock the string; the pitch is then the one near it
+  tick({ level: 0.2 });
+  tick({ flux: rd(248), level: 0.2 });
+  tick({ flux: rd(247.5), level: 0.15 });
+  let o = tick({ flux: rd(247), near: rd(246.9, 0.98, 0.1), level: 0.12 });
+  assert.ok(o.live && Math.abs(o.hz - 246.9) < 0.01, String(o.hz));
+  // the tail: the plain reading says a third and a half of the pitch — the lock stays, by the reading near it
+  for (let i = 0; i < 8; i++) o = tick({ full: rd(i % 2 ? 82.3 : 123.5, 0.95), near: rd(246.9, 0.9, 0.05), level: 0.05 });
   assert.ok(o.live && Math.abs(o.hz - 246.9) < 0.3, String(o.hz));
-  // the level swells a little in the tail (beats): not a pluck, the relative is still ignored
-  for (const lv of [0.012, 0.012, 0.03, 0.03, 0.03, 0.03]) o = tick(rd(82.3, 0.9), null, lv);
+  // noise through the string's band jumps about: not followed
+  for (const c of [40, -35, 60, -50]) o = tick({ near: rd(246.9 * 2 ** (c / 1200), 0.95, 0.04), level: 0.04 });
+  assert.ok(o.held && Math.abs(o.hz - 246.9) < 0.3, String(o.hz));
+  // the string has died away (its band far below its loudest): frozen
+  o = tick({ near: rd(250, 0.95, 0.004), level: 0.01 });
   assert.ok(o.held && Math.abs(o.hz - 246.9) < 0.3);
   // held for holdMs after the last good reading, then cleared
-  for (let i = 0; i < 20; i++) o = tick(null, null, 0.004);
+  for (let i = 0; i < 24; i++) o = tick({ level: 0.004 });
   assert.deepEqual(o, { hz: null, live: false, held: false });
 
   // a clean steady tone (a reference tone, no pluck) locks; another clean one that is no relative takes over
   tr = new PitchTracker();
   t = 0;
-  for (let i = 0; i < 3; i++) o = tick(rd(110, 0.97), null, 0.05);
+  const nearOf = (hz) => (lock) => (Math.abs(centsOff(hz, lock)) < 120 ? rd(hz, 0.97, 0.05) : null);
+  for (let i = 0; i < 4; i++) o = tick({ full: rd(110, 0.97), near: nearOf(110), level: 0.05 });
   assert.ok(o.live && Math.abs(o.hz - 110) < 0.01);
-  for (let i = 0; i < 3; i++) o = tick(rd(146.8, 0.97), rd(110, 0.6), 0.05);
+  for (let i = 0; i < 4; i++) o = tick({ full: rd(220, 0.97), near: nearOf(110), level: 0.05 }); // its octave: a relative
+  assert.ok(Math.abs(o.hz - 110) < 0.01);
+  for (let i = 0; i < 4; i++) o = tick({ full: rd(146.8, 0.97), near: nearOf(146.8), level: 0.05 });
   assert.ok(o.live && Math.abs(o.hz - 146.8) < 0.01);
   // a peg turned: the lock follows the string
   let hz = 146.8;
-  for (let i = 0; i < 40; i++) { hz *= 2 ** (3 / 1200); o = tick(rd(hz, 0.97), rd(hz, 0.97), 0.05); }
+  for (let i = 0; i < 40; i++) { hz *= 2 ** (3 / 1200); o = tick({ full: rd(hz, 0.97), near: nearOf(hz), level: 0.05 }); }
   assert.ok(o.live && Math.abs(centsOff(o.hz, hz)) < 20, "follows 120 ¢ of tuning: " + centsOff(o.hz, hz));
-  // the hand mutes the string: the level collapses — the reading of that moment does not count
-  o = tick(rd(hz * 1.03, 0.95), rd(hz * 1.03, 0.95), 0.005);
+  // the hand mutes the string: its level collapses — the reading of that moment does not count
+  o = tick({ near: rd(hz * 1.03, 0.95, 0.005), level: 0.005 });
   assert.ok(o.held);
+});
+
+test("spectrum: fft there and back; the note of what a pluck added; one string out of the mix", () => {
+  const re = Float64Array.from({ length: 64 }, (_, i) => Math.sin(i * 0.7) + 0.3 * Math.cos(i * 2.1)), im = new Float64Array(64);
+  const src = re.slice();
+  fft(re, im);
+  fft(re, im, true);
+  for (let i = 0; i < 64; i++) assert.ok(Math.abs(re[i] - src[i]) < 1e-9 && Math.abs(im[i]) < 1e-9);
+  assert.equal(spectrum(new Float32Array(1000), SR), null); // not a power of two
+
+  const std = TUNINGS[0].notes.map((m) => noteHz(m));
+  const pw = (parts) => spectrum(ring(parts, 0.1).subarray(0, 2048), SR).power;
+  // a D whose microphone hears the 2nd harmonic almost alone: 294 Hz is no string, the D an octave below is
+  const d = pw([{ hz: noteHz(50), at: -1, amp: 0.1, decay: 0, harmonics: [0.03, 1, 0.05, 0.4] }]);
+  assert.ok(Math.abs(combPitch(d, SR, 2048).hz - 2 * noteHz(50)) < 3, "the spectrum alone says 294");
+  assert.ok(Math.abs(centsOff(combPitch(d, SR, 2048, { strings: std, strict: true }).hz, noteHz(50))) < 20, "with the tuning — D3");
+  // the high E: its harmonics are harmonics of the low E and of the A too — the highest pitch that explains them
+  const e = pw([{ hz: noteHz(64), at: -1, amp: 0.1, decay: 0 }]);
+  assert.ok(Math.abs(centsOff(combPitch(e, SR, 2048, { strings: std, strict: true }).hz, noteHz(64))) < 20);
+  // the low E heard without its fundamental: still the low E, not the B or the high E inside it
+  const lo = pw([{ hz: noteHz(40), at: -1, amp: 0.1, decay: 0, harmonics: [0.02, 0.6, 1, 0.7, 0.5, 0.4] }]);
+  assert.ok(Math.abs(centsOff(combPitch(lo, SR, 2048, { strings: std, strict: true }).hz, noteHz(40))) < 25);
+  // between two strings, far from both (a slack string, a knock): nothing in Auto; by hand — the pitch itself
+  const v = pw([{ hz: 127, at: -1, amp: 0.1, decay: 0 }]);
+  assert.equal(combPitch(v, SR, 2048, { strings: std, strict: true }), null);
+  assert.ok(Math.abs(combPitch(v, SR, 2048, { strings: [noteHz(45)] }).hz - 127) < 2);
+  assert.ok(nearString(250, std, 150) && !nearString(294, std, 150));
+
+  // the high E under the low E and the A: alone again after isolate()
+  const e4 = noteHz(64) * 2 ** (4 / 1200);
+  const mix = ring([{ hz: e4, at: -1, amp: 0.03, decay: 0 }, { hz: noteHz(40), at: -1, amp: 0.05, decay: 0 }, { hz: noteHz(45), at: -1, amp: 0.04, decay: 0 }], 0.1).subarray(0, 2048);
+  const one = isolate(spectrum(mix, SR), noteHz(64));
+  const p1 = pickPitch(pitchCurve(one, SR, { minRms: 0 }), { near: noteHz(64), nearCents: 120 });
+  assert.ok(p1 && p1.clarity > 0.9 && Math.abs(centsOff(p1.hz, e4)) < 12, JSON.stringify(p1));
+});
+
+test("tracker on sound: a D heard by its 2nd harmonic, plucked again and again, never becomes another string", () => {
+  const d3 = noteHz(50) * 2 ** (4 / 1200);
+  const hs = [0.04, 1, 0.08, 0.35];
+  const sig = ring([0.5, 1.6, 2.7, 3.8].map((at) => ({ hz: d3, at, amp: 0.2, decay: 2.5, harmonics: hs })), 5);
+  const tr = new PitchTracker();
+  tr.strings = TUNINGS[0].notes.map((m) => noteHz(m));
+  tr.strict = true;
+  const rows = follow(sig, tr).filter((r) => r.hz !== null);
+  assert.ok(rows.length > 60, "shown most of the time: " + rows.length);
+  assert.ok(rows.every((r) => Math.abs(centsOff(r.hz, d3)) < 8), "always the D: " + rows.map((r) => centsOff(r.hz, d3).toFixed(0)).join(" "));
 });
 
 test("small helpers: median, smoothing, A4 bounds", () => {
