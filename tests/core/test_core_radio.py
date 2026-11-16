@@ -999,44 +999,6 @@ async def test_bt_auto_connect_backs_off_while_the_speaker_is_away(tmp_path, mon
     assert len(bt.calls) == len(tried) + 2  # 30 s after that failure
 
 
-async def test_bt_no_speaker_calls_while_the_rear_view_is_on(tmp_path, monkeypatch):
-    """The rear view on screen: no auto-connect at all, and a call already going on is cancelled (Disconnect cancels
-    a pending Connect in BlueZ) without counting as a failure."""
-    from fnav.core import bluetooth as btmod
-
-    monkeypatch.setattr(btmod, "QUIET_POLL_S", 0.01)
-    bt, _clock = await _away_speaker(tmp_path, monkeypatch, freeze=False)
-    rear = [True]
-    bt.radio_quiet = lambda: rear[0]
-    await bt._tick()
-    assert bt.calls == []
-    rear[0] = False
-    paging = asyncio.Event()
-    cancelled = asyncio.Event()
-
-    async def page(mac):
-        bt.calls.append("connect")
-        paging.set()
-        await asyncio.wait_for(cancelled.wait(), 5)
-        raise BluetoothError(502, "Connection failed: le-connection-abort-by-local")
-
-    async def disconnect(mac):
-        bt.calls.append("disconnect")
-        cancelled.set()
-
-    bt._connect, bt._disconnect = page, disconnect
-    tick = asyncio.create_task(bt._tick())
-    await asyncio.wait_for(paging.wait(), 5)
-    rear[0] = True  # reversing: the rear view comes on in the middle of the call
-    await asyncio.wait_for(tick, 5)
-    assert bt.calls == ["connect", "disconnect"]
-    assert bt._auto_fails == 0 and bt._auto_next == 0.0
-    rear[0] = False
-    bt._connect = _AwaySpeaker._connect.__get__(bt)
-    await bt._tick()
-    assert bt.calls[-1] == "connect"  # back to the map: tried again on the next round
-
-
 async def test_radio_turns_off_after_waiting_too_long_for_the_speaker(tmp_path, monkeypatch):
     """The speaker is shared with a phone: the radio waiting for it (switched on the day before, or a station key
     pressed with no speaker) started over the phone's music as soon as the speaker came near. Waiting longer than

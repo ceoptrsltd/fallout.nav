@@ -42,6 +42,19 @@ def test_daly_frame_is_glued_from_pieces_and_parsed():
     assert r is not None
     assert (r.voltage_v, r.current_a, r.soc_pct, r.cells_mv, r.temps_c, r.delta_mv) == (20.8, 0.0, 9.0, CELLS,
                                                                                         [26, 25], 60)
+    assert not r.charging and r.input_w == 0
+
+
+def test_daly_charging_is_a_positive_current():
+    """Measured on the powerbank while it was charging (2026-11-16): 23.2 V, +33.4 A, the charge going up."""
+    r = daly.parse(daly_frame({40: 232, 41: 30334, 42: 375, 49: 6}))
+    assert r.charging and r.input_w == 775
+    st = pw.StationReader("second", pw.DALY)
+    st.reading, st.read_at = r, st.mono()
+    assert st.slot_view().charging is True and st.slot_view().input_w == 775
+    for raw in (30002, 30000, 29800):  # sensor noise, rest, discharge
+        r = daly.parse(daly_frame({40: 232, 41: raw, 42: 375, 49: 6}))
+        assert not r.charging and r.input_w == 0
 
 
 def test_broken_frames_are_rejected():

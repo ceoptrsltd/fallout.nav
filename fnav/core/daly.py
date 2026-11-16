@@ -21,6 +21,7 @@ NOTIFY_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
 WRITE_UUID = "0000fff2-0000-1000-8000-00805f9b34fb"
 ADDR = 0xD2
 REGS = 62
+CHARGE_MIN_A = 0.3  # ток заряда меньше — не зарядка (шум датчика тока)
 
 
 def crc16(data: bytes) -> int:
@@ -83,7 +84,7 @@ class Frames:
 @dataclass
 class DalyReading:
     voltage_v: float
-    current_a: float  # знак (заряд/разряд) не проверен на устройстве
+    current_a: float  # плюс — заряд (замер 2026-11-16: +33,4 А на зарядке, заряд растёт; регистр 57 — мощность, Вт)
     soc_pct: float
     cells_mv: list[int] = field(default_factory=list)
     temps_c: list[int] = field(default_factory=list)
@@ -94,6 +95,15 @@ class DalyReading:
     charge_on: bool | None = None  # MOSFET заряда (регистр 53)
     discharge_on: bool | None = None  # MOSFET разряда (регистр 54)
     balancing: bool | None = None  # регистр 52
+
+    @property
+    def charging(self) -> bool:
+        return self.current_a >= CHARGE_MIN_A
+
+    @property
+    def input_w(self) -> int:
+        """Мощность зарядки, Вт (не заряжается — 0)."""
+        return round(self.voltage_v * self.current_a) if self.charging else 0
 
 
 def parse(frame: bytes) -> DalyReading | None:

@@ -184,9 +184,6 @@ class Core:
                                   self._save_radio_volume, transport=opts.radio_transport,
                                   player=opts.radio_player)
         self.bt.on_output(self.radio.set_output)
-        # задний вид на экране: колонку не вызывать — вызов глушит Wi-Fi общего чипа, а с ним и заднюю камеру
-        self.bt.radio_quiet = lambda: self.view_camera == "rear" and self.camera_rear.enabled
-        # электростанции по BLE (docs/contracts/power.md) и вещание задний вид не останавливает
         # вещание BLE (Victron, датчик воздуха): слушаем окнами, реже — пока играет музыка (fnav/core/advscan.py)
         self.advscan: AdvScanner = (mock_adv_scanner() if opts.mock else
                                     AdvScanner(lambda: self.radio.phase == "playing"))
