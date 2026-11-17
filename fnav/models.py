@@ -939,6 +939,13 @@ class LevelTelemetry(_Model):
     wheels_cm: WheelsCm | None = None
 
 
+class PowerTimer(_Model):
+    """Таймер выхода станции: через in_s секунд переключить в on (POST /api/power/{slot}/control с in_min)."""
+
+    on: bool
+    in_s: int
+
+
 class PowerSlot(_Model):
     """Одна станция на экране; None — нет свежих данных (не настроена, не подключилась, данные старше минуты)."""
 
@@ -960,6 +967,7 @@ class PowerSlot(_Model):
     balancing: bool | None = None  # Daly: идёт балансировка ячеек (рег. 52); у других станций — None
     cells_mv: list[int] | None = None  # Daly: напряжения ячеек, мВ (только веб-интерфейс, на экране нет)
     released_s: int | None = None  # отпущена для приложения на телефоне: через столько секунд подключимся снова
+    timers: dict[str, PowerTimer] | None = None  # выход → таймер, заведённый неполной протяжкой слайдера
 
 
 class PowerTelemetry(_Model):
@@ -987,6 +995,8 @@ class PowerControl(_Model):
     output: Literal["usb", "dc", "ac", "light", "charge", "discharge", "charger"]
     on: bool | None = None  # usb/dc/ac/light/charge/discharge
     mode: Literal["auto", "on", "off"] | None = None  # charger
+    # таймер (только с on): через столько минут переключить; 0 — снять таймер этого выхода; нет — переключить сейчас
+    in_min: int | None = Field(None, ge=0, le=240)
 
 
 class AirTelemetry(_Model):

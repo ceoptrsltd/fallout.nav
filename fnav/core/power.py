@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import json
 import logging
 import math
 import time
@@ -40,6 +41,7 @@ from typing import Any, Literal
 from fnav.core import daly, fossibot, leadbatt, victron
 from fnav.core.advscan import AdvScanner
 from fnav.core.ble import BleError, BleLink
+from fnav.core.config import atomic_write_text
 from fnav.core.leadsoc import LeadSoc
 from fnav.core.util import cancel_tasks
 from fnav.models import (
@@ -50,6 +52,7 @@ from fnav.models import (
     PowerStationStatus,
     PowerStatus,
     PowerTelemetry,
+    PowerTimer,
 )
 
 log = logging.getLogger("fnav.core.power")
@@ -71,6 +74,11 @@ BURST_TRIES = 20
 BURST_PAUSE_S = 30.0
 AWAY_BACKOFF_S = (30.0, 60.0, 120.0, 300.0)
 RELEASE_CHECK_S = 5.0
+# Таймер выхода (неполная протяжка слайдера): срок пришёл, а станция не отвечает — повторяем раз в TIMER_RETRY_S,
+# не дольше TIMER_GIVE_UP_S; после перезапуска ядра просроченный больше чем на столько же — не выполняем.
+TIMER_POLL_S = 1.0
+TIMER_RETRY_S = 15.0
+TIMER_GIVE_UP_S = 600.0
 MUSIC_RETRY_S = 30.0  # пока играет музыка — неудачное подключение повторять не чаще (серии попыток слышны)
 # Подключаемся строго по одной станции: чип Pi устанавливает одно LE-подключение за раз, а одновременные попытки
 # мешают друг другу (2026-11-15: три станции сразу после перезапуска — по 30 «abort-by-local» у каждой, ни одной удачи).
@@ -522,14 +530,25 @@ def fake_daly(voltage: float, soc: float = 55.0) -> bytes:
     return body + bytes([c & 0xFF, c >> 8])
 
 
+@dataclass
+class _Timer:
+    on: bool
+    at: float  # time.monotonic() срока
+    retry_at: float = 0.0
+
+
 class PowerService:
     def __init__(self, get_settings: Callable[[], PowerSettings], mock: bool = False,
                  link_factory: LinkFactory | None = None,
                  tune: Callable[[bool], Awaitable[None]] | None = None,
                  busy: Callable[[], bool] = lambda: False, guard: Callable[[], bool] = lambda: False,
-                 scanner: AdvScanner | None = None, lead_state: Path | None = None) -> None:
+                 scanner: AdvScanner | None = None, lead_state: Path | None = None,
+                 timers_state: Path | None = None) -> None:
         self.get_settings = get_settings
         self.mock = mock
+        self._timers: dict[tuple[str, str], _Timer] = {}  # (станция, выход) → что и когда
+        self._timers_path = timers_state
+        self._timer_task: asyncio.Task | None = None
 
         def factory(proto: Protocol) -> LinkFactory:
             if link_factory is not None:
@@ -560,6 +579,8 @@ class PowerService:
 
     async def start(self, background: bool = True) -> None:
         self.running = background
+        self._load_timers()
+        self._watch_timers()
         await self.apply_settings(self.get_settings())
 
     async def apply_settings(self, s: PowerSettings) -> None:
@@ -584,24 +605,113 @@ class PowerService:
     async def control(self, slot: str, cmd: PowerControl, source: str = "web") -> PowerStatus:
         """Команда станции: собирает кадр её протокол; неподходящая команда — 422, станция не подключена — 409."""
         r = self._reader(slot)
+        frame, what = self._frame(r, cmd)
+        key = (slot, cmd.output)
+        if cmd.in_min is not None:  # таймер: сейчас станции ничего не шлём
+            if cmd.on is None:
+                raise PowerError(422, "A timer needs on or off")
+            if cmd.in_min:
+                self._timers[key] = _Timer(cmd.on, time.monotonic() + cmd.in_min * 60.0)
+                log.warning("power: %s %s - %s in %d min (%s)", slot, r.mac, what, cmd.in_min, source)
+                self._watch_timers()
+            elif self._timers.pop(key, None) is not None:
+                log.info("power: %s %s - timer for %s removed (%s)", slot, r.mac, cmd.output, source)
+            self._save_timers()
+            return self.status()
+        await self._send(slot, r, cmd, frame, what, source)
+        if self._timers.pop(key, None) is not None:  # переключили рукой — таймер этого выхода больше не нужен
+            self._save_timers()
+        return self.status()
+
+    def _frame(self, r: StationReader, cmd: PowerControl) -> tuple[bytes, str]:
+        """Кадр команды по протоколу станции; неподходящая команда — 422."""
         try:
             if r.proto.kind == "fossibot" and cmd.output in fossibot.OUTPUT_REGS and cmd.on is not None:
-                frame, what = fossibot.output_request(cmd.output, cmd.on), f"{cmd.output} {'on' if cmd.on else 'off'}"
-            elif r.proto.kind == "daly" and cmd.output in daly.MOSFET_REGS and cmd.on is not None:
-                frame, what = daly.mosfet_request(cmd.output, cmd.on), f"{cmd.output} {'on' if cmd.on else 'off'}"
-            elif r.proto.kind == "lead" and cmd.output == "charger" and cmd.mode is not None:
-                frame, what = leadbatt.mode_request(cmd.mode), f"charger {cmd.mode}"
-            else:
-                raise PowerError(422, f"{cmd.output} cannot be switched on this station")
+                return fossibot.output_request(cmd.output, cmd.on), f"{cmd.output} {'on' if cmd.on else 'off'}"
+            if r.proto.kind == "daly" and cmd.output in daly.MOSFET_REGS and cmd.on is not None:
+                return daly.mosfet_request(cmd.output, cmd.on), f"{cmd.output} {'on' if cmd.on else 'off'}"
+            if r.proto.kind == "lead" and cmd.output == "charger" and cmd.mode is not None:
+                return leadbatt.mode_request(cmd.mode), f"charger {cmd.mode}"
         except KeyError as e:
             raise PowerError(422, "Unknown output") from e
+        raise PowerError(422, f"{cmd.output} cannot be switched on this station")
+
+    async def _send(self, slot: str, r: StationReader, cmd: PowerControl, frame: bytes, what: str, source: str) -> None:
         if slot == "main" and cmd.output == "light":
             self._light_until = 0.0  # рука хозяина важнее мигания: и возвращать «как было» не нужно — решает он
             await cancel_tasks(self._light_task)
             self._light_task = None
         log.warning("power: %s %s - %s (%s)", slot, r.mac, what, source)
         await r.command(frame)
-        return self.status()
+
+    # ── таймеры выходов ──
+    def _watch_timers(self) -> None:
+        if self.running and self._timers and (self._timer_task is None or self._timer_task.done()):
+            self._timer_task = asyncio.get_running_loop().create_task(self._run_timers(), name="power-timers")
+
+    async def _run_timers(self) -> None:
+        while self._timers:
+            now = time.monotonic()
+            for key, t in list(self._timers.items()):
+                if now >= max(t.at, t.retry_at) and self._timers.get(key) is t:
+                    await self._fire(key, t)
+            await asyncio.sleep(TIMER_POLL_S)
+
+    async def _fire(self, key: tuple[str, str], t: _Timer) -> None:
+        """Срок пришёл. Выход уже в нужном состоянии — ничего не шлём. Станция не отвечает (отпущена для телефона —
+        забираем обратно) — повторяем раз в TIMER_RETRY_S, пока не выйдет TIMER_GIVE_UP_S."""
+        slot, output = key
+        r = self._reader(slot)
+        state = (r.slot_view().outputs or {}).get(output)
+        try:
+            if state is None:
+                if not r.connected or r.released_s() is not None:
+                    r.release(0)
+                raise PowerError(409, "The station is not connected")
+            if state == t.on:
+                log.info("power: %s timer: %s is already %s", slot, output, "on" if t.on else "off")
+            else:
+                cmd = PowerControl(output=output, on=t.on)
+                await self._send(slot, r, cmd, *self._frame(r, cmd), "timer")
+        except (PowerError, BleError) as e:
+            now = time.monotonic()
+            if now - t.at < TIMER_GIVE_UP_S:
+                t.retry_at = now + TIMER_RETRY_S
+                log.info("power: %s timer for %s: %s - trying again", slot, output, getattr(e, "detail", e))
+                return
+            log.warning("power: %s timer for %s gave up: %s", slot, output, getattr(e, "detail", e))
+        if self._timers.get(key) is t:
+            del self._timers[key]
+            self._save_timers()
+
+    def _save_timers(self) -> None:
+        if self._timers_path is None:
+            return
+        off = time.time() - time.monotonic()
+        rows = [{"slot": k[0], "output": k[1], "on": t.on, "at": round(t.at + off)} for k, t in self._timers.items()]
+        try:
+            atomic_write_text(self._timers_path, json.dumps(rows))
+        except OSError as e:
+            log.warning("power: cannot save the timers: %s", e)
+
+    def _load_timers(self) -> None:
+        """После перезапуска ядра таймеры идут дальше по часам; просроченный больше TIMER_GIVE_UP_S — не выполняем."""
+        if self._timers_path is None or self._timers:
+            return
+        try:
+            rows = json.loads(self._timers_path.read_text())
+        except (OSError, ValueError):
+            return
+        off = time.time() - time.monotonic()
+        for d in rows if isinstance(rows, list) else []:
+            try:
+                key, on, at = (str(d["slot"]), str(d["output"])), bool(d["on"]), float(d["at"]) - off
+            except (KeyError, TypeError, ValueError):
+                continue
+            if key[0] not in ("main", "second") or time.monotonic() - at > TIMER_GIVE_UP_S:
+                log.warning("power: %s timer for %s is too old - dropped", *key)
+                continue
+            self._timers[key] = _Timer(on, at)
 
     def release(self, slot: str, body: PowerRelease) -> PowerStatus:
         """Отпустить станцию для приложения на телефоне на body.minutes (нет — power.release_min); 0 — вернуть сейчас."""
@@ -724,14 +834,19 @@ class PowerService:
 
     async def stop(self) -> None:
         self.running = False
-        await cancel_tasks(self._light_task)
+        await cancel_tasks(self._light_task, self._timer_task)
         await self.main.stop()
         await self.second.stop()
         await self.third.stop()
 
     def telemetry(self) -> PowerTelemetry:
         """Всегда (веб-интерфейс); плашку на экране прячет сам экран по power.show_on_screen."""
-        return PowerTelemetry(main=self.main.slot_view(), second=self.second.slot_view(), third=self.third.slot_view())
+        views = {"main": self.main.slot_view(), "second": self.second.slot_view(), "third": self.third.slot_view()}
+        now = time.monotonic()
+        for (slot, output), t in self._timers.items():
+            v = views[slot]
+            v.timers = {**(v.timers or {}), output: PowerTimer(on=t.on, in_s=max(0, math.ceil(t.at - now)))}
+        return PowerTelemetry(**views)
 
     def status(self) -> PowerStatus:
         return PowerStatus(stations=[self.main.status(), self.second.status(), self.third.status()])

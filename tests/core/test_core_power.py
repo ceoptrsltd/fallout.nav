@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 
 import pytest
 
@@ -293,6 +295,76 @@ async def test_anything_else_is_refused(fast):
         assert _commands(links["main"], pw.FOSSIBOT) == []
     finally:
         await svc.stop()
+
+
+async def test_a_timer_sends_nothing_until_its_time_then_the_same_frame(fast, monkeypatch):
+    from fnav.models import PowerControl
+
+    monkeypatch.setattr(pw, "TIMER_POLL_S", 0.01)
+    svc, links = await _service_with_links(fast)
+    try:
+        await svc.control("main", PowerControl(output="ac", on=True, in_min=25))
+        await svc.control("second", PowerControl(output="discharge", on=False, in_min=5))
+        await asyncio.sleep(0.05)
+        assert _commands(links["main"], pw.FOSSIBOT) == [] and _commands(links["second"], pw.DALY) == []
+        t = svc.telemetry()
+        assert t.main.timers["ac"].on is True and 24 * 60 < t.main.timers["ac"].in_s <= 25 * 60
+        assert t.second.timers["discharge"].on is False and t.third.timers is None
+        # 0 минут — снять; команда «сейчас» тоже снимает таймер своего выхода
+        await svc.control("second", PowerControl(output="discharge", on=False, in_min=0))
+        assert svc.telemetry().second.timers is None
+        svc._timers[("main", "ac")].at = time.monotonic()  # срок пришёл
+        await _until(lambda: _commands(links["main"], pw.FOSSIBOT) == [bytes.fromhex("11 06 00 1A 00 01 5D 6B")])
+        await _until(lambda: svc.telemetry().main.timers is None)
+        await svc.control("main", PowerControl(output="usb", on=True, in_min=10))
+        await svc.control("main", PowerControl(output="usb", on=True))
+        assert svc.telemetry().main.timers is None
+        with pytest.raises(pw.PowerError) as e:  # таймер — только включить / выключить
+            await svc.control("main", PowerControl(output="ac", in_min=5))
+        assert e.value.status == 422
+    finally:
+        await svc.stop()
+
+
+async def test_a_timer_waits_for_the_station_and_skips_what_is_already_done(fast, monkeypatch):
+    from fnav.models import PowerControl
+
+    monkeypatch.setattr(pw, "TIMER_POLL_S", 0.01)
+    monkeypatch.setattr(pw, "TIMER_RETRY_S", 0.02)
+    svc, links = await _service_with_links(fast)
+    try:
+        # выход уже выключен (в ответах станции все выходы выключены) — срок пришёл, слать нечего
+        await svc.control("main", PowerControl(output="dc", on=False, in_min=5))
+        svc._timers[("main", "dc")].at = time.monotonic()
+        await _until(lambda: svc.telemetry().main.timers is None)
+        assert _commands(links["main"], pw.FOSSIBOT) == []
+        # станция отпущена для телефона — к сроку забираем её обратно и переключаем
+        await svc.control("second", PowerControl(output="charge", on=True, in_min=5))
+        svc.second.release(600)
+        await _until(lambda: not svc.second.connected)
+        svc._timers[("second", "charge")].at = time.monotonic()
+        await _until(lambda: svc.telemetry().second.timers is None)
+        assert daly.mosfet_request("charge", True) in _commands(links["second"], pw.DALY)[-1:]
+    finally:
+        await svc.stop()
+
+
+async def test_timers_survive_a_restart_but_not_a_long_one(fast, tmp_path):
+    from fnav.models import PowerControl
+
+    p = tmp_path / "power_timers.json"
+    s = PowerSettings()
+    svc = pw.PowerService(lambda: s, timers_state=p)
+    await svc.control("main", PowerControl(output="ac", on=False, in_min=30))
+    await svc.control("second", PowerControl(output="charge", on=False, in_min=30))
+    rows = json.loads(p.read_text())
+    rows[1]["at"] -= 30 * 60 + pw.TIMER_GIVE_UP_S + 60  # этот давно просрочен
+    p.write_text(json.dumps(rows))
+    again = pw.PowerService(lambda: s, timers_state=p)
+    again._load_timers()
+    assert list(again._timers) == [("main", "ac")]
+    left = again._timers[("main", "ac")].at - time.monotonic()
+    assert 29 * 60 < left <= 30 * 60 + 1 and again._timers[("main", "ac")].on is False
 
 
 async def test_alarm_flashes_the_light_and_puts_it_back(fast, monkeypatch):

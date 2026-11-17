@@ -1209,6 +1209,13 @@ h2 { font-family: var(--f-label); font-weight: 400; font-size: 13.5px; letter-sp
 .sl-label { font-size: 13px; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sl-state { grid-row: 1; grid-column: 2; align-self: end; font-family: var(--f-label); font-size: 10.5px; letter-spacing: .08em; color: var(--faint); text-align: right; } /* ON / OFF beside the label */
 .sl.on .sl-state { color: var(--amber); }
+.sl .sl-hint.timer { color: var(--amber); pointer-events: auto; cursor: pointer; padding: 0 8px; letter-spacing: .03em; } /* a running timer: a tap removes it */
+.sl { position: relative; }
+/* the bubble above the finger while the thumb is dragged: what letting go here will do */
+.sl-tip { position: absolute; bottom: 86px; transform: translateX(-50%); z-index: 20; padding: 7px 11px; border-radius: 6px; background: var(--amber); color: #1a1200; font-family: var(--f-label); font-size: 15px; letter-spacing: .04em; white-space: nowrap; pointer-events: none; box-shadow: 0 3px 10px rgba(0, 0, 0, .7); }
+.sl-tip::after { content: ""; position: absolute; left: 50%; bottom: -5px; width: 10px; height: 10px; margin-left: -5px; background: inherit; transform: rotate(45deg); }
+.sl-tip.now { background: var(--text); }
+.sl-tip[hidden] { display: none; }
 /* the track is a recessed slot with the app's corner radius; «on» is amber like the other switches (.switch) */
 .sl-track { grid-row: 2; grid-column: 1 / -1; position: relative; height: 38px; border: 1px solid var(--line2); border-radius: var(--radius); background: var(--bg); box-shadow: inset 0 1px 3px rgba(0, 0, 0, .6); overflow: hidden; touch-action: none; }
 .sl.on .sl-track { background: #3a2a07; border-color: var(--amber-d); }
