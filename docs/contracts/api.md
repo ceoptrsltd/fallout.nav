@@ -71,6 +71,8 @@
 | `/display/**` | `web/display/` |
 
 Статика отдаётся с `Cache-Control: no-cache` (браузер перепроверяет по ETag), `version.json` — с `no-store`.
+Текст и шрифты (js, css, html, json, svg, ttf; от 1 КБ) уходят сжатыми (`Content-Encoding: gzip`, `Vary: Accept-Encoding`),
+если браузер это принимает; ETag тот же, что у несжатого ответа.
 Как админка по метке предлагает перезагрузиться после деплоя — `docs/contracts/remote.md`, раздел 6.
 
 ## WebSocket `/ws`

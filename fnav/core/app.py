@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.datastructures import Headers
 from starlette.staticfiles import StaticFiles
 
 from fnav import __version__, paths, tz
@@ -103,15 +105,55 @@ class GuestLinkBody(BaseModel):
 
 class NoCacheStatic(StaticFiles):
     """Статика других агентов меняется часто — браузер всегда перепроверяет (ETag/Last-Modified).
-    Метка версии админки (version.json, пишет деплой: tools/web-version.sh) не кэшируется вовсе."""
+    Метка версии админки (version.json, пишет деплой: tools/web-version.sh) не кэшируется вовсе.
+
+    Текстовые файлы и шрифты отдаются сжатыми (gzip), если браузер это принимает: первая загрузка админки
+    с телефона — втрое меньше байт. Сжатая копия файла делается один раз и хранится в памяти, пока файл
+    не изменится (mtime, размер); ETag и Last-Modified те же, что у несжатого ответа."""
 
     NO_STORE = frozenset({"version.json"})
+    GZIP_EXT = frozenset({".js", ".mjs", ".css", ".html", ".json", ".svg", ".txt", ".md", ".ttf", ".otf"})
+    GZIP_MIN = 1024  # мельче — не стоит заголовков
 
-    def file_response(self, full_path, *args, **kwargs) -> Response:  # type: ignore[override]
-        resp = super().file_response(full_path, *args, **kwargs)
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._gz: dict[str, tuple[tuple[float, int], bytes]] = {}
+
+    def _gzipped(self, full_path, stat_result) -> bytes | None:
+        key = str(full_path)
+        mark = (stat_result.st_mtime, stat_result.st_size)
+        hit = self._gz.get(key)
+        if hit and hit[0] == mark:
+            return hit[1]
+        try:
+            with open(full_path, "rb") as f:
+                raw = f.read()
+        except OSError:
+            return None
+        body = gzip.compress(raw, 6, mtime=0)
+        if len(body) >= len(raw):  # не сжимается — отдаём как есть
+            return None
+        self._gz[key] = (mark, body)
+        return body
+
+    def file_response(self, full_path, stat_result, scope, status_code=200) -> Response:  # type: ignore[override]
+        resp = super().file_response(full_path, stat_result, scope, status_code)
         no_store = os.path.basename(full_path) in self.NO_STORE
         resp.headers["Cache-Control"] = "no-store" if no_store else "no-cache"
-        return resp
+        ext = os.path.splitext(str(full_path))[1].lower()
+        if ext not in self.GZIP_EXT or stat_result.st_size < self.GZIP_MIN:
+            return resp
+        resp.headers["Vary"] = "Accept-Encoding"
+        req = Headers(scope=scope)
+        if (not isinstance(resp, FileResponse) or status_code != 200 or scope.get("method") != "GET"
+                or "range" in req or "gzip" not in req.get("accept-encoding", "").lower()):
+            return resp  # 304, HEAD, часть файла, браузер без gzip
+        body = self._gzipped(full_path, stat_result)
+        if body is None:
+            return resp
+        headers = {k: resp.headers[k] for k in ("etag", "last-modified", "cache-control", "vary") if k in resp.headers}
+        headers["Content-Encoding"] = "gzip"
+        return Response(body, media_type=resp.media_type, headers=headers)
 
 
 def _err(status: int, detail: str, headers: dict | None = None) -> JSONResponse:

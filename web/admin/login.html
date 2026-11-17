@@ -13,6 +13,12 @@
   <meta name="apple-mobile-web-app-title" content="fallout.nav">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <link rel="stylesheet" href="css/app.css">
+  <!-- the modules login.js imports, asked for at once (tests/admin/preload.test.mjs keeps the list true) -->
+  <!-- preload: login -->
+  <link rel="modulepreload" href="js/api.js">
+  <link rel="modulepreload" href="js/app-login.js">
+  <link rel="modulepreload" href="js/guest-fmt.js">
+  <!-- /preload -->
 </head>
 <body>
   <div class="login-wrap">

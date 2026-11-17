@@ -13,9 +13,46 @@
   <meta name="apple-mobile-web-app-title" content="fallout.nav">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <link rel="stylesheet" href="css/app.css">
+  <!-- Everything the first screen needs is asked for at once, next to the stylesheet, instead of one step of the import
+       chain (and of the stylesheet's fonts) after another: over a mobile link every step is a round trip.
+       The lists follow the modules' imports: tests/admin/preload.test.mjs fails when they drift. -->
+  <link rel="preload" as="font" type="font/ttf" href="../display/ui/fonts/BlackOpsOne-Regular.ttf" crossorigin>
+  <link rel="preload" as="font" type="font/ttf" href="../display/ui/fonts/RussoOne-Regular.ttf" crossorigin>
+  <link rel="preload" as="font" type="font/ttf" href="../display/ui/fonts/Oswald-wght.ttf" crossorigin>
+  <!-- preload: shell -->
+  <link rel="modulepreload" href="js/dom.js">
+  <link rel="modulepreload" href="js/api.js">
+  <link rel="modulepreload" href="js/push.js">
+  <link rel="modulepreload" href="js/store.js">
+  <link rel="modulepreload" href="js/ui.js">
+  <link rel="modulepreload" href="js/conn-fmt.js">
+  <link rel="modulepreload" href="js/preview.js">
+  <link rel="modulepreload" href="js/install.js">
+  <link rel="modulepreload" href="js/app-login.js">
+  <link rel="modulepreload" href="js/version-fmt.js">
+  <link rel="modulepreload" href="js/devtime.js">
+  <link rel="modulepreload" href="js/alarm-fmt.js">
+  <link rel="modulepreload" href="js/hist-fmt.js">
+  <link rel="modulepreload" href="js/tracking-fmt.js">
+  <link rel="modulepreload" href="js/install-fmt.js">
+  <!-- /preload -->
   <script>
     // "Install app" (js/install.js): keep the browser's install prompt even if it fires before the modules run
     window.addEventListener("beforeinstallprompt", function (e) { e.preventDefault(); window.fnavInstallEvent = e; });
+    // The page the address asks for (the Dashboard without one): its module now — shell.js imports it only after
+    // the session and the settings have answered. The Dashboard, where the app starts, with all it imports.
+    (function () {
+      var PAGES = "dashboard alarm tracking camera recordings radio bluetooth air nav compass level tuner gps controls system".split(" ");
+      var DASHBOARD = "js/rec-play.js js/snap-view.js js/air-fmt.js js/air-chart.js js/power-controls.js js/dash-fmt.js js/slide-switch.js js/level-fmt.js js/radio-fmt.js".split(" ");
+      var id = (location.hash.match(/^#\/([\w-]+)/) || [])[1];
+      if (PAGES.indexOf(id) < 0) id = "dashboard";
+      ["js/pages/" + id + ".js"].concat(id === "dashboard" ? DASHBOARD : []).forEach(function (href) {
+        var l = document.createElement("link");
+        l.rel = "modulepreload";
+        l.href = href;
+        document.head.appendChild(l);
+      });
+    })();
   </script>
 </head>
 <body>
