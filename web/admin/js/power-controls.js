@@ -5,7 +5,7 @@
 // for its phone app or not connected) shows «Reconnect now» instead of its greyed-out switches.
 // Fossibot and powerbank switches also take a timer (slide-switch.js): the thumb let go in the middle of the track —
 // POST …/control {output, on, in_min}; the device keeps the timer (telemetry.power.<slot>.timers) and switches itself.
-import { h } from "./dom.js";
+import { h, put, setHidden } from "./dom.js";
 import { api, errText } from "./api.js";
 import { toast } from "./ui.js";
 import { shownState, slideSwitch } from "./slide-switch.js";
@@ -60,11 +60,11 @@ export function powerControls() {
     const btn = rc.get(slot);
     const x = power?.[slot];
     const away = !!power && !!x && (x.released_s > 0 || x.soc_pct == null && x.voltage_v == null);
-    row.hidden = away;
-    btn.hidden = !away;
+    setHidden(row, away);
+    setHidden(btn, !away);
     const note = btn.previousElementSibling;
-    note.textContent = x?.released_s > 0 ? `Released for the phone app · back in ${x.released_s >= 60 ? `${Math.ceil(x.released_s / 60)} min` : `${x.released_s} s`}` : "Not connected";
-    note.hidden = !away;
+    put(note, x?.released_s > 0 ? `Released for the phone app · back in ${x.released_s >= 60 ? `${Math.ceil(x.released_s / 60)} min` : `${x.released_s} s`}` : "Not connected");
+    setHidden(note, !away);
   };
   const rows = {};
 
@@ -124,7 +124,7 @@ export function powerControls() {
     const auto = shownState(leadMode === "auto", expect.get("third:auto"), now);
     autoSw.set({ on: auto, disabled: !known, unknown: !known });
     chgSw.set({ on: shownState(leadOn, expect.get("third:charger"), now), disabled: !known || auto, unknown: !known });
-    leadGrp.hidden = !known;
+    setHidden(leadGrp, !known);
     for (const slot of ["main", "second"]) state(slot, rows[slot], power);
   };
   return el;

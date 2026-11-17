@@ -266,9 +266,10 @@ function tick() {
   updateOnline();
 }
 
-export async function start() {
+/** settings: a GET api/settings already on its way (shell.js asks together with the session), else asked here. */
+export async function start(settings) {
   try {
-    setSettings(await api.get("/api/settings"));
+    setSettings(await (settings || api.get("/api/settings")));
   } catch (e) {
     console.warn("settings", e);
   }

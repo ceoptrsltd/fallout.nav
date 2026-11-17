@@ -4,7 +4,7 @@
 // api/alarm (camera watch, events) is polled slowly and fetched at once on a new event (telemetry alarm.seq) or state
 // change. Device unreachable: the last known data (this session's, or kept in localStorage — store.js keep) greyed out
 // with "Last seen …"; remotely the position may come from the server's journal (api/tracking/last).
-import { h, icon, clear, isNum } from "../dom.js";
+import { h, icon, clear, isNum, setHidden, setAttr } from "../dom.js";
 import { api, errText, REMOTE } from "../api.js";
 import { store, on, keep, kept, lastTelemetry, applySettings } from "../store.js";
 import { toast, banner } from "../ui.js";
@@ -141,7 +141,7 @@ export function mount(root) {
       put(abWord, "—");
       put(abSub, stErr || (store.online ? "Loading…" : store.online === null ? "Connecting…" : "No connection to the device"));
       put(abInfo, "");
-      abInfo.hidden = true;
+      setHidden(abInfo, true);
       clear(abAct);
       abAct.dataset.sig = "";
       mainWhat = null;
@@ -191,7 +191,7 @@ export function mount(root) {
       chips.forEach((c) => abInfo.append(h(`span.${kindCls(c.kind)}`, { title: c.title || "" }, c.text), " · "));
       if (lastTxt) abInfo.append(h("span", null, lastTxt));
       else if (abInfo.lastChild) abInfo.lastChild.remove(); // the trailing « · »
-      abInfo.hidden = !chips.length && !lastTxt;
+      setHidden(abInfo, !chips.length && !lastTxt);
     }
     const bad = chips.some((c) => c.kind === "bad");
 
@@ -225,7 +225,7 @@ export function mount(root) {
         extraBtns.append(h(`button.btn.al-big.${a.cls}`, { type: "button", title: a.title, onclick: () => act(a.what) },
           busy === a.what ? h("span.spin") : icon(a.icon), a.label));
       }
-      extraBtns.hidden = !rest.length;
+      setHidden(extraBtns, !rest.length);
     }
     // the cool-down ends: the same buttons come alive (not rebuilt under the finger)
     const dis = !!busy || inert;
@@ -356,16 +356,16 @@ export function mount(root) {
 
   function renderRear(t) {
     const on = rearOn();
-    rearRow.hidden = !on;
+    setHidden(rearRow, !on);
     if (!on) return;
     const rc = t.camera_rear || null;
     const ri = rearInfo(rc);
     put(rearTxt, ri.text);
     cls(rearTxt, "db-reartxt " + (ri.rec ? "" : kindCls(ri.kind)));
-    rearDot.hidden = !ri.rec;
+    setHidden(rearDot, !ri.rec);
     rearDot.classList.toggle("on", ri.rec);
     const sa = screenAction(screenNow(store.online ? t.display : null));
-    rearOnScr.hidden = !sa.onScreen;
+    setHidden(rearOnScr, !sa.onScreen);
     if (rearBtn.dataset.to !== sa.to) {
       rearBtn.dataset.to = sa.to;
       put(rearBtn.lastChild, sa.label);
@@ -373,7 +373,7 @@ export function mount(root) {
       rearBtn.classList.toggle("on", sa.onScreen);
     }
     put(rearErr, (rc && rc.error) || "");
-    rearErr.hidden = !(rc && rc.error);
+    setHidden(rearErr, !(rc && rc.error));
   }
 
   const sysTemp = h("span", null, "—");
@@ -388,7 +388,7 @@ export function mount(root) {
   const lvSub = h(".db-ts.wrap");
   const lvNote = h(".db-ts.amber");
   const lvTile = tile("#/level", "level", "Level", lvV, lvSub, lvNote);
-  lvTile.hidden = true;
+  setHidden(lvTile, true);
 
   // power stations (docs/contracts/power.md): the main one's charge with a gauge, the other two in volts
   const pwCol = (label, withBar) => {
@@ -414,7 +414,7 @@ export function mount(root) {
       h(".db-tl", null, icon("bolt"), h("span", null, "Power"), h("span.db-go", null, "›")),
       h(".db-power", null, pwMain.el, pwSecond.el, pwThird.el)),
     pwCtl);
-  pwTile.hidden = true;
+  setHidden(pwTile, true);
 
   // air quality (docs/contracts/air.md): the values now, each with a tiny line of the last hour
   const airCells = new Map();
@@ -428,12 +428,12 @@ export function mount(root) {
   const airAge = h("span.db-air-age");
   const airTile = h("a.db-tile.wide", { href: "#/air" },
     h(".db-tl", null, icon("air"), h("span", null, "Air"), airAge, h("span.db-go", null, "›")), airGrid);
-  airTile.hidden = true;
+  setHidden(airTile, true);
   let airHist = null;
   let airTimer = null;
   function renderAir(t) {
     const a = t.air;
-    airTile.hidden = !a;
+    setHidden(airTile, !a);
     if (!a) return;
     put(airAge, a.age_s == null ? "no data" : "");
     for (const m of AIR_METRICS) {
@@ -454,7 +454,7 @@ export function mount(root) {
 
   function renderPower(t) {
     const pi = powerInfo(t.power);
-    pwTile.hidden = !pi;
+    setHidden(pwTile, !pi);
     if (!pi) return;
     pwCtl.render(store.online ? t.power : null); // offline: switches greyed out
     for (const [c, x] of [[pwMain, pi.main], [pwSecond, pi.second], [pwThird, pi.third]]) {
@@ -464,22 +464,22 @@ export function mount(root) {
       put(c.sub, x.sub);
       put(c.note, x.note || "");
       cls(c.note, "db-ts " + kindCls(x.noteKind));
-      c.note.hidden = !x.note;
-      c.bolt.hidden = !x.charging;
+      setHidden(c.note, !x.note);
+      setHidden(c.bolt, !x.charging);
       put(c.cells, x.cells || "");
-      c.cells.hidden = !x.cells;
+      setHidden(c.cells, !x.cells);
       cls(c.cells, "db-cells" + (x.cellsBad ? " red db-blink" : ""));
       put(c.bal, x.balance || "");
-      c.bal.hidden = !x.balance;
+      setHidden(c.bal, !x.balance);
       cls(c.bal, "db-ts" + (x.balancing ? " green db-balancing" : ""));
       const cv = x.cellVolts || [];
       if (c.volts.dataset.v !== cv.join(" ")) {
         c.volts.dataset.v = cv.join(" ");
         c.volts.replaceChildren(...cv.map((v) => h("span", null, v)));
       }
-      c.volts.hidden = !cv.length;
+      setHidden(c.volts, !cv.length);
       if (c.bar) {
-        c.bar.className = "db-batt " + kindCls(x.kind);
+        cls(c.bar, "db-batt " + kindCls(x.kind));
         c.bar.firstChild.style.width = x.frac === null ? "0%" : `${Math.round(x.frac * 100)}%`;
       }
     }
@@ -619,7 +619,7 @@ export function mount(root) {
   function renderSeen() {
     const lt = lastTelemetry();
     const show = store.online === false || (store.online === null && !!lt);
-    seenEl.hidden = !show;
+    setHidden(seenEl, !show);
     if (!show) return;
     put(seenEl, lt ? lastSeenText(lt.at, Date.now()) + (store.online === null ? " — connecting…" : " — no connection to the device")
       : "No connection to the device");
@@ -648,26 +648,26 @@ export function mount(root) {
     const lim = m.moving && !sp ? limitText(t.speed_limit) : null;
     put(posTxt, m.text);
     put(posLim, lim || "");
-    posLim.hidden = !lim;
+    setHidden(posLim, !lim);
     cls(posV, "db-tv" + (m.moving ? " green" : ""));
     const fx = sp ? { text: "From the server · " + eventAgo(sp.ts, nowS()), kind: "" } : fixInfo(g);
     put(posFix, fx.text);
     cls(posFix, "db-ts " + kindCls(fx.kind));
     put(posLL, fmtLatLon(pg.lat, pg.lon) || "");
-    posLL.hidden = !fmtLatLon(pg.lat, pg.lon);
+    setHidden(posLL, !fmtLatLon(pg.lat, pg.lon));
 
     const c = camInfo(cam);
     put(camV.lastChild, c.text);
     cls(camV, "db-tv " + (c.rec ? "" : kindCls(c.kind)));
-    recDot.hidden = !c.rec;
+    setHidden(recDot, !c.rec);
     recDot.classList.toggle("on", c.rec);
     const ex = exposureInfo(cam);
     put(camExp, ex ? ex.text : "");
-    camExp.title = ex ? ex.title : "";
-    camExp.hidden = !ex;
+    setAttr(camExp, "title", ex ? ex.title : "");
+    setHidden(camExp, !ex);
     cls(camExp, "db-ts" + (ex && ex.night ? " db-night" : ""));
     put(camErr, cam.error || "");
-    camErr.hidden = !cam.error;
+    setHidden(camErr, !cam.error);
     renderRear(t);
 
     const tp = tempInfo(sys.cpu_temp_c);
@@ -683,19 +683,19 @@ export function mount(root) {
     const pw = throttleInfo(sys.throttled);
     const powBad = pw.kind === "bad" || pw.kind === "warn";
     put(sysPow, powBad ? pw.text : "");
-    sysPow.hidden = !powBad;
+    setHidden(sysPow, !powBad);
     cls(sysPow, "db-ts " + kindCls(pw.kind));
 
     const lv = levelInfo(t.level);
-    lvTile.hidden = !lv;
+    setHidden(lvTile, !lv);
     sysTile.classList.toggle("wide", !lv); // keep the grid even without the level tile
     if (lv) {
       put(lvV, lv.text);
       cls(lvV, "db-tv " + kindCls(lv.kind));
       put(lvSub, lv.sub);
-      lvSub.hidden = !lv.sub;
+      setHidden(lvSub, !lv.sub);
       put(lvNote, lv.note);
-      lvNote.hidden = !lv.note;
+      setHidden(lvNote, !lv.note);
     }
 
     renderPower(t);
@@ -714,7 +714,7 @@ export function mount(root) {
   function renderRadio(force) {
     const lt = lastTelemetry();
     const r = lt ? lt.t.radio : null;
-    radioTile.hidden = !r && !!lt; // a device without the radio
+    setHidden(radioTile, !r && !!lt); // a device without the radio
     const ri = radioInfo(r);
     put(rTitle, ri.title);
     cls(rTitle, "db-station" + (ri.off ? " off" : ""));
@@ -729,7 +729,7 @@ export function mount(root) {
       spk.dataset.sig = ssig;
       clear(spk).append(icon("bt"), h("span", null, sp.text));
       spk.className = "db-spk " + kindCls(sp.kind);
-      spk.hidden = !r;
+      setHidden(spk, !r);
       spk.title = sp.connected ? "Bluetooth speaker connected" : r && r.output ? "Bluetooth speaker not connected" : "No Bluetooth speaker selected";
     }
     // the play button stays in place: only its icon and label change
@@ -755,15 +755,15 @@ export function mount(root) {
       starBtn.classList.toggle("on", fav);
       starBtn.setAttribute("aria-pressed", String(fav));
     }
-    starBtn.hidden = !(r && r.station);
-    starBtn.title = fav ? "Remove the station from favorites" : "Add the station to favorites";
+    setHidden(starBtn, !(r && r.station));
+    setAttr(starBtn, "title", fav ? "Remove the station from favorites" : "Add the station to favorites");
     const mode = radioMode();
     shufBtn.classList.toggle("on", mode === "random");
-    shufBtn.setAttribute("aria-pressed", String(mode === "random"));
-    shufBtn.title = mode === "random" ? "Shuffle on: the next station is a random one — tap for in order" : "Shuffle off: stations in order — tap for random";
+    setAttr(shufBtn, "aria-pressed", String(mode === "random"));
+    setAttr(shufBtn, "title", mode === "random" ? "Shuffle on: the next station is a random one — tap for in order" : "Shuffle off: stations in order — tap for random");
     favModeBtn.classList.toggle("on", mode === "favorites");
-    favModeBtn.setAttribute("aria-pressed", String(mode === "favorites"));
-    favModeBtn.title = mode === "favorites" ? "Playing the favorites — tap to go back to all stations in order" : "Play the favorites";
+    setAttr(favModeBtn, "aria-pressed", String(mode === "favorites"));
+    setAttr(favModeBtn, "title", mode === "favorites" ? "Playing the favorites — tap to go back to all stations in order" : "Play the favorites");
     shufBtn.disabled = favModeBtn.disabled = !r;
   }
 

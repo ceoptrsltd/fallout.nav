@@ -1,7 +1,7 @@
 // Air (docs/contracts/air.md): the Qingping air quality sensor — what it says now and the last 7 days. One chart
 // per value: the line is the average, the band behind it the min…max of every 15 minutes; the colour is the zone
 // (green — fine, amber — raised, red — off the scale). The sensor is only listened to (Bluetooth LE broadcasts).
-import { h, clear } from "../dom.js";
+import { h, clear, put, setCls } from "../dom.js";
 import { api, errText } from "../api.js";
 import { store, on, applySettings } from "../store.js";
 import { toast, switchEl } from "../ui.js";
@@ -36,12 +36,12 @@ export function mount(root) {
 
   function renderNow() {
     const a = store.online ? store.telemetry?.air : null;
-    age.textContent = a ? `sensor heard ${fmtAge(a.age_s)}` + (a.battery_pct != null ? ` · battery ${a.battery_pct} %` : "") : "";
+    put(age, a ? `sensor heard ${fmtAge(a.age_s)}` + (a.battery_pct != null ? ` · battery ${a.battery_pct} %` : "") : "");
     for (const m of METRICS) {
       const c = cards.get(m.key);
       const v = a?.[m.key];
-      c.now.textContent = fmtValue(m, v);
-      c.now.className = "air-now " + levelOf(m, v);
+      put(c.now, fmtValue(m, v));
+      setCls(c.now, "air-now " + levelOf(m, v));
     }
   }
 

@@ -1,5 +1,5 @@
 // Compass: live X/Y/Z and heading, calibration wizard, mounting offset, declination.
-import { h, clear, isNum, compassWord } from "../dom.js";
+import { h, clear, isNum, compassWord, put, setCls, setAttr } from "../dom.js";
 import { api, errText } from "../api.js";
 import { SettingsForm, section } from "../form.js";
 import { store, on, applySettings } from "../store.js";
@@ -38,10 +38,10 @@ function sectorDiagram() {
     const counts = sectorCounts(cal);
     const scale = Math.max(8, ...counts);
     counts.forEach((c, i) => {
-      paths[i].setAttribute("fill-opacity", c > 0 ? (0.3 + 0.7 * Math.min(1, c / scale)).toFixed(2) : "0.06");
-      paths[i].firstChild.textContent = `${i * 10}-${(i + 1) * 10} deg: ${c} point${c === 1 ? "" : "s"}`;
+      setAttr(paths[i], "fill-opacity", c > 0 ? (0.3 + 0.7 * Math.min(1, c / scale)).toFixed(2) : "0.06");
+      put(paths[i].firstChild, `${i * 10}-${(i + 1) * 10} deg: ${c} point${c === 1 ? "" : "s"}`);
     });
-    centerPct.textContent = cal ? Math.round(cal.coverage_pct || 0) + "%" : "-";
+    put(centerPct, cal ? Math.round(cal.coverage_pct || 0) + "%" : "-");
   };
   return svg;
 }
@@ -68,7 +68,7 @@ function declinationWidget(f) {
     num.disabled = auto;
     if (!auto) num.value = String(v);
     const d = store.telemetry?.heading?.declination_deg;
-    cur.textContent = isNum(d) ? `currently applied: ${d.toFixed(1)}°` : "";
+    put(cur, isNum(d) ? `currently applied: ${d.toFixed(1)}°` : "");
   }
   return { el: h("span", { style: { display: "inline-flex", gap: "12px", alignItems: "center", flexWrap: "wrap" } }, seg, num, "°", cur), update: sync };
 }
@@ -122,12 +122,12 @@ export async function mount(root) {
     ctx.fillStyle = "#ffb62e"; ctx.font = "11px monospace"; ctx.fillText(`±${m.toFixed(0)} µT`, 6, 14);
   }
 
-  function setV(k, t) { hv[k].textContent = t; }
+  function setV(k, t) { put(hv[k], t); }
   function live() {
     const t = store.telemetry;
     if (!t) return;
     const hh = t.heading || {};
-    hd.textContent = isNum(hh.deg) ? `${hh.deg.toFixed(0)}° ${compassWord(hh.deg)}` : "—";
+    put(hd, isNum(hh.deg) ? `${hh.deg.toFixed(0)}° ${compassWord(hh.deg)}` : "—");
     arrow.setAttribute("transform", `rotate(${isNum(hh.deg) ? hh.deg : 0} 50 50)`);
     setV("src", SRC[hh.source] || "—");
     setV("mag", isNum(hh.mag_deg) ? hh.mag_deg.toFixed(1) + "°" : "—");
@@ -144,11 +144,11 @@ export async function mount(root) {
       const pct = Math.max(-1, Math.min(1, v / 100)) * 50;
       b.i.style.left = pct >= 0 ? "50%" : 50 + pct + "%";
       b.i.style.width = Math.abs(pct) + "%";
-      b.val.textContent = v.toFixed(1);
+      put(b.val, v.toFixed(1));
       const r = c["raw_" + k];
-      b.raw.textContent = isNum(r) ? `raw ${r.toFixed(1)}` : "";
+      put(b.raw, isNum(r) ? `raw ${r.toFixed(1)}` : "");
     }
-    chipInfo.textContent = c ? `chip: ${c.chip || "?"} · ${c.ok ? "responding" : "NOT RESPONDING"}` : "Compass is not responding";
+    put(chipInfo, c ? `chip: ${c.chip || "?"} · ${c.ok ? "responding" : "NOT RESPONDING"}` : "Compass is not responding");
     chipInfo.style.color = c && c.ok ? "" : "var(--red)";
     if (c) { pts.push([c.x, c.y]); if (pts.length > 300) pts.shift(); drawScatter(); }
   }
@@ -288,15 +288,15 @@ export async function mount(root) {
     diagram.update(c);
     if (!c) { stateBadge.textContent = "no data"; stateBadge.className = "badge"; autoMsg.textContent = ""; return; }
     const [txt, kind] = AUTO_STATE[c.state] || [c.state, ""];
-    stateBadge.textContent = txt;
-    stateBadge.className = "badge" + (kind ? " " + kind : "");
-    av.samples.textContent = String(c.samples ?? 0);
-    av.cov.textContent = isNum(c.coverage_pct) ? c.coverage_pct.toFixed(0) + " %" : "—";
-    av.rms.textContent = isNum(c.rms_deg) ? c.rms_deg.toFixed(1) + "°" : "—";
-    av.applied.textContent = c.applied ? "yes" : "no";
-    av.applied.className = "v " + (c.applied ? "green" : "");
-    av.saved.textContent = when(c.last_saved);
-    autoMsg.textContent = c.message || "";
+    put(stateBadge, txt);
+    setCls(stateBadge, "badge" + (kind ? " " + kind : ""));
+    put(av.samples, String(c.samples ?? 0));
+    put(av.cov, isNum(c.coverage_pct) ? c.coverage_pct.toFixed(0) + " %" : "—");
+    put(av.rms, isNum(c.rms_deg) ? c.rms_deg.toFixed(1) + "°" : "—");
+    put(av.applied, c.applied ? "yes" : "no");
+    setCls(av.applied, "v " + (c.applied ? "green" : ""));
+    put(av.saved, when(c.last_saved));
+    put(autoMsg, c.message || "");
   }
   async function resetAuto() {
     if (!(await confirmDialog({ title: "Reset auto-calibration?", text: "The samples collected so far are discarded and collection starts over. The currently saved calibration is not changed.", okText: "Reset", danger: true }))) return;
@@ -322,14 +322,14 @@ export async function mount(root) {
     h(".kv", null, skv("source", "Source"), skv("when", "Calibrated"), skv("quality", "Quality"), skv("rms", "RMS error"), skv("cov", "Coverage"), skv("samples", "Samples"), skv("offset", "Offset (hard iron), µT"), skv("dev", "Deviation A, B, C, D, E (°)")));
   function renderSaved() {
     const c = store.settings?.compass?.calibration || {};
-    sv.source.textContent = c.source === "auto" ? "auto (GPS course)" : c.source === "manual" ? "manual" : "none";
-    sv.when.textContent = when(c.fitted_at);
-    sv.quality.textContent = isNum(c.quality) ? (c.quality * 100).toFixed(0) + " %" : "—";
-    sv.rms.textContent = isNum(c.rms_deg) ? c.rms_deg.toFixed(1) + "°" : "—";
-    sv.cov.textContent = c.coverage_pct ? c.coverage_pct.toFixed(0) + " %" : "—";
-    sv.samples.textContent = c.samples ? String(c.samples) : "—";
-    sv.offset.textContent = (c.offset || []).map((x) => x.toFixed(1)).join(" ; ") || "—";
-    sv.dev.textContent = c.deviation && c.deviation.length ? c.deviation.map((x) => x.toFixed(2)).join(" ; ") : "not applied";
+    put(sv.source, c.source === "auto" ? "auto (GPS course)" : c.source === "manual" ? "manual" : "none");
+    put(sv.when, when(c.fitted_at));
+    put(sv.quality, isNum(c.quality) ? (c.quality * 100).toFixed(0) + " %" : "—");
+    put(sv.rms, isNum(c.rms_deg) ? c.rms_deg.toFixed(1) + "°" : "—");
+    put(sv.cov, c.coverage_pct ? c.coverage_pct.toFixed(0) + " %" : "—");
+    put(sv.samples, c.samples ? String(c.samples) : "—");
+    put(sv.offset, (c.offset || []).map((x) => x.toFixed(1)).join(" ; ") || "—");
+    put(sv.dev, c.deviation && c.deviation.length ? c.deviation.map((x) => x.toFixed(2)).join(" ; ") : "not applied");
   }
 
   // ── settings ──

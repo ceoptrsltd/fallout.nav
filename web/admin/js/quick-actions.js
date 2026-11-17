@@ -1,6 +1,6 @@
 // Quick actions (Camera page): protect the recording, the car monitor on / off, what the car screen shows.
 // quickActions() → {el, dispose}; it follows telemetry, settings and the device's events itself.
-import { h, icon } from "./dom.js";
+import { h, icon, setCls, setHidden, setAttr } from "./dom.js";
 import { api, errText } from "./api.js";
 import { store, on } from "./store.js";
 import { toast, segmented, confirmDialog } from "./ui.js";
@@ -143,12 +143,12 @@ export function quickActions() {
     const off = store.offline; // the server answered for the device: nothing to switch
     busyIcon(protBtn, qBusy.protect, "lock");
     protBtn.disabled = off || qBusy.protect || qCool("protect");
-    vidRow.hidden = vidMissing;
+    setHidden(vidRow, vidMissing);
     const a = videoAction(vidOn);
     put(vidState, a.state);
-    vidState.className = "db-qstate " + kindCls(a.kind);
+    setCls(vidState, "db-qstate " + kindCls(a.kind));
     put(vidBtn.lastChild, a.label);
-    vidBtn.title = off ? "The device is offline" : vidErr ? "Car monitor: " + vidErr : a.title;
+    setAttr(vidBtn, "title", off ? "The device is offline" : vidErr ? "Car monitor: " + vidErr : a.title);
     busyIcon(vidBtn, qBusy.video, "screen");
     vidBtn.disabled = off || qBusy.video || qCool("video");
     if (!qBusy.screen) modeSeg.set(forceMode());

@@ -2,7 +2,7 @@
 // (GET api/level, polled while the page is open), the calibration wizard — level: precise two-point or single on
 // level ground; forward: the board axis or learned while driving — and settings.level. The preview is the car
 // screen's own widget (web/display/ui/level.js), drawn into a canvas here.
-import { h, icon, clear } from "../dom.js";
+import { h, icon, clear, put, setCls, setHidden } from "../dom.js";
 import { api } from "../api.js";
 import { SettingsForm } from "../form.js";
 import { store, on } from "../store.js";
@@ -77,7 +77,7 @@ export function mount(root) {
     } catch (e) {
       console.error("level preview", e);
       hud = null;
-      pvBox.hidden = true;
+      setHidden(pvBox, true);
     }
   }
 
@@ -86,13 +86,13 @@ export function mount(root) {
     const b = levelBadge(l);
     clear(headBadge).append(badge(b.text, b.kind));
     const ok = l && l.sensor_ok !== false;
-    pitchV.textContent = ok ? fmtDeg(l.pitch_deg) : "—";
-    pitchW.textContent = ok ? pitchText(l.pitch_deg) : "";
-    rollV.textContent = ok ? fmtDeg(l.roll_deg) : "—";
-    rollW.textContent = ok ? rollText(l.roll_deg) : "";
+    put(pitchV, ok ? fmtDeg(l.pitch_deg) : "—");
+    put(pitchW, ok ? pitchText(l.pitch_deg) : "");
+    put(rollV, ok ? fmtDeg(l.roll_deg) : "—");
+    put(rollW, ok ? rollText(l.roll_deg) : "");
     for (const [k, el] of Object.entries(wheelEls)) {
       const v = ok && l.wheels_cm ? l.wheels_cm[k] : null;
-      el.textContent = fmtCm(v);
+      put(el, fmtCm(v));
       el.parentElement.classList.toggle("top", typeof v === "number" && Math.round(v * 2) / 2 <= 0);
     }
     drawPv();
@@ -104,8 +104,8 @@ export function mount(root) {
     else if (!st.sensor_ok) stillV.append(h("span.red", null, "no sensor"));
     else stillV.append(st.still ? h("span.green", null, "● still") : h("span.amber", null, "● moving or rocking"));
     const v = st ? fmtVec(st.raw) : null;
-    rawV.textContent = v ? v.parts.join("  ") : "—";
-    magV.textContent = v ? `  |a| ${v.mag}` : "";
+    put(rawV, v ? v.parts.join("  ") : "—");
+    put(magV, v ? `  |a| ${v.mag}` : "");
   }
 
   // ───── calibration card ─────
@@ -124,9 +124,9 @@ export function mount(root) {
     const err = h(".err.lv-referr", { hidden: true });
     const upd = () => {
       const v = parseDeg(inp.value);
-      mean.textContent = v === null ? "" : signMeaning(axis, v);
-      mean.className = "lv-mean" + (v !== null && Math.abs(v) > REF_MAX_DEG ? " red" : "");
-      err.hidden = true;
+      put(mean, v === null ? "" : signMeaning(axis, v));
+      setCls(mean, "lv-mean" + (v !== null && Math.abs(v) > REF_MAX_DEG ? " red" : ""));
+      setHidden(err, true);
       inp.classList.remove("invalid");
       if (refMsg) { refMsg = null; renderRefMsg(); }
     };
@@ -183,7 +183,7 @@ export function mount(root) {
         h("span.k", null, "Forward"), h("span.v", null, sum.forward),
         h("span.k", null, "Calibrated"), h("span.v", null, cal.ts ? fmtWhen(cal.ts, Date.now() / 1000) : "—"));
     }
-    resetBtn.hidden = !cal;
+    setHidden(resetBtn, !cal);
     clear(uncalNote);
     if (st && !hasLevelRef(cal)) {
       uncalNote.append(banner("warn", "Not calibrated: the angles are measured from the sensor board as it is mounted. Set the forward direction, then calibrate with a spirit level (steps 1 and 2)."));
@@ -200,8 +200,8 @@ export function mount(root) {
     }
     saveBtn.disabled = busy || noSensor;
     for (const k of ["pitch", "roll"]) refIn[k].disabled = busy;
-    measBar.hidden = !busy;
-    measTxt.hidden = !busy;
+    setHidden(measBar, !busy);
+    setHidden(measTxt, !busy);
     renderRefMsg();
     clear(stillHint);
     if (st && st.sensor_ok && !busy) {
@@ -215,11 +215,11 @@ export function mount(root) {
     axisSel.disabled = fwdBusy || learning;
     axisBtn.disabled = fwdBusy || learning;
     learnBtn.disabled = fwdBusy || learning || noSensor;
-    learnBtn.hidden = learning;
-    learnBox.hidden = !learning;
+    setHidden(learnBtn, learning);
+    setHidden(learnBox, !learning);
     if (learning) {
       learnBar.firstChild.style.width = learnFrac(w) * 100 + "%";
-      learnTxt.textContent = `${(w.learn_s || 0).toFixed(1)} of ${LEARN_NEED_S} s` + (typeof w.learn_spread_deg === "number" ? ` · spread ${w.learn_spread_deg.toFixed(0)}° (needs ≤ 10°)` : "");
+      put(learnTxt, `${(w.learn_s || 0).toFixed(1)} of ${LEARN_NEED_S} s` + (typeof w.learn_spread_deg === "number" ? ` · spread ${w.learn_spread_deg.toFixed(0)}° (needs ≤ 10°)` : ""));
     }
     if (wasLearning && !learning && cal && cal.forward_source === "driving") {
       fwdMsg = { kind: "ok", text: "Forward direction learned while driving." };
@@ -237,8 +237,8 @@ export function mount(root) {
     for (const k of ["pitch", "roll"]) {
       const v = parseDeg(refIn[k].value);
       const e = degError(v);
-      refErr[k].hidden = !e;
-      refErr[k].textContent = e || "";
+      setHidden(refErr[k], !e);
+      put(refErr[k], e || "");
       refIn[k].classList.toggle("invalid", !!e);
       if (e) bad = true;
       else {
@@ -318,14 +318,14 @@ export function mount(root) {
       const s = await api.get("/api/level");
       if (stopped) return;
       st = s;
-      unavail.hidden = true;
+      setHidden(unavail, true);
       renderStatusBits();
       renderCal();
       if (!store.online) renderLive();
     } catch (e) {
       if (stopped) return;
       clear(unavail).append(banner("bad", levelErrorText(e)));
-      unavail.hidden = false;
+      setHidden(unavail, false);
     }
   }
 
@@ -402,7 +402,7 @@ export function mount(root) {
       drawPv();
     } catch (e) {
       console.warn("level preview", e);
-      pvBox.hidden = true;
+      setHidden(pvBox, true);
     }
   })();
 

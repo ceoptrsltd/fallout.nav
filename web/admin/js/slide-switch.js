@@ -5,7 +5,7 @@
 // doing it now — 60 min near the start down to 5 min near the end, in 5 min steps; a bubble above the finger says
 // what letting go here will do. The track's start and the stretch before its end are empty: letting go there does
 // nothing, so a timer is never set by a slip of the finger.
-import { h } from "./dom.js";
+import { h, put, setAttr } from "./dom.js";
 
 const THUMB = 46; // px: the thumb with its borders (app.css .sl-thumb) plus the 2 px inset on each side
 export const COMMIT_AT = 0.85; // dragged this far along the track — switch
@@ -54,6 +54,8 @@ export function slideSwitch({ label, on = false, onslide, ontimer }) {
   const el = h(".sl", { role: "switch", "aria-label": label }, h("span.sl-label", null, label), track, state, tip);
   let cur = { on: !!on, busy: false, disabled: false, unknown: false, timer: null };
   let drag = null;
+  let shownLeft = null; // thumb.style.left as last written
+  const flag = (node, name, v) => { if (node.classList.contains(name) !== !!v) node.classList.toggle(name, !!v); };
 
   // the bubble: above the finger, moves with the thumb
   function showTip(zone) {
@@ -76,18 +78,20 @@ export function slideSwitch({ label, on = false, onslide, ontimer }) {
   function paint(frac = null) {
     const start = cur.on ? 1 : 0;
     const pos = frac === null ? start : cur.on ? 1 - frac : frac;
-    thumb.style.left = `calc(${(pos * 100).toFixed(1)}% - ${(pos * (THUMB - 2) - (1 - 2 * pos) * 3).toFixed(1)}px)`; // 3 px from either end
-    el.classList.toggle("on", cur.on && !cur.unknown);
-    el.classList.toggle("busy", cur.busy);
-    el.classList.toggle("disabled", cur.disabled);
-    el.setAttribute("aria-checked", cur.unknown ? "mixed" : String(cur.on));
+    // set() comes with every telemetry packet (10 a second) and nearly always repeats: only what changed is written
+    const left = `calc(${(pos * 100).toFixed(1)}% - ${(pos * (THUMB - 2) - (1 - 2 * pos) * 3).toFixed(1)}px)`; // 3 px from either end
+    if (left !== shownLeft) thumb.style.left = shownLeft = left;
+    flag(el, "on", cur.on && !cur.unknown);
+    flag(el, "busy", cur.busy);
+    flag(el, "disabled", cur.disabled);
+    setAttr(el, "aria-checked", cur.unknown ? "mixed" : String(cur.on));
     const tm = cur.unknown || cur.disabled ? null : cur.timer;
-    hint.textContent = cur.busy ? "…" : cur.disabled ? "" : tm ? `${tm.on ? "on" : "off"} in ${leftText(tm.in_s)} ✕`
-      : cur.on ? "‹ slide off" : "slide on ›";
-    hint.classList.toggle("timer", !!tm); // a running timer sits in the track; a tap on it removes the timer
-    hint.title = tm ? "Tap to remove the timer" : "";
-    hint.classList.toggle("left", !cur.on);
-    state.textContent = cur.unknown ? "—" : cur.on ? "ON" : "OFF";
+    put(hint, cur.busy ? "…" : cur.disabled ? "" : tm ? `${tm.on ? "on" : "off"} in ${leftText(tm.in_s)} ✕`
+      : cur.on ? "‹ slide off" : "slide on ›");
+    flag(hint, "timer", !!tm); // a running timer sits in the track; a tap on it removes the timer
+    setAttr(hint, "title", tm ? "Tap to remove the timer" : "");
+    flag(hint, "left", !cur.on);
+    put(state, cur.unknown ? "—" : cur.on ? "ON" : "OFF");
   }
 
   function frac(ev) {

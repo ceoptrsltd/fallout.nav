@@ -2,7 +2,7 @@
 // bottom tab bar with the most used pages and a More sheet with the rest, a one-line status bar; "Install app" in the
 // More sheet and the sidebar (install.js). After a deploy: "A new version is available" with Reload (version-fmt.js);
 // the installed app has no browser Reload, so it is also in the More sheet and in the page error banner.
-import { h, icon, clear, fmt, kmh, isNum, compassWord } from "./dom.js";
+import { h, icon, clear, fmt, kmh, isNum, compassWord, put, setCls, setHidden } from "./dom.js";
 import { api, goLogin, errText, ROOT, appUrl } from "./api.js";
 import { registerSw, unsubscribeOnLogout } from "./push.js";
 import { store, start, on, setOffline, forgetKept } from "./store.js";
@@ -89,7 +89,7 @@ function openMore() {
 function renderAlarmDot() {
   const a = store.online && store.telemetry ? store.telemetry.alarm : null;
   const st = a && a.state !== "off" ? a.state : null;
-  alarmDot.hidden = !st;
+  setHidden(alarmDot, !st);
   if (st && alarmDot.className !== "tab-dot " + st) alarmDot.className = "tab-dot " + st;
 }
 on("telemetry", renderAlarmDot);
@@ -153,10 +153,10 @@ const btnScreen = h("button.btn.sm.sb-screen", { type: "button", onclick: () => 
 sb.append(h(".sb-brand", { "aria-hidden": "true" }, "FNAV"), ...Object.values(S), h(".grow"), btnScreen);
 
 function setSt(el, text, cls, blink, short) {
-  el.txt.textContent = text;
-  el.short.textContent = short ?? text;
-  el.className = "st" + (cls ? " " + cls : "");
-  if (el.dot) el.dot.classList.toggle("on", !!blink);
+  put(el.txt, text);
+  put(el.short, short ?? text);
+  setCls(el, "st" + (cls ? " " + cls : ""));
+  if (el.dot && el.dot.classList.contains("on") !== !!blink) el.dot.classList.toggle("on", !!blink);
 }
 
 function renderStatus() {
@@ -290,6 +290,10 @@ if (window.isSecureContext && "serviceWorker" in navigator) {
 
 // ───── startup ─────
 (async function init() {
+  // the settings are asked for together with the session, not after it: one round trip to the device less before
+  // the first page shows (signed out — the session's answer sends to the login page, this one is dropped)
+  const settings = api.get("/api/settings", { noRedirect: true });
+  settings.catch(() => {}); // start() reports it
   try {
     const s = await api.get("/api/session", { noRedirect: true });
     if (!s || !s.authenticated || needsAppLogin()) return goLogin();
@@ -298,7 +302,7 @@ if (window.isSecureContext && "serviceWorker" in navigator) {
   } catch (e) {
     toast("error", "No connection to the device: " + errText(e));
   }
-  await start();
+  await start(settings);
   window.addEventListener("hashchange", route);
   route();
 })();

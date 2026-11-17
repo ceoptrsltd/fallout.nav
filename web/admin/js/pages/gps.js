@@ -1,5 +1,5 @@
 // GPS: satellite table + skyplot, raw NMEA, module reconfiguration, gps.* settings
-import { h, icon, clear, fmt, isNum } from "../dom.js";
+import { h, icon, clear, fmt, isNum, put, setCls, setHidden } from "../dom.js";
 import { api, errText } from "../api.js";
 import { SettingsForm, section } from "../form.js";
 import { store, on, subscribeTopic } from "../store.js";
@@ -72,7 +72,7 @@ export function mount(root) {
       ));
     }
     if (!list.length) tbody.append(h("tr", null, h("td", { colspan: 6, class: "dim" }, "No satellite data")));
-    sum.textContent = `visible: ${list.length} · used: ${list.filter((s) => s.used).length}`;
+    put(sum, `visible: ${list.length} · used: ${list.filter((s) => s.used).length}`);
   }
   async function loadSats() {
     try { renderSats(await api.get("/api/gps/satellites")); } catch (e) { sum.textContent = errText(e); }
@@ -85,9 +85,9 @@ export function mount(root) {
   function renderFix() {
     const g = store.telemetry?.gps;
     if (!g) return;
-    fixInfo.textContent = fixLine(g);
-    fixInfo.className = "mono " + (g.fix === "3d" ? "green" : g.fix === "2d" ? "amber" : "red");
-    pvtHint.hidden = !needsPvt(g);
+    put(fixInfo, fixLine(g));
+    setCls(fixInfo, "mono " + (g.fix === "3d" ? "green" : g.fix === "2d" ? "amber" : "red"));
+    setHidden(pvtHint, !needsPvt(g));
   }
 
   // ── NMEA ──
@@ -100,7 +100,7 @@ export function mount(root) {
   const pause = switchEl({ checked: false, label: "Pause", onchange: (v) => { paused = v; } });
   function drawLog() {
     const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
-    log.textContent = (filter ? lines.filter((l) => l.toUpperCase().includes(filter)) : lines).join("\n");
+    put(log, (filter ? lines.filter((l) => l.toUpperCase().includes(filter)) : lines).join("\n"));
     if (stick) log.scrollTop = log.scrollHeight;
   }
   const unsubNmea = subscribeTopic("nmea");
@@ -137,10 +137,10 @@ export function mount(root) {
     return {
       el: h("span", { style: { display: "inline-flex", gap: "10px", alignItems: "center", flexWrap: "wrap" } }, val, note, reset),
       update: (v) => {
-        val.textContent = v || "—";
+        put(val, v || "—");
         const odd = deviceMismatch(v);
-        note.textContent = odd ? `gpsd reads ${GPSD_DEVICE}` : "";
-        reset.hidden = !odd;
+        put(note, odd ? `gpsd reads ${GPSD_DEVICE}` : "");
+        setHidden(reset, !odd);
       },
     };
   };

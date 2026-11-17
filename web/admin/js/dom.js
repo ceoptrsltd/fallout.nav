@@ -50,6 +50,28 @@ export function clear(el) {
   return el;
 }
 
+// Telemetry comes 10 times a second and most of it repeats: an equal write still replaces the text node / queues a
+// style and layout pass, so live views write through these — only what changed reaches the DOM.
+/** textContent, when it differs. */
+export function put(el, text) {
+  const s = text == null ? "" : String(text);
+  if (el.textContent !== s) el.textContent = s;
+}
+/** The whole class attribute, when it differs. */
+export function setCls(el, c) {
+  if (el.getAttribute("class") !== c) el.setAttribute("class", c);
+}
+/** el.hidden, when it differs. */
+export function setHidden(el, v) {
+  if (el.hidden !== !!v) el.hidden = !!v;
+}
+/** An attribute (null / false — removed), when it differs. */
+export function setAttr(el, name, v) {
+  if (v === null || v === undefined || v === false) {
+    if (el.hasAttribute(name)) el.removeAttribute(name);
+  } else if (el.getAttribute(name) !== String(v)) el.setAttribute(name, String(v));
+}
+
 const ICONS = {
   dash: "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z",
   cam: "M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z",

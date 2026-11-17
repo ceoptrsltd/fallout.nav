@@ -4,7 +4,7 @@
 // the event log — api/alarm/events — only when its events_rev changes), settings.alarm, push notifications on this
 // device (sw.js + api/push/* answered by the server behind https …/fnadmin/), the event log and the hazard lights relay
 // (settings.alarm.hazard, test: POST api/alarm/hazard/test).
-import { h, icon, clear, isNum } from "../dom.js";
+import { h, icon, clear, isNum, put, setCls, setHidden, setAttr } from "../dom.js";
 import { api, appUrl, encPath, errText } from "../api.js";
 import { SettingsForm } from "../form.js";
 import { store, on, applySettings } from "../store.js";
@@ -247,23 +247,23 @@ export function mount(root) {
     const thr = threshold();
     const ok = l ? l.sensorOk && isNum(g) : false;
     if (ok) peak = peakHold(peak, g, nowS(), PEAK_HOLD_S);
-    meterMsg.hidden = ok || !l;
+    setHidden(meterMsg, ok || !l);
     fill.style.width = (ok ? logPos(g, METER_MIN, METER_MAX) * 100 : 0) + "%";
-    fill.className = "al-fill" + (ok && thr && g >= thr ? " hit" : ok && thr && g >= thr / 2 ? " near" : "");
-    thrMark.hidden = !thr;
+    setCls(fill, "al-fill" + (ok && thr && g >= thr ? " hit" : ok && thr && g >= thr / 2 ? " near" : ""));
+    setHidden(thrMark, !thr);
     if (thr) thrMark.style.left = logPos(thr, METER_MIN, METER_MAX) * 100 + "%";
-    peakMark.hidden = !peak;
+    setHidden(peakMark, !peak);
     if (peak) {
       peakMark.style.left = logPos(peak.g, METER_MIN, METER_MAX) * 100 + "%";
       peakMark.classList.toggle("hit", !!thr && peak.g >= thr);
     }
-    nowV.textContent = ok ? fmtG(g) : "—";
-    peakV.textContent = peak ? fmtG(peak.g) : "—";
-    peakAgo.textContent = peak && nowS() - peak.at >= 1 ? ` (${Math.round(nowS() - peak.at)} s ago)` : "";
-    thrV.textContent = thr ? fmtG(thr) : "—";
-    thrState.textContent = thrSaving ? " saving…" : thrPending !== null ? " (release to save)" : "";
-    track.setAttribute("aria-valuenow", thr ? String(thr) : "");
-    track.setAttribute("aria-valuetext", thr ? fmtG(thr) : "not set");
+    put(nowV, ok ? fmtG(g) : "—");
+    put(peakV, peak ? fmtG(peak.g) : "—");
+    put(peakAgo, peak && nowS() - peak.at >= 1 ? ` (${Math.round(nowS() - peak.at)} s ago)` : "");
+    put(thrV, thr ? fmtG(thr) : "—");
+    put(thrState, thrSaving ? " saving…" : thrPending !== null ? " (release to save)" : "");
+    setAttr(track, "aria-valuenow", thr ? String(thr) : "");
+    setAttr(track, "aria-valuetext", thr ? fmtG(thr) : "not set");
   }
 
   // ── impact threshold on the meter ──

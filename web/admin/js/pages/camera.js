@@ -4,7 +4,7 @@
 // to the on-demand MPEG-TS stream if WebRTC cannot connect; through the server (docs/contracts/remote.md)
 // WebRTC does not pass the tunnel, so the stream right away. Nothing is streamed unless this page is open
 // and the tab is visible; only the camera whose tab is shown.
-import { h, icon, fmt, fmtBytes, isNum } from "../dom.js";
+import { h, icon, fmt, fmtBytes, isNum, put, setCls, setHidden } from "../dom.js";
 import { api, appUrl, errText, goLogin, REMOTE } from "../api.js";
 import { loadMpegts } from "../vendor.js";
 import { quickActions } from "../quick-actions.js";
@@ -368,7 +368,7 @@ export function mount(root) {
   const kvRow = (k, label) => { const v = h("span.v", null, "—"); stRefs[k] = v; return [h("span.k", null, label), v]; };
   const statusCard = h(".card", null, h("h2", null, "Status"),
     h(".kv", null, kvRow("state", "State"), kvRow("fps", "Frames/s"), kvRow("br", "Bitrate"), kvRow("mode", "Sensor → output"), kvRow("seg", "Current segment"), kvRow("drop", "Dropped frames"), kvRow("exp", "Exposure"), kvRow("rc", "Recordings"), kvRow("prot", "Protected"), kvRow("free", "Free space"), kvRow("sync", "Time synchronized"), kvRow("err", "Error")));
-  const setS = (k, t, cls) => { stRefs[k].textContent = t; stRefs[k].className = "v" + (cls ? " " + cls : ""); };
+  const setS = (k, t, cls) => { put(stRefs[k], t); setCls(stRefs[k], "v" + (cls ? " " + cls : "")); };
   function renderStatus() {
     const c = store.telemetry?.camera;
     if (!c) return;
@@ -525,7 +525,7 @@ export function mount(root) {
   // ── rear status ──
   const rRefs = {};
   const rRow = (k, label) => { const v = h("span.v", null, "—"); rRefs[k] = v; return [h("span.k", null, label), v]; };
-  const setR = (k, t, kind) => { rRefs[k].textContent = t; rRefs[k].className = "v" + (kindCls(kind) ? " " + kindCls(kind) : ""); };
+  const setR = (k, t, kind) => { put(rRefs[k], t); setCls(rRefs[k], "v" + (kindCls(kind) ? " " + kindCls(kind) : "")); };
   const restartBtn = h("button.btn.sm", { type: "button", title: "Drop the connection to the camera and connect again", onclick: () => restartRear() }, icon("refresh"), "Reconnect");
   const rStatusCard = h(".card", null, h(".card-head", null, h("h2", null, "Status"), restartBtn),
     h(".kv", null, rRow("state", "State"), rRow("err", "Error"), rRow("codec", "Codec"), rRow("size", "Size"), rRow("sfps", "Camera frames/s"),
@@ -542,7 +542,7 @@ export function mount(root) {
     setR("br", s.bitrate);
     setR("drop", s.dropped.text, s.dropped.kind);
     setR("seg", s.segment);
-    soundBtn.hidden = !(c && c.audio);
+    setHidden(soundBtn, !(c && c.audio));
     // the first snapshot by itself, once the camera delivers pictures
     if (tab === "rear" && !snapTaken && !document.hidden && s.state.kind === "ok") takeSnapshot();
     // password_set as the camera reports it (not right after a save: the status lags a moment behind)
@@ -763,8 +763,8 @@ export function mount(root) {
     }
   }
   function renderScreen() {
-    screenCard.hidden = !hasRear || !rearOn();
-    for (const slot of [frontScrSlot, rearScrSlot]) slot.hidden = screenCard.hidden || !slot.contains(screenCard);
+    setHidden(screenCard, !hasRear || !rearOn());
+    for (const slot of [frontScrSlot, rearScrSlot]) setHidden(slot, screenCard.hidden || !slot.contains(screenCard));
     if (screenCard.hidden) return;
     const d = store.online && store.telemetry ? store.telemetry.display : null;
     let si = screenInfo(d);

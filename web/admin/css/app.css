@@ -106,6 +106,10 @@ code, .mono { font-family: var(--mono); }
 @keyframes blink { 50% { opacity: .25; } }
 
 #view { flex: 1; overflow: auto; padding: 18px 22px 60px; min-height: 0; position: relative; } /* containing block for hidden inputs */
+/* #view takes the room left in .main whatever is in it. Saying so (size containment) spares a second layout of the
+   whole page on every change inside: without it the flex item is measured with no scrollbar, then laid out with one,
+   at another width — twice through everything, 10 times a second with telemetry (5 ms → 0.5 ms on the Dashboard). */
+#view { contain: size; }
 .page { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
 .page-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .page-head h1 { flex: 1 1 auto; }
